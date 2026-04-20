@@ -7,6 +7,7 @@ namespace Nandan108\Attrecord\Tests\Integration;
 use Nandan108\Attrecord\Exception\RecordNotFoundException;
 use Nandan108\Attrecord\Tests\Fixtures\UserRecord;
 use Nandan108\Attrecord\Tests\Support\IntegrationTestCase;
+use Nandan108\Attrecord\WhereClause;
 
 final class RecordCrudTest extends IntegrationTestCase
 {
@@ -239,5 +240,73 @@ final class RecordCrudTest extends IntegrationTestCase
         }
 
         $this->assertSame(0, UserRecord::countWhere('`id` > 0'));
+    }
+
+    // -----------------------------------------------------------------
+    // where() / whereIn() / WhereClause
+    // -----------------------------------------------------------------
+
+    public function testWhereFindsMatchingRecords(): void
+    {
+        $u1 = new UserRecord();
+        $u1->name = 'Alice';
+        $u1->save();
+        $u2 = new UserRecord();
+        $u2->name = 'Bob';
+        $u2->save();
+
+        $found = UserRecord::where('name', 'Alice');
+        $this->assertCount(1, $found);
+        $this->assertSame('Alice', $found->first()?->name);
+    }
+
+    public function testWhereReturnsEmptySetWhenNoMatch(): void
+    {
+        $u = new UserRecord();
+        $u->name = 'Alice';
+        $u->save();
+
+        $found = UserRecord::where('name', 'Nobody');
+        $this->assertCount(0, $found);
+    }
+
+    public function testWhereInFindsMultipleRecords(): void
+    {
+        foreach (['Alice', 'Bob', 'Charlie'] as $name) {
+            $u = new UserRecord();
+            $u->name = $name;
+            $u->save();
+        }
+
+        $found = UserRecord::whereIn('name', ['Alice', 'Charlie']);
+        $this->assertCount(2, $found);
+        $names = $found->pluck('name');
+        sort($names);
+        $this->assertSame(['Alice', 'Charlie'], $names);
+    }
+
+    public function testWhereInEmptyValuesReturnsEmptySet(): void
+    {
+        $u = new UserRecord();
+        $u->name = 'Alice';
+        $u->save();
+
+        $found = UserRecord::whereIn('name', []);
+        $this->assertCount(0, $found);
+    }
+
+    public function testFindAcceptsWhereClause(): void
+    {
+        foreach (['Alice', 'Bob', 'Charlie'] as $name) {
+            $u = new UserRecord();
+            $u->name = $name;
+            $u->save();
+        }
+
+        $clause = WhereClause::where('name', 'Alice')
+            ->orWhere(WhereClause::where('name', 'Charlie'));
+
+        $found = UserRecord::find($clause);
+        $this->assertCount(2, $found);
     }
 }

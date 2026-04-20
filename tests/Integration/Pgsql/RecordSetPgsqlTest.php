@@ -75,10 +75,14 @@ final class RecordSetPgsqlTest extends PgsqlIntegrationTestCase
         $u3->name = 'Charlie';
 
         $set = new RecordSet([$u1, $u2, $u3]);
-        $saved = $set->saveAll();
+        $result = $set->saveAll();
 
-        $this->assertTrue($saved);
+        $this->assertNotNull($result);
+        $this->assertSame(3, $result->inserted);
+        $this->assertSame(0, $result->updated);
         $this->assertSame(3, UserRecord::countWhere('id > 0'));
+        $this->assertCount(3, $result->insertedIds);
+        $this->assertSame([1, 2, 3], array_map('intval', $result->insertedIds));
     }
 
     public function testSaveAllMarksRecordsClean(): void
@@ -95,12 +99,12 @@ final class RecordSetPgsqlTest extends PgsqlIntegrationTestCase
         $this->assertFalse($u2->isDirty());
     }
 
-    public function testSaveAllReturnsFalseWhenAllClean(): void
+    public function testSaveAllReturnsNullWhenAllClean(): void
     {
         $u = $this->makeUser('Alice');
         $set = new RecordSet([$u]);
 
-        $this->assertFalse($set->saveAll());
+        $this->assertNull($set->saveAll());
     }
 
     // -----------------------------------------------------------------
@@ -117,7 +121,11 @@ final class RecordSetPgsqlTest extends PgsqlIntegrationTestCase
         $bob->name = 'Bob Updated';
 
         $set = new RecordSet([$alice, $bob]);
-        $set->saveAll();
+        $result = $set->saveAll();
+
+        $this->assertNotNull($result);
+        $this->assertSame(0, $result->inserted); // rows already existed — INSERT IGNORE skipped them
+        $this->assertSame(2, $result->updated);  // both were updated by the CASE UPDATE
 
         $found1 = UserRecord::getOne((int) $alice->id);
         $found2 = UserRecord::getOne((int) $bob->id);

@@ -25,7 +25,7 @@ final class TableSchema
     /** @var array<string, RelationDefinition>  property name → definition */
     public readonly array $relations;
 
-    /** @var array<string, \ReflectionProperty>  column name → cached ReflectionProperty */
+    /** @var array<string, \ReflectionProperty>  column name → cached \ReflectionProperty */
     public readonly array $reflProperties;
 
     /** @var list<string> column names excluding the PK */

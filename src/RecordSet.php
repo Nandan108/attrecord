@@ -8,8 +8,6 @@ use Nandan108\Attrecord\Enum\RelationType;
 use Nandan108\Attrecord\Exception\RecordSaveException;
 use Nandan108\Attrecord\Schema\RelationDefinition;
 use Nandan108\Attrecord\Schema\TableSchema;
-use Nandan108\Attrecord\SqlDialect;
-use Nandan108\Attrecord\UpsertSql;
 
 /**
  * A typed, iterable collection of Record instances.
@@ -140,14 +138,16 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      *    Use Record::save() when you need the new PK.
      *  - After a successful call, all dirty records are marked clean.
      *
-     * @return bool true = SQL executed, false = nothing to save (all records were clean)
+     * @param bool $force If true, save all records regardless of dirty state (useful for testing);
+     *
+     * @return SaveResult|null SaveResult with inserted/updated counts, or null if nothing to save
      *
      * @throws RecordSaveException on DB error
      */
-    public function saveAll(bool $force = false): bool
+    public function saveAll(bool $force = false): ?SaveResult
     {
         if (empty($this->records)) {
-            return false;
+            return null;
         }
 
         $first = $this->records[0];
@@ -155,45 +155,78 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $conn = $first::connection();
         $pk = $schema->primaryKey;
 
-        $dirty = $force
+        $dirtyRecords = $force
             ? $this->records
             : array_filter($this->records, fn (Record $r) => $r->isDirty());
-        $dirty = array_values($dirty);
 
-        if (empty($dirty)) {
-            return false;
+        if (empty($dirtyRecords)) {
+            return null;
         }
 
-        $plan = $this->buildPlan($dirty, $pk, $conn->dialect, $schema);
+        $dirtyRecords = array_values($dirtyRecords);
+
+        $plan = $this->buildPlan($dirtyRecords, $pk, $conn->dialect, $schema);
 
         if (null === $plan['insert'] && null === $plan['upsert']) {
-            return false;
+            return null;
         }
 
         $session = $conn->session;
+        $qpk = $conn->dialect->quoteIdentifier($pk);
+        $returningSuffix = $conn->dialect->insertReturningSuffix($qpk);
 
         try {
-            $session->transactional(function () use ($session, $plan): void {
-                if (null !== $plan['insert']) {
-                    $session->exec($plan['insert']);
-                }
-                if (null !== $plan['upsert']) {
-                    $session->exec($plan['upsert']->create);
-                    $session->exec($plan['upsert']->lock);
-                    if (null !== $plan['upsert']->update) {
-                        $session->exec($plan['upsert']->update);
+            $counts = $session->transactional(
+                function () use ($session, $plan, $pk, $returningSuffix): array {
+                    $inserted = 0;
+                    $updated = 0;
+                    $insertedIds = [];
+
+                    if (null !== $plan['insert']) {
+                        if ('' !== $returningSuffix) {
+                            // PostgreSQL: RETURNING gives back the generated PKs directly
+                            $rows = $session->fetchAll($plan['insert']."\n".$returningSuffix);
+                            foreach ($rows as $row) {
+                                /** @psalm-suppress MixedAssignment */
+                                $insertedIds[] = $row[$pk];
+                            }
+                            $inserted += \count($rows);
+                        } else {
+                            // MySQL/MariaDB: lastInsertId() is the first ID; range is sequential
+                            $n = $session->exec($plan['insert']);
+                            if ($n > 0) {
+                                $firstId = (int) $session->lastInsertId();
+                                for ($i = 0; $i < $n; ++$i) {
+                                    $insertedIds[] = $firstId + $i;
+                                }
+                            }
+                            $inserted += $n;
+                        }
                     }
-                }
-            });
+
+                    if (null !== $plan['upsert']) {
+                        $inserted += $session->exec($plan['upsert']->create);
+                        $session->exec($plan['upsert']->lock);
+                        if (null !== $plan['upsert']->update) {
+                            $updated += $session->exec($plan['upsert']->update);
+                        }
+                    }
+
+                    return ['inserted' => $inserted, 'updated' => $updated, 'insertedIds' => $insertedIds];
+                },
+            );
         } catch (\Throwable $e) {
             throw new RecordSaveException($e->getMessage(), $e);
         }
 
-        foreach ($dirty as $record) {
+        foreach ($dirtyRecords as $record) {
             $record->markClean();
         }
 
-        return true;
+        /** @var list<int|string> $insertedIds */
+        $insertedIds = $counts['insertedIds'];
+
+        return new SaveResult($counts['inserted'], $counts['updated'], $insertedIds);
     }
 
     /**
@@ -233,6 +266,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * Separate dirty records by PK presence and build the SQL plan for each group.
      *
      * @param list<Record> $dirty
+     *
      * @return array{insert: ?string, upsert: ?UpsertSql}
      */
     private function buildPlan(array $dirty, string $pk, SqlDialect $dialect, TableSchema $schema): array

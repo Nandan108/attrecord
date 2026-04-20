@@ -146,6 +146,48 @@ $count = Order::countWhere('`status` = ?', ['pending']);
 $deleted = Order::deleteWhere('`status` = ? AND `total` IS NULL', ['draft']);
 ```
 
+### Convenience finders
+
+Column names are automatically quoted by the class's configured dialect:
+
+```php
+// Single-column equality
+$pending = Order::where('status', 'pending');
+
+// Comparison operator
+$large = Order::where('total', 100, '>');
+
+// NULL check  (null value → IS NULL / IS NOT NULL)
+$unplaced = Order::where('placed_at', null);
+
+// IN list
+$active = Order::whereIn('status', ['pending', 'confirmed']);
+```
+
+### WhereClause builder
+
+For programmatic conditions, compose a `WhereClause` and pass it to `find()`.
+Column names are stored unquoted and quoted for the target dialect at render time:
+
+```php
+use Nandan108\Attrecord\WhereClause as WC;
+
+$clause = WC::where('status', 'pending')
+    ->andWhere(
+        WC::where('total', 100, '>')
+            ->orWhere(WC::where('flagged', true))
+    );
+
+$orders = Order::find($clause);
+```
+
+`Record::where()` / `whereIn()` handle quoting automatically. When building
+`WhereClause` directly, pass unquoted column names — quoting is applied by `find()`
+via the class's configured dialect.
+
+See [docs/where-clause.md](docs/where-clause.md) for the full reference: `whereIn`,
+`whereInTuples`, `whereRaw`, variadic combinators, and the `render($dialect)` API.
+
 ---
 
 ## Dirty tracking
@@ -191,9 +233,14 @@ $byStatus = $orders->recordsGroupedByKey('status');  // array<string, RecordSet<
 ### Bulk operations
 
 ```php
-// Batch upsert — one SQL statement for all dirty records
+// Batch upsert — deadlock-safe 3-step strategy for all dirty records
 $set = new RecordSet([$line1, $line2, $line3]);
-$set->saveAll();   // INSERT … SELECT … ON DUPLICATE KEY UPDATE
+$result = $set->saveAll();   // ?SaveResult — null when nothing to save
+
+$result->inserted;      // rows newly written
+$result->updated;       // rows overwritten
+$result->total();       // inserted + updated
+$result->insertedIds;   // list<int|string> — PKs of newly inserted auto-increment records
 
 // Bulk delete
 $deleted = $set->deleteAll();  // DELETE FROM … WHERE id IN (…)
@@ -202,8 +249,11 @@ $deleted = $set->deleteAll();  // DELETE FROM … WHERE id IN (…)
 **Notes on `saveAll()`:**
 
 - Clean records are skipped automatically.
-- For tables with auto-increment PKs, new records are inserted but their PKs are **not** assigned back to the PHP objects. Use `Record::save()` when you need the new PK.
-- For tables with natural (non-auto-increment) PKs, `saveAll()` performs a true upsert.
+- `insertedIds` is populated for new (no-PK) records: via `RETURNING` on PostgreSQL, or via
+  `lastInsertId()` + sequential range on MySQL/MariaDB. On MySQL/MariaDB clustered setups with
+  non-sequential auto-increment, use individual `Record::save()` calls instead.
+- For tables with natural (non-auto-increment) PKs, `saveAll()` performs a true upsert (PKs are
+  already set on the PHP objects).
 
 ---
 
@@ -282,7 +332,7 @@ class Tag extends Record
 ```
 
 `morphValue` can be a string or an integer — use integers when the discriminator column
-is an FK into a type-lookup table (see schema design advice below).
+is an FK into a type-lookup table (see [docs/polymorphic-relations.md](docs/polymorphic-relations.md)).
 
 ### Eager loading
 
@@ -314,53 +364,7 @@ Tags whose `tagable_type` has no entry in `morphMap` are silently skipped (prope
 `null`). This makes schema evolution safe: new type values added to the DB before the PHP
 code is updated will not cause errors.
 
-### Schema design advice
-
-Polymorphic relations are the right tool for **cross-cutting concerns** that genuinely
-apply to many entity types: audit logs, tags, comments, attachments, notifications. A
-single `movements` or `audit_entries` table referencing heterogeneous sources is cleaner
-than a combinatorial explosion of nullable FKs or duplicated tables.
-
-They come with trade-offs that are worth knowing before committing:
-
-| Concern                                 | Impact                                                                                                                                            |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| No referential integrity                | The database cannot enforce a FK on `(tagable_type, tagable_id)`. Orphaned rows accumulate silently unless you clean them up in application code. |
-| String discriminators couple DB to code | Renaming a class or changing a type string silently breaks all existing rows. Prefer stable short keys (`'order'`, `'product'`) over class names. |
-| Index overhead                          | A composite index on `(tagable_type, tagable_id)` is required for acceptable query performance; it will not be created automatically.             |
-
-**Prefer integer discriminators for high-volume tables.** Instead of storing `'order'`
-as a varchar, store the FK of a `movement_types` lookup table. This is faster to index,
-smaller on disk, and decouples the DB entirely from PHP class names:
-
-```
-movement_types
-  id    tinyint PK
-  name  varchar   ← 'order', 'transfer', 'adjustment', …
-
-movements
-  id                 bigint PK
-  movement_type_id   tinyint FK → movement_types.id   ← integer discriminator
-  movement_ref_id    bigint                            ← polymorphic FK
-  …
-```
-
-```php
-#[Relation(RelationType::MorphTo,
-    morphType: 'movement_type_id',
-    morphKey:  'movement_ref_id',
-    morphMap:  [1 => PurchaseOrder::class, 2 => Transfer::class, 3 => Adjustment::class])]
-public PurchaseOrder|Transfer|Adjustment|null $source = null;
-```
-
-**When not to use polymorphic relations:**
-
-- You only have two or three parent types and the table is small — separate nullable FKs
-  with `CHECK (exactly one is non-null)` give you referential integrity for free.
-- You want JOINs in raw SQL — the polymorphic pattern makes ad-hoc queries awkward because
-  the join target varies per row.
-- The child table exists primarily to serve one parent type — a dedicated table with a real
-  FK is simpler and more maintainable.
+→ See [docs/polymorphic-relations.md](docs/polymorphic-relations.md) for schema design advice, trade-offs, and integer discriminator patterns.
 
 ---
 
@@ -556,7 +560,7 @@ $session->reset();     // clear log
 # Unit tests (no DB needed)
 composer test -- --testsuite unit
 
-# Integration tests (requires MariaDB)
+# Integration tests (requires MariaDB + PostgreSQL)
 docker compose up -d
 composer test -- --testsuite integration
 
@@ -567,11 +571,19 @@ composer test
 Environment variables for integration tests (defaults shown):
 
 ```
+# MySQL / MariaDB
 DB_HOST=127.0.0.1
 DB_PORT=3306
 DB_NAME=attrecord_test
 DB_USER=root
 DB_PASS=root
+
+# PostgreSQL (tests skipped if unavailable)
+PGSQL_HOST=127.0.0.1
+PGSQL_PORT=5432
+PGSQL_DB=attrecord_test
+PGSQL_USER=postgres
+PGSQL_PASS=postgres
 ```
 
 ---

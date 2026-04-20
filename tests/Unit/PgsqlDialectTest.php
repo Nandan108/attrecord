@@ -246,6 +246,40 @@ final class PgsqlDialectTest extends TestCase
     }
 
     // -----------------------------------------------------------------
+    // escapeLikeWildcards / likeEscapeSuffix
+    // -----------------------------------------------------------------
+
+    public function testEscapeLikeWildcardsPercent(): void
+    {
+        $this->assertSame('100\%', $this->dialect->escapeLikeWildcards('100%'));
+    }
+
+    public function testEscapeLikeWildcardsUnderscore(): void
+    {
+        $this->assertSame('file\_name', $this->dialect->escapeLikeWildcards('file_name'));
+    }
+
+    public function testEscapeLikeWildcardsBackslash(): void
+    {
+        $this->assertSame('C:\\\\path', $this->dialect->escapeLikeWildcards('C:\\path'));
+    }
+
+    public function testEscapeLikeWildcardsMixed(): void
+    {
+        $this->assertSame('50\% \_off\\\\ sale', $this->dialect->escapeLikeWildcards('50% _off\\ sale'));
+    }
+
+    public function testEscapeLikeWildcardsPlainStringUnchanged(): void
+    {
+        $this->assertSame('hello world', $this->dialect->escapeLikeWildcards('hello world'));
+    }
+
+    public function testLikeEscapeSuffixIsEscapeClause(): void
+    {
+        $this->assertSame(" ESCAPE '\\'", $this->dialect->likeEscapeSuffix());
+    }
+
+    // -----------------------------------------------------------------
 
     private function col(ColumnType $type, bool $nullable = false): ColumnDefinition
     {

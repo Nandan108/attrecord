@@ -6,6 +6,7 @@ build/
 .vscode/
 .env
 .envrc
+.nvmrc
 .phpdoc/
 .codex
 
@@ -16,4 +17,6 @@ build/
 *.orig
 *.cache
 *.local*
+
+repomix-output.xml
 

@@ -73,6 +73,18 @@ final class MysqlDialect implements SqlDialect
         return '';
     }
 
+    #[\Override]
+    public function escapeLikeWildcards(string $literal): string
+    {
+        return \str_replace(['\\', '%', '_'], ['\\\\', '\%', '\_'], $literal);
+    }
+
+    #[\Override]
+    public function likeEscapeSuffix(): string
+    {
+        return '';
+    }
+
     /**
      * @param list<string>       $columnNames
      * @param list<list<string>> $rows

@@ -78,6 +78,18 @@ final class PgsqlDialect implements SqlDialect
         return "RETURNING {$quotedPkColumn}";
     }
 
+    #[\Override]
+    public function escapeLikeWildcards(string $literal): string
+    {
+        return \str_replace(['\\', '%', '_'], ['\\\\', '\%', '\_'], $literal);
+    }
+
+    #[\Override]
+    public function likeEscapeSuffix(): string
+    {
+        return " ESCAPE '\\'";
+    }
+
     /**
      * @param list<string>       $columnNames
      * @param list<list<string>> $rows

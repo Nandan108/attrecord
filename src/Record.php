@@ -165,21 +165,27 @@ abstract class Record
      *
      * @api
      *
-     * @param string                        $where        Optional WHERE clause (no "WHERE" keyword).
-     *                                                    Accepts ? and :named placeholders.
-     * @param array<array-key, scalar|null> $params
+     * @param string|WhereClause            $where        Optional WHERE clause (no "WHERE" keyword).
+     *                                                    Accepts a raw SQL string (with ? or :named
+     *                                                    placeholders) or a WhereClause builder instance.
+     * @param array<array-key, scalar|null> $params       ignored when $where is a WhereClause
      * @param string                        $orderByLimit optional ORDER BY / LIMIT / OFFSET clause
      * @param bool                          $forUpdate    issue SELECT … FOR UPDATE
      *
      * @return RecordSet<static> a RecordSet of instances of the called class (never empty, even if no matches)
      */
     public static function find(
-        string $where = '',
+        string | WhereClause $where = '',
         array $params = [],
         string $orderByLimit = '',
         bool $forUpdate = false,
         ?Transaction $tx = null,
     ): RecordSet {
+        if ($where instanceof WhereClause) {
+            $params = $where->params();
+            $where = $where->render(static::connection()->dialect);
+        }
+
         ['sql' => $normSql, 'params' => $normParams] = NamedPlaceholderSql::positional(
             $where,
             $params,
@@ -225,6 +231,66 @@ abstract class Record
     public static function findOne(string $where, array $params = []): ?static
     {
         return static::find($where, $params)->first();
+    }
+
+    /**
+     * Convenience finder: single-column equality/comparison condition.
+     *
+     * Column name is quoted automatically using the class's configured dialect.
+     *
+     * @api
+     *
+     * @param scalar|null $value
+     *
+     * @return RecordSet<static>
+     */
+    public static function where(string $column, mixed $value, string $op = '='): RecordSet
+    {
+        return static::find(WhereClause::where($column, $value, $op));
+    }
+
+    /**
+     * Convenience finder: IN-list condition — single or multi-column.
+     *
+     * Column names are quoted automatically.
+     *
+     * Single column:   whereIn('status', ['pending', 'confirmed'])
+     * Multiple columns: whereIn(['status', 'type'], [['pending', 'order'], ['draft', 'quote']])
+     *
+     * @api
+     *
+     * @param string|list<string>                       $column single column name, or list of column names
+     * @param list<scalar|null>|list<list<scalar|null>> $values flat list for single-column; list of rows for multi-column
+     *
+     * @return RecordSet<static>
+     */
+    public static function whereIn(string | array $column, array $values): RecordSet
+    {
+        if (\is_array($column)) {
+            /** @var list<list<scalar|null>> $values */
+            return static::whereInTuples($column, $values);
+        }
+
+        /** @var list<scalar|null> $values */
+        return static::find(WhereClause::whereIn($column, $values));
+    }
+
+    /**
+     * Convenience finder: multi-column IN condition using row-value constructors.
+     *
+     * Column names are quoted automatically. Useful for composite index seeks.
+     * Supported by MySQL/MariaDB and PostgreSQL; not by SQLite.
+     *
+     * @api
+     *
+     * @param list<string>            $columns
+     * @param list<list<scalar|null>> $rows
+     *
+     * @return RecordSet<static>
+     */
+    public static function whereInTuples(array $columns, array $rows): RecordSet
+    {
+        return static::find(WhereClause::whereInTuples($columns, $rows));
     }
 
     /**

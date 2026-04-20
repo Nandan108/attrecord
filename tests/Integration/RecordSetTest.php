@@ -80,10 +80,14 @@ final class RecordSetTest extends IntegrationTestCase
         $u3->name = 'Charlie';
 
         $set = new RecordSet([$u1, $u2, $u3]);
-        $saved = $set->saveAll();
+        $result = $set->saveAll();
 
-        $this->assertTrue($saved);
+        $this->assertNotNull($result);
+        $this->assertSame(3, $result->inserted);
+        $this->assertSame(0, $result->updated);
         $this->assertSame(3, UserRecord::countWhere('`id` > 0'));
+        $this->assertCount(3, $result->insertedIds);
+        $this->assertSame([1, 2, 3], $result->insertedIds);
     }
 
     public function testSaveAllMarksRecordsClean(): void
@@ -100,12 +104,12 @@ final class RecordSetTest extends IntegrationTestCase
         $this->assertFalse($u2->isDirty());
     }
 
-    public function testSaveAllReturnsFalseWhenAllClean(): void
+    public function testSaveAllReturnsNullWhenAllClean(): void
     {
         $u = $this->makeUser('Alice');
         $set = new RecordSet([$u]);
 
-        $this->assertFalse($set->saveAll());
+        $this->assertNull($set->saveAll());
     }
 
     public function testSaveAllSkipsCleanRecords(): void
@@ -122,10 +126,10 @@ final class RecordSetTest extends IntegrationTestCase
         $this->assertSame(2, UserRecord::countWhere('`id` > 0'));
     }
 
-    public function testSaveAllEmptySetReturnsFalse(): void
+    public function testSaveAllEmptySetReturnsNull(): void
     {
         $set = new RecordSet([]);
-        $this->assertFalse($set->saveAll());
+        $this->assertNull($set->saveAll());
     }
 
     // -----------------------------------------------------------------
