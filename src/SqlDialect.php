@@ -26,6 +26,17 @@ interface SqlDialect
     public function quoteIdentifier(string $name): string;
 
     /**
+     * SQL suffix appended to a single-record INSERT to retrieve the generated PK.
+     *
+     * Return an empty string for MySQL/MariaDB where lastInsertId() is reliable.
+     * Return "RETURNING {quotedPk}" for PostgreSQL (PDO's lastInsertId() requires an
+     * explicit sequence name in PG and is therefore unreliable without it).
+     *
+     * @param string $quotedPkColumn Already-quoted PK column name (via quoteIdentifier())
+     */
+    public function insertReturningSuffix(string $quotedPkColumn): string;
+
+    /**
      * Build a plain bulk INSERT for new records (no known PK).
      *
      * @param string             $tableName   Unquoted table name

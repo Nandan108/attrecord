@@ -79,6 +79,12 @@ abstract class Record
             );
     }
 
+    /** Shorthand: quote an identifier using the current class's connection dialect. */
+    protected static function qi(string $identifier): string
+    {
+        return static::connection()->dialect->quoteIdentifier($identifier);
+    }
+
     // -----------------------------------------------------------------
     // Schema access
     // -----------------------------------------------------------------
@@ -106,7 +112,7 @@ abstract class Record
         ?Transaction $tx = null,
     ): ?static {
         $schema = static::schema();
-        $sql = self::buildSelectSql($schema->tableName, $schema->primaryKey, '`'.$schema->primaryKey.'` = ?', $forUpdate);
+        $sql = self::buildSelectSql($schema->tableName, $schema->primaryKey, $forUpdate);
         $row = static::connection()->session->fetchOne($sql, [$id]);
 
         if (null === $row) {
@@ -182,12 +188,13 @@ abstract class Record
         $schema = static::schema();
         $whereClause = '' !== $normSql ? "WHERE {$normSql}" : '';
 
+        $qt = static::qi($schema->tableName);
         if ($forUpdate) {
             // Deadlock prevention: always lock in ascending PK order
-            $orderPart = "ORDER BY `{$schema->primaryKey}` ASC";
-            $sql = "SELECT * FROM `{$schema->tableName}` {$whereClause} {$orderPart} FOR UPDATE";
+            $qpk = static::qi($schema->primaryKey);
+            $sql = "SELECT * FROM {$qt} {$whereClause} ORDER BY {$qpk} ASC FOR UPDATE";
         } else {
-            $sql = "SELECT * FROM `{$schema->tableName}` {$whereClause} {$orderByLimit}";
+            $sql = "SELECT * FROM {$qt} {$whereClause} {$orderByLimit}";
         }
 
         $rows = static::connection()->session->fetchAll($sql, $normParams);
@@ -229,7 +236,7 @@ abstract class Record
     {
         ['sql' => $normSql, 'params' => $normParams] = NamedPlaceholderSql::positional($where, $params);
         $schema = static::schema();
-        $sql = "SELECT COUNT(*) FROM `{$schema->tableName}` WHERE {$normSql}";
+        $sql = 'SELECT COUNT(*) FROM '.static::qi($schema->tableName)." WHERE {$normSql}";
 
         return (int) static::connection()->session->fetchScalar($sql, $normParams);
     }
@@ -245,7 +252,7 @@ abstract class Record
     {
         ['sql' => $normSql, 'params' => $normParams] = NamedPlaceholderSql::positional($where, $params);
         $schema = static::schema();
-        $sql = "DELETE FROM `{$schema->tableName}` WHERE {$normSql}";
+        $sql = 'DELETE FROM '.static::qi($schema->tableName)." WHERE {$normSql}";
 
         return static::connection()->session->exec($sql, $normParams);
     }
@@ -270,8 +277,11 @@ abstract class Record
     public function save(bool $force = false): bool
     {
         $schema = static::schema();
-        $session = static::connection()->session;
+        $conn = static::connection();
+        $dialect = $conn->dialect;
+        $session = $conn->session;
 
+        $colNames = [];
         $setParts = [];
         $params = [];
 
@@ -290,31 +300,46 @@ abstract class Record
                 }
             }
 
-            $setParts[] = "`{$name}` = ?";
+            $qcol = $dialect->quoteIdentifier($name);
+            $colNames[] = $qcol;
+            $setParts[] = "{$qcol} = ?";
             $params[] = ColumnSerializer::toParam($value, $col);
         }
 
-        if (empty($setParts)) {
+        if (empty($colNames)) {
             return false;
         }
 
-        $table = $schema->tableName;
+        $qt = $dialect->quoteIdentifier($schema->tableName);
         $pk = $schema->primaryKey;
+        $qpk = $dialect->quoteIdentifier($pk);
 
         try {
             if ($this->_isNew) {
-                $sql = "INSERT INTO `{$table}` SET ".implode(', ', $setParts);
-                /** @psalm-suppress MixedArgumentTypeCoercion */
-                $session->exec($sql, $params);
-                $this->$pk = $session->lastInsertId();
+                $cols = implode(', ', $colNames);
+                $placeholders = implode(', ', array_fill(0, count($colNames), '?'));
+                $insertSql = "INSERT INTO {$qt} ({$cols}) VALUES ({$placeholders})";
+                $suffix = $dialect->insertReturningSuffix($qpk);
+                if ('' !== $suffix) {
+                    /** @psalm-suppress MixedArgumentTypeCoercion */
+                    $row = $session->fetchOne("{$insertSql} {$suffix}", $params);
+                    $this->$pk = $row[$pk]
+                        ?? throw new RecordSaveException('INSERT did not return a generated key.');
+                } else {
+                    /** @psalm-suppress MixedArgumentTypeCoercion */
+                    $session->exec($insertSql, $params);
+                    $this->$pk = $session->lastInsertId();
+                }
                 $this->_isNew = false;
             } else {
                 /** @psalm-suppress MixedAssignment */
                 $params[] = $this->$pk;
-                $sql = "UPDATE `{$table}` SET ".implode(', ', $setParts)." WHERE `{$pk}` = ?";
+                $sql = "UPDATE {$qt} SET ".implode(', ', $setParts)." WHERE {$qpk} = ?";
                 /** @psalm-suppress MixedArgumentTypeCoercion */
                 $session->exec($sql, $params);
             }
+        } catch (RecordSaveException $e) {
+            throw $e;
         } catch (\Throwable $e) {
             throw new RecordSaveException($e->getMessage(), $e);
         }
@@ -343,9 +368,11 @@ abstract class Record
         }
 
         try {
+            $conn = static::connection();
             /** @psalm-suppress MixedArgumentTypeCoercion */
-            static::connection()->session->exec(
-                "DELETE FROM `{$schema->tableName}` WHERE `{$pk}` = ?",
+            $conn->session->exec(
+                'DELETE FROM '.$conn->dialect->quoteIdentifier($schema->tableName)
+                    .' WHERE '.$conn->dialect->quoteIdentifier($pk).' = ?',
                 [$pkVal],
             );
         } catch (\Throwable $e) {
@@ -370,7 +397,7 @@ abstract class Record
         /** @psalm-suppress MixedAssignment */
         $pkVal = $this->$pk;
 
-        $sql = self::buildSelectSql($schema->tableName, $pk, "`{$pk}` = ?", false);
+        $sql = self::buildSelectSql($schema->tableName, $pk, false);
         /** @psalm-suppress MixedArgumentTypeCoercion */
         $row = static::connection()->session->fetchOne($sql, [$pkVal]);
 
@@ -548,13 +575,15 @@ abstract class Record
     private static function buildSelectSql(
         string $table,
         string $pk,
-        string $where,
         bool $forUpdate,
     ): string {
-        $orderPart = $forUpdate ? "ORDER BY `{$pk}` ASC " : '';
+        $dialect = static::connection()->dialect;
+        $qt = $dialect->quoteIdentifier($table);
+        $qpk = $dialect->quoteIdentifier($pk);
+        $orderPart = $forUpdate ? "ORDER BY {$qpk} ASC " : '';
         $forUpdatePart = $forUpdate ? 'FOR UPDATE' : '';
 
-        return "SELECT * FROM `{$table}` WHERE {$where} {$orderPart}{$forUpdatePart}";
+        return "SELECT * FROM {$qt} WHERE {$qpk} = ? {$orderPart}{$forUpdatePart}";
     }
 
     private function refreshSnapshot(TableSchema $schema): void

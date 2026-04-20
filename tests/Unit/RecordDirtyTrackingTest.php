@@ -73,8 +73,9 @@ final class RecordDirtyTrackingTest extends TestCase
         $sql = $this->session->lastSql();
         $this->assertNotNull($sql);
         $this->assertStringContainsString('INSERT INTO `attrecord_users`', $sql);
-        $this->assertStringContainsString('`name` = ?', $sql);
-        $this->assertStringContainsString('`email` = ?', $sql);
+        $this->assertStringContainsString('`name`', $sql);
+        $this->assertStringContainsString('`email`', $sql);
+        $this->assertStringContainsString('VALUES', $sql);
         $this->assertContains('Alice', $this->session->lastParams() ?? []);
         $this->assertContains('alice@example.com', $this->session->lastParams() ?? []);
     }

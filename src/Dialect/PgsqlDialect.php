@@ -9,19 +9,23 @@ use Nandan108\Attrecord\SqlDialect;
 use Nandan108\Attrecord\UpsertSql;
 
 /**
- * SQL dialect strategy for MySQL / MariaDB.
+ * SQL dialect strategy for PostgreSQL.
  *
- * Uses backtick identifier quoting, X'hex' binary literals, and the deadlock-safe
- * INSERT IGNORE + SELECT FOR UPDATE + CASE UPDATE bulk-upsert pattern.
+ * Uses double-quote identifier quoting, decode() for binary literals, TRUE/FALSE
+ * boolean literals, and INSERT … ON CONFLICT DO NOTHING + SELECT FOR UPDATE +
+ * CASE UPDATE for the deadlock-safe bulk-upsert pattern.
+ *
+ * New-record INSERTs use RETURNING to retrieve the generated PK, since PDO's
+ * lastInsertId() is unreliable without an explicit sequence name in PostgreSQL.
  *
  * @api
  */
-final class MysqlDialect implements SqlDialect
+final class PgsqlDialect implements SqlDialect
 {
     #[\Override]
     public function quoteIdentifier(string $name): string
     {
-        return '`'.\str_replace('`', '``', $name).'`';
+        return '"'.\str_replace('"', '""', $name).'"';
     }
 
     #[\Override]
@@ -32,7 +36,7 @@ final class MysqlDialect implements SqlDialect
         }
 
         if ($col->isBool) {
-            return 1 === (int) (bool) $value ? '1' : '0';
+            return $value ? 'TRUE' : 'FALSE';
         }
 
         if ($col->isInteger) {
@@ -44,7 +48,8 @@ final class MysqlDialect implements SqlDialect
         }
 
         if ($col->isBinary) {
-            return "X'".\bin2hex((string) $value)."'";
+            // decode() is unambiguous regardless of bytea_output or standard_conforming_strings.
+            return "decode('".\bin2hex((string) $value)."', 'hex')";
         }
 
         if ($col->isDateTime) {
@@ -70,7 +75,7 @@ final class MysqlDialect implements SqlDialect
     #[\Override]
     public function insertReturningSuffix(string $quotedPkColumn): string
     {
-        return '';
+        return "RETURNING {$quotedPkColumn}";
     }
 
     /**
@@ -115,13 +120,14 @@ final class MysqlDialect implements SqlDialect
         $pkLiterals = \array_map(fn (array $row) => $row[$pkIndex], $rows);
         $inList = \implode(', ', $pkLiterals);
 
-        // Step 1: INSERT IGNORE — inserts new rows, silently skips duplicates
+        // Step 1: INSERT … ON CONFLICT DO NOTHING (PG equivalent of INSERT IGNORE)
         $valueSets = \array_map(
             fn (array $row) => '('.\implode(', ', $row).')',
             $rows,
         );
-        $create = "INSERT IGNORE INTO {$quotedTable} ({$quotedCols}) VALUES\n    "
-            .\implode(",\n    ", $valueSets);
+        $create = "INSERT INTO {$quotedTable} ({$quotedCols}) VALUES\n    "
+            .\implode(",\n    ", $valueSets)
+            ."\nON CONFLICT DO NOTHING";
 
         // Step 2: SELECT pk FOR UPDATE in ascending order — deterministic lock acquisition
         $lock = "SELECT {$quotedPk} FROM {$quotedTable}"
@@ -149,15 +155,11 @@ final class MysqlDialect implements SqlDialect
     }
 
     /**
-     * Pure-PHP MySQL string escaping (no connection required).
-     * Safe for all string values; binary data uses X'hex' via toLiteral() instead.
+     * Standard SQL string escaping with standard_conforming_strings=on (PG default since 9.1).
+     * Only single quotes need escaping; backslashes are literal characters.
      */
     private function escapeString(string $value): string
     {
-        return \str_replace(
-            ['\\',  "\0",  "\n",  "\r",  "'",   '"',   "\x1a"],
-            ['\\\\', '\\0', '\\n', '\\r', "\\'", '\\"', '\\Z'],
-            $value,
-        );
+        return \str_replace("'", "''", $value);
     }
 }

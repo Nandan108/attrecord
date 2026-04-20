@@ -27,7 +27,8 @@ final class ColumnSerializer
     {
         return match (true) {
             null === $raw    => null,
-            $col->isBool     => (bool) (int) $raw,
+            // MySQL returns 1/0 (int); PostgreSQL returns 't'/'f' (string) for BOOLEAN columns.
+            $col->isBool     => \in_array($raw, [true, 1, '1', 't', 'true'], true),
             $col->isInteger  => (int) $raw,
             $col->isFloat    => (float) $raw,
             $col->isDateTime => self::tryParseDateTime((string) $raw, 'Y-m-d H:i:s'),

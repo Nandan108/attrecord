@@ -329,10 +329,12 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         }
 
         $placeholders = implode(', ', array_fill(0, \count($ids), '?'));
-        $sql = "DELETE FROM `{$schema->tableName}` WHERE `{$pk}` IN ({$placeholders})";
+        $conn = $first::connection();
+        $sql = 'DELETE FROM '.$conn->dialect->quoteIdentifier($schema->tableName)
+            .' WHERE '.$conn->dialect->quoteIdentifier($pk)." IN ({$placeholders})";
 
         /** @psalm-suppress MixedArgumentTypeCoercion */
-        return $first::connection()->session->exec($sql, $ids);
+        return $conn->session->exec($sql, $ids);
     }
 
     // -----------------------------------------------------------------
@@ -379,8 +381,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                 $fk = (string) $relDef->foreignKey;
                 $localValues = array_values(array_unique($this->pluck($localKey)));
                 $placeholders = implode(', ', array_fill(0, \count($localValues), '?'));
+                $qfk = $targetClass::connection()->dialect->quoteIdentifier($fk);
                 /** @psalm-suppress MixedArgumentTypeCoercion */
-                $related = $targetClass::find("`{$fk}` IN ({$placeholders})", $localValues);
+                $related = $targetClass::find("{$qfk} IN ({$placeholders})", $localValues);
 
                 $grouped = $related->recordsGroupedByKey($fk);
                 foreach ($this->records as $record) {
@@ -399,8 +402,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                 $targetSchema = TableSchema::fromClass($targetClass);
                 $targetPk = $targetSchema->primaryKey;
                 $placeholders = implode(', ', array_fill(0, \count($fkValues), '?'));
+                $qtpk = $targetClass::connection()->dialect->quoteIdentifier($targetPk);
                 /** @psalm-suppress MixedArgumentTypeCoercion */
-                $related = $targetClass::find("`{$targetPk}` IN ({$placeholders})", $fkValues);
+                $related = $targetClass::find("{$qtpk} IN ({$placeholders})", $fkValues);
 
                 $byPk = $related->recordsByKey($targetPk);
                 foreach ($this->records as $record) {
@@ -474,9 +478,12 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         }
 
         $placeholders = implode(', ', array_fill(0, \count($localValues), '?'));
+        $dialect = $targetClass::connection()->dialect;
+        $qMorphType = $dialect->quoteIdentifier($morphTypeCol);
+        $qMorphKey = $dialect->quoteIdentifier($morphKeyCol);
         /** @psalm-suppress MixedArgumentTypeCoercion */
         $related = $targetClass::find(
-            "`{$morphTypeCol}` = ? AND `{$morphKeyCol}` IN ({$placeholders})",
+            "{$qMorphType} = ? AND {$qMorphKey} IN ({$placeholders})",
             array_merge([$morphValue], $localValues),
         );
 
@@ -538,8 +545,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
             $targetPk = TableSchema::fromClass($morphTargetClass)->primaryKey;
             $placeholders = implode(', ', array_fill(0, \count($ids), '?'));
+            $qtpk = $morphTargetClass::connection()->dialect->quoteIdentifier($targetPk);
             /** @psalm-suppress MixedArgumentTypeCoercion */
-            $related = $morphTargetClass::find("`{$targetPk}` IN ({$placeholders})", $ids);
+            $related = $morphTargetClass::find("{$qtpk} IN ({$placeholders})", $ids);
             $byPk = $related->recordsByKey($targetPk);
 
             foreach ($groupRecords as $record) {
