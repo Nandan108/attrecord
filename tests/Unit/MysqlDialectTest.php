@@ -107,41 +107,127 @@ final class MysqlDialectTest extends TestCase
     }
 
     // -----------------------------------------------------------------
-    // buildBulkUpsert
+    // buildBulkInsert
     // -----------------------------------------------------------------
 
-    public function testBuildBulkUpsertSingleRow(): void
+    public function testBuildBulkInsertSingleRow(): void
     {
-        $sql = $this->dialect->buildBulkUpsert(
-            tableName: 'users',
-            columnNames: ['name', 'email'],
-            pkColumnNames: ['id'],
-            rows: [["'Alice'", "'a@example.com'"]],
-            updateColumns: ['name', 'email'],
+        $sql = $this->dialect->buildBulkInsert(
+            tableName: 'products',
+            columnNames: ['name', 'stock'],
+            rows: [["'Widget'", '10']],
         );
 
-        $this->assertStringContainsString('INSERT INTO `users`', $sql);
-        $this->assertStringContainsString('`name`, `email`', $sql);
-        $this->assertStringContainsString("'Alice' AS `name`, 'a@example.com' AS `email`", $sql);
-        $this->assertStringContainsString('ON DUPLICATE KEY UPDATE', $sql);
-        $this->assertStringContainsString('`name` = vals.`name`', $sql);
+        $this->assertStringContainsString('INSERT INTO `products`', $sql);
+        $this->assertStringContainsString('`name`, `stock`', $sql);
+        $this->assertStringContainsString("('Widget', 10)", $sql);
+        $this->assertStringNotContainsString('IGNORE', $sql);
     }
 
-    public function testBuildBulkUpsertMultipleRows(): void
+    public function testBuildBulkInsertMultipleRows(): void
     {
-        $sql = $this->dialect->buildBulkUpsert(
-            tableName: 'users',
-            columnNames: ['name', 'email'],
-            pkColumnNames: ['id'],
+        $sql = $this->dialect->buildBulkInsert(
+            tableName: 'products',
+            columnNames: ['name', 'stock'],
             rows: [
-                ["'Alice'", "'a@example.com'"],
-                ["'Bob'",   "'b@example.com'"],
+                ["'Widget'", '10'],
+                ["'Gadget'", '5'],
             ],
-            updateColumns: ['name', 'email'],
         );
 
-        $this->assertStringContainsString('UNION ALL SELECT', $sql);
-        $this->assertStringContainsString("'Bob', 'b@example.com'", $sql);
+        $this->assertStringContainsString("('Widget', 10)", $sql);
+        $this->assertStringContainsString("('Gadget', 5)", $sql);
+    }
+
+    // -----------------------------------------------------------------
+    // buildUpsertSql — create step
+    // -----------------------------------------------------------------
+
+    public function testBuildUpsertSqlCreateIsInsertIgnore(): void
+    {
+        $upsert = $this->dialect->buildUpsertSql(
+            tableName: 'products',
+            pkColumn: 'id',
+            columnNames: ['id', 'name', 'stock'],
+            rows: [['42', "'Widget'", '10']],
+            updateColumns: ['name', 'stock'],
+        );
+
+        $this->assertStringContainsString('INSERT IGNORE INTO `products`', $upsert->create);
+        $this->assertStringContainsString('`id`, `name`, `stock`', $upsert->create);
+        $this->assertStringContainsString("(42, 'Widget', 10)", $upsert->create);
+    }
+
+    public function testBuildUpsertSqlCreateMultipleRows(): void
+    {
+        $upsert = $this->dialect->buildUpsertSql(
+            tableName: 'products',
+            pkColumn: 'id',
+            columnNames: ['id', 'name'],
+            rows: [['1', "'A'"], ['2', "'B'"]],
+            updateColumns: ['name'],
+        );
+
+        $this->assertStringContainsString("(1, 'A')", $upsert->create);
+        $this->assertStringContainsString("(2, 'B')", $upsert->create);
+    }
+
+    // -----------------------------------------------------------------
+    // buildUpsertSql — lock step
+    // -----------------------------------------------------------------
+
+    public function testBuildUpsertSqlLockSelectsForUpdate(): void
+    {
+        $upsert = $this->dialect->buildUpsertSql(
+            tableName: 'products',
+            pkColumn: 'id',
+            columnNames: ['id', 'name'],
+            rows: [['42', "'Widget'"], ['7', "'Gadget'"]],
+            updateColumns: ['name'],
+        );
+
+        $this->assertStringContainsString('SELECT `id` FROM `products`', $upsert->lock);
+        $this->assertStringContainsString('WHERE `id` IN (42, 7)', $upsert->lock);
+        $this->assertStringContainsString('ORDER BY `id` ASC FOR UPDATE', $upsert->lock);
+    }
+
+    // -----------------------------------------------------------------
+    // buildUpsertSql — update step
+    // -----------------------------------------------------------------
+
+    public function testBuildUpsertSqlUpdateContainsCaseExpression(): void
+    {
+        $upsert = $this->dialect->buildUpsertSql(
+            tableName: 'products',
+            pkColumn: 'id',
+            columnNames: ['id', 'name', 'stock'],
+            rows: [
+                ['42', "'Widget'", '10'],
+                ['7',  "'Gadget'", '5'],
+            ],
+            updateColumns: ['name', 'stock'],
+        );
+
+        $this->assertNotNull($upsert->update);
+        $this->assertStringContainsString('UPDATE `products`', $upsert->update);
+        $this->assertStringContainsString('CASE `id`', $upsert->update);
+        $this->assertStringContainsString("WHEN 42 THEN 'Widget'", $upsert->update);
+        $this->assertStringContainsString('WHEN 7 THEN 5', $upsert->update);
+        $this->assertStringContainsString('WHERE `id` IN (42, 7)', $upsert->update);
+    }
+
+    public function testBuildUpsertSqlNoUpdateColumnsReturnsNullUpdate(): void
+    {
+        $upsert = $this->dialect->buildUpsertSql(
+            tableName: 'lookup',
+            pkColumn: 'id',
+            columnNames: ['id'],
+            rows: [['99']],
+            updateColumns: [],
+        );
+
+        $this->assertNull($upsert->update);
+        $this->assertStringContainsString('INSERT IGNORE', $upsert->create);
     }
 
     // -----------------------------------------------------------------

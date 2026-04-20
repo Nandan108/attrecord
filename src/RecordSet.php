@@ -8,6 +8,8 @@ use Nandan108\Attrecord\Enum\RelationType;
 use Nandan108\Attrecord\Exception\RecordSaveException;
 use Nandan108\Attrecord\Schema\RelationDefinition;
 use Nandan108\Attrecord\Schema\TableSchema;
+use Nandan108\Attrecord\SqlDialect;
+use Nandan108\Attrecord\UpsertSql;
 
 /**
  * A typed, iterable collection of Record instances.
@@ -124,19 +126,18 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     // -----------------------------------------------------------------
 
     /**
-     * Save all dirty records in a single round-trip using the bulk-upsert pattern:
+     * Save all dirty records using a deadlock-safe bulk strategy:
      *
-     *   INSERT INTO t (col1, col2)
-     *   SELECT col1, col2 FROM (
-     *       SELECT val1 AS col1, val2 AS col2
-     *       UNION ALL SELECT val3, val4
-     *   ) vals
-     *   ON DUPLICATE KEY UPDATE col1=vals.col1, col2=vals.col2
+     *  - New records (PK null): plain INSERT INTO … VALUES (…), (…)
+     *  - Keyed records (PK set): 3-step pattern inside a transaction —
+     *      1. INSERT IGNORE  — inserts truly new rows, skips existing
+     *      2. SELECT pk … ORDER BY pk ASC FOR UPDATE  — deterministic lock order
+     *      3. UPDATE … SET col = CASE pk WHEN … END  — applies changes
      *
      * Notes:
      *  - Clean (unchanged) records are skipped automatically.
-     *  - New records (no PK) are included in the INSERT, but their auto-generated PKs are
-     *    NOT assigned back to the PHP objects. Use Record::save() when you need the new PK.
+     *  - New records' auto-generated PKs are NOT assigned back to the PHP objects.
+     *    Use Record::save() when you need the new PK.
      *  - After a successful call, all dirty records are marked clean.
      *
      * @return bool true = SQL executed, false = nothing to save (all records were clean)
@@ -152,11 +153,8 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $first = $this->records[0];
         $schema = $first::schema();
         $conn = $first::connection();
-        $dialect = $conn->dialect;
-        $session = $conn->session;
         $pk = $schema->primaryKey;
 
-        // Filter to dirty records
         $dirty = $force
             ? $this->records
             : array_filter($this->records, fn (Record $r) => $r->isDirty());
@@ -166,55 +164,31 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             return false;
         }
 
-        // Columns to include: exclude autoIncrement; exclude columns that are null
-        // in every dirty record (no data to send for those columns)
-        $candidates = array_keys(array_filter(
-            $schema->columns,
-            fn ($col) => !$col->autoIncrement,
-        ));
+        $plan = $this->buildPlan($dirty, $pk, $conn->dialect, $schema);
 
-        $presentCols = [];
-        foreach ($dirty as $record) {
-            foreach ($candidates as $name) {
-                if (($record->$name ?? null) !== null) {
-                    $presentCols[$name] = true;
-                }
-            }
-        }
-        $colNames = array_values(array_filter($candidates, fn ($n) => isset($presentCols[$n])));
-
-        if (empty($colNames)) {
+        if (null === $plan['insert'] && null === $plan['upsert']) {
             return false;
         }
 
-        // Build one row of literals per dirty record
-        $rows = [];
-        foreach ($dirty as $record) {
-            $rowLiterals = [];
-            foreach ($colNames as $name) {
-                $rowLiterals[] = $dialect->toLiteral($record->$name ?? null, $schema->columns[$name]);
-            }
-            $rows[] = $rowLiterals;
-        }
-
-        // Columns updated on conflict (exclude PK)
-        $updateCols = array_values(array_filter($colNames, fn ($n) => $n !== $pk));
-
-        $sql = $dialect->buildBulkUpsert(
-            tableName: $schema->tableName,
-            columnNames: $colNames,
-            pkColumnNames: [$pk],
-            rows: $rows,
-            updateColumns: $updateCols,
-        );
+        $session = $conn->session;
 
         try {
-            $session->exec($sql);
+            $session->transactional(function () use ($session, $plan): void {
+                if (null !== $plan['insert']) {
+                    $session->exec($plan['insert']);
+                }
+                if (null !== $plan['upsert']) {
+                    $session->exec($plan['upsert']->create);
+                    $session->exec($plan['upsert']->lock);
+                    if (null !== $plan['upsert']->update) {
+                        $session->exec($plan['upsert']->update);
+                    }
+                }
+            });
         } catch (\Throwable $e) {
             throw new RecordSaveException($e->getMessage(), $e);
         }
 
-        // Mark all dirty records as clean
         foreach ($dirty as $record) {
             $record->markClean();
         }
@@ -223,16 +197,112 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     }
 
     /**
-     * Return the SQL that saveAll() would execute, without touching the DB.
-     * Useful for test assertions.
+     * Return the upsert plan that saveAll() would execute for keyed (known-PK) records,
+     * without touching the DB. Returns null if there are no dirty keyed records.
      *
-     * @return string|null null if nothing to save (all records clean)
+     * Useful for test assertions on the generated SQL.
+     * New records (PK null) produce a plain INSERT executed separately by saveAll();
+     * use CapturingDbSession + saveAll() to inspect that statement.
      */
-    public function buildSaveAllSql(): ?string
+    public function buildSaveAllSql(bool $force = false): ?UpsertSql
     {
-        // TODO: extract SQL-building logic from saveAll() into a shared private method
-        // so this can call it without executing. Deferred to a follow-up refactor.
-        throw new \BadMethodCallException('buildSaveAllSql() is not yet implemented.');
+        if (empty($this->records)) {
+            return null;
+        }
+
+        $first = $this->records[0];
+        $schema = $first::schema();
+        $conn = $first::connection();
+        $pk = $schema->primaryKey;
+
+        $dirty = $force
+            ? $this->records
+            : array_filter($this->records, fn (Record $r) => $r->isDirty());
+        $dirty = array_values($dirty);
+
+        if (empty($dirty)) {
+            return null;
+        }
+
+        $plan = $this->buildPlan($dirty, $pk, $conn->dialect, $schema);
+
+        return $plan['upsert'];
+    }
+
+    /**
+     * Separate dirty records by PK presence and build the SQL plan for each group.
+     *
+     * @param list<Record> $dirty
+     * @return array{insert: ?string, upsert: ?UpsertSql}
+     */
+    private function buildPlan(array $dirty, string $pk, SqlDialect $dialect, TableSchema $schema): array
+    {
+        $noKeyRecords = array_values(array_filter($dirty, fn (Record $r) => null === $r->$pk));
+        $keyedRecords = array_values(array_filter($dirty, fn (Record $r) => null !== $r->$pk));
+
+        $insert = null;
+        $upsert = null;
+
+        // Plain INSERT for new (auto-increment PK) records — no upsert semantics needed
+        if (!empty($noKeyRecords)) {
+            $candidates = array_keys(array_filter(
+                $schema->columns,
+                fn ($col) => !$col->autoIncrement,
+            ));
+
+            $presentCols = [];
+            foreach ($noKeyRecords as $record) {
+                foreach ($candidates as $name) {
+                    if (($record->$name ?? null) !== null) {
+                        $presentCols[$name] = true;
+                    }
+                }
+            }
+            $colNames = array_values(array_filter($candidates, fn ($n) => isset($presentCols[$n])));
+
+            if (!empty($colNames)) {
+                $rows = [];
+                foreach ($noKeyRecords as $record) {
+                    $row = [];
+                    foreach ($colNames as $name) {
+                        $row[] = $dialect->toLiteral($record->$name ?? null, $schema->columns[$name]);
+                    }
+                    $rows[] = $row;
+                }
+                $insert = $dialect->buildBulkInsert($schema->tableName, $colNames, $rows);
+            }
+        }
+
+        // Deadlock-safe 3-step upsert for records with a known PK
+        if (!empty($keyedRecords)) {
+            $candidates = array_keys($schema->columns);
+
+            // Always include PK; include other columns present in at least one record
+            $presentCols = [$pk => true];
+            foreach ($keyedRecords as $record) {
+                foreach ($candidates as $name) {
+                    if (($record->$name ?? null) !== null) {
+                        $presentCols[$name] = true;
+                    }
+                }
+            }
+            $colNames = array_values(array_filter($candidates, fn ($n) => isset($presentCols[$n])));
+
+            if (!empty($colNames)) {
+                $rows = [];
+                foreach ($keyedRecords as $record) {
+                    $row = [];
+                    foreach ($colNames as $name) {
+                        $row[] = $dialect->toLiteral($record->$name ?? null, $schema->columns[$name]);
+                    }
+                    $rows[] = $row;
+                }
+                $updateCols = array_values(array_filter($colNames, fn ($n) => $n !== $pk));
+                $upsert = $dialect->buildUpsertSql($schema->tableName, $pk, $colNames, $rows, $updateCols);
+            }
+        }
+
+        return ['insert' => $insert, 'upsert' => $upsert];
     }
 
     /**
