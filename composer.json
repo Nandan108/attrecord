@@ -32,7 +32,8 @@
         "cs-fix": "./vendor/bin/php-cs-fixer fix --allow-risky=yes --diff",
         "psalm": "./vendor/bin/psalm",
         "test": "./vendor/bin/phpunit -c phpunit.xml.dist",
-        "test-cover": "./vendor/bin/phpunit -c phpunit.xml.dist --coverage-text"
+        "test-cover": "./vendor/bin/phpunit -c phpunit.xml.dist --coverage-text",
+        "testAndCover": "./vendor/bin/phpunit --coverage-text --coverage-html coverage"
     },
     "config": {
         "sort-packages": true

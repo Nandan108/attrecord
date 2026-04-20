@@ -21,7 +21,7 @@ final class Column
         public readonly ColumnType $type,
         public readonly bool $nullable = false,
         public readonly bool $autoIncrement = false,
-        public readonly bool $trimOnSet = false,
+        public readonly ?bool $trimOnSave = null,
         public readonly ?int $length = null,
         public readonly ?int $precision = null,
         public readonly ?int $scale = null,

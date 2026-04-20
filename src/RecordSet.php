@@ -6,6 +6,7 @@ namespace Nandan108\Attrecord;
 
 use Nandan108\Attrecord\Enum\RelationType;
 use Nandan108\Attrecord\Exception\RecordSaveException;
+use Nandan108\Attrecord\Schema\RelationDefinition;
 use Nandan108\Attrecord\Schema\TableSchema;
 
 /**
@@ -297,15 +298,15 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                 \sprintf('Unknown relation "%s" on %s.', $relName, $first::class),
             );
 
-        /** @var class-string<Record> $targetClass */
-        $targetClass = $relDef->targetClass;
-        $fk = $relDef->foreignKey;
         $localKey = $relDef->localKey ?? $schema->primaryKey;
 
         switch ($relDef->type) {
             case RelationType::OneToMany:
             case RelationType::OneToOneReversed:
                 // FK is on the related table pointing back here
+                /** @var class-string<Record> $targetClass */
+                $targetClass = $relDef->targetClass;
+                $fk = (string) $relDef->foreignKey;
                 $localValues = array_values(array_unique($this->pluck($localKey)));
                 $placeholders = implode(', ', array_fill(0, \count($localValues), '?'));
                 /** @psalm-suppress MixedArgumentTypeCoercion */
@@ -321,6 +322,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             case RelationType::ManyToOne:
             case RelationType::OneToOne:
                 // FK is on this table pointing to the related table's PK
+                /** @var class-string<Record> $targetClass */
+                $targetClass = $relDef->targetClass;
+                $fk = (string) $relDef->foreignKey;
                 $fkValues = array_values(array_unique(array_filter($this->pluck($fk))));
                 $targetSchema = TableSchema::fromClass($targetClass);
                 $targetPk = $targetSchema->primaryKey;
@@ -333,6 +337,15 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                     /** @psalm-suppress MixedArrayOffset */
                     $record->$relName = $byPk[$record->$fk] ?? null;
                 }
+                break;
+
+            case RelationType::MorphMany:
+            case RelationType::MorphOne:
+                $this->loadMorphParent($relName, $relDef, $localKey);
+                break;
+
+            case RelationType::MorphTo:
+                $this->loadMorphChild($relName, $relDef);
                 break;
         }
 
@@ -356,6 +369,114 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         }
 
         return $this;
+    }
+
+    // -----------------------------------------------------------------
+    // Polymorphic relation loaders
+    // -----------------------------------------------------------------
+
+    /**
+     * Load a MorphMany or MorphOne relation.
+     *
+     * The child table has two columns: a type discriminator (morphType) that holds a
+     * constant value identifying the parent class, and a FK (morphKey) pointing to
+     * the parent's PK. Both conditions are applied in a single IN(…) query.
+     */
+    private function loadMorphParent(
+        string $relName,
+        RelationDefinition $relDef,
+        string $localKey,
+    ): void {
+        /** @var class-string<Record> $targetClass */
+        $targetClass = $relDef->targetClass;
+        $morphTypeCol = (string) $relDef->morphType;
+        $morphKeyCol = (string) $relDef->morphKey;
+        $morphValue = $relDef->morphValue;
+
+        $localValues = array_values(array_unique($this->pluck($localKey)));
+        if (empty($localValues)) {
+            $empty = RelationType::MorphOne === $relDef->type ? null : new self([]);
+            foreach ($this->records as $record) {
+                $record->$relName = $empty;
+            }
+
+            return;
+        }
+
+        $placeholders = implode(', ', array_fill(0, \count($localValues), '?'));
+        /** @psalm-suppress MixedArgumentTypeCoercion */
+        $related = $targetClass::find(
+            "`{$morphTypeCol}` = ? AND `{$morphKeyCol}` IN ({$placeholders})",
+            array_merge([$morphValue], $localValues),
+        );
+
+        if (RelationType::MorphOne === $relDef->type) {
+            $grouped = $related->recordsGroupedByKey($morphKeyCol);
+            foreach ($this->records as $record) {
+                /** @psalm-suppress MixedArrayOffset */
+                $record->$relName = ($grouped[$record->$localKey] ?? null)?->first();
+            }
+        } else {
+            $grouped = $related->recordsGroupedByKey($morphKeyCol);
+            foreach ($this->records as $record) {
+                /** @psalm-suppress MixedArrayOffset */
+                $record->$relName = $grouped[$record->$localKey] ?? new self([]);
+            }
+        }
+    }
+
+    /**
+     * Load a MorphTo relation.
+     *
+     * The local record holds both a type discriminator column (morphType) and a FK column
+     * (morphKey). Records are grouped by their discriminator value; one IN(…) query is
+     * issued per distinct type present in the set.
+     */
+    private function loadMorphChild(string $relName, RelationDefinition $relDef): void
+    {
+        $morphTypeCol = (string) $relDef->morphType;
+        $morphKeyCol = (string) $relDef->morphKey;
+        /** @var array<int|string, class-string<Record>> $morphMap */
+        $morphMap = $relDef->morphMap ?? [];
+
+        // Group local records by their type discriminator value
+        /** @var array<int|string, list<Record>> $groups */
+        $groups = [];
+        foreach ($this->records as $record) {
+            /** @psalm-suppress MixedAssignment */
+            $typeVal = $record->$morphTypeCol;
+            // Records with no type set are skipped; the morphMap lookup below
+            // handles unknown discriminator values gracefully.
+            if (null === $typeVal) {
+                continue;
+            }
+            /** @psalm-suppress MixedArrayOffset */
+            $groups[$typeVal][] = $record;
+        }
+
+        foreach ($groups as $typeVal => $groupRecords) {
+            $morphTargetClass = $morphMap[$typeVal] ?? null;
+            if (null === $morphTargetClass) {
+                continue; // Unknown discriminator — leave property null
+            }
+
+            /** @psalm-suppress MixedReturnStatement, MixedAssignment */
+            $ids = array_values(array_unique(array_map(
+                fn (Record $r): mixed => $r->$morphKeyCol,
+                $groupRecords,
+            )));
+
+            $targetPk = TableSchema::fromClass($morphTargetClass)->primaryKey;
+            $placeholders = implode(', ', array_fill(0, \count($ids), '?'));
+            /** @psalm-suppress MixedArgumentTypeCoercion */
+            $related = $morphTargetClass::find("`{$targetPk}` IN ({$placeholders})", $ids);
+            $byPk = $related->recordsByKey($targetPk);
+
+            foreach ($groupRecords as $record) {
+                /** @psalm-suppress MixedArrayOffset */
+                $record->$relName = $byPk[$record->$morphKeyCol] ?? null;
+            }
+        }
     }
 
     // -----------------------------------------------------------------

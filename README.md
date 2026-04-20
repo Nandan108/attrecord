@@ -200,6 +200,7 @@ $deleted = $set->deleteAll();  // DELETE FROM … WHERE id IN (…)
 ```
 
 **Notes on `saveAll()`:**
+
 - Clean records are skipped automatically.
 - For tables with auto-increment PKs, new records are inserted but their PKs are **not** assigned back to the PHP objects. Use `Record::save()` when you need the new PK.
 - For tables with natural (non-auto-increment) PKs, `saveAll()` performs a true upsert.
@@ -224,6 +225,142 @@ foreach ($orders as $order) {
 // Dot-notation chains
 $orders->with('lines.product');  // loads lines, then products for those lines
 ```
+
+---
+
+## Polymorphic relations
+
+Polymorphic relations let one table reference rows from multiple other tables through a
+type-discriminator column and a shared FK column.
+
+```
+tags
+  id            bigint PK
+  tagable_type  varchar   ← discriminator: 'order' | 'product' | ...
+  tagable_id    bigint    ← FK to the matching table's PK
+  name          varchar
+```
+
+### Declaring the schema
+
+```php
+// Parent side — Order has many Tags
+#[Table(name: 'orders')]
+class Order extends Record
+{
+    // …
+
+    /** @var RecordSet<Tag>|null */
+    #[Relation(RelationType::MorphMany, class: Tag::class,
+        morphType: 'tagable_type', morphKey: 'tagable_id',
+        morphValue: 'order')]
+    public ?RecordSet $tags = null;
+
+    // MorphOne: same as MorphMany but returns a single record or null
+    #[Relation(RelationType::MorphOne, class: Tag::class,
+        morphType: 'tagable_type', morphKey: 'tagable_id',
+        morphValue: 'order')]
+    public ?Tag $primaryTag = null;
+}
+
+// Child side — Tag belongs to a polymorphic parent
+#[Table(name: 'tags')]
+class Tag extends Record
+{
+    #[Column(ColumnType::VarChar, length: 50)]
+    public string $tagable_type = '';
+
+    #[Column(ColumnType::BigIntUnsigned)]
+    public int $tagable_id = 0;
+
+    #[Relation(RelationType::MorphTo,
+        morphType: 'tagable_type',
+        morphKey: 'tagable_id',
+        morphMap: ['order' => Order::class, 'product' => Product::class])]
+    public Order|Product|null $tagable = null;
+}
+```
+
+`morphValue` can be a string or an integer — use integers when the discriminator column
+is an FK into a type-lookup table (see schema design advice below).
+
+### Eager loading
+
+```php
+// Load orders with all their tags — one extra query
+$orders = Order::find('`status` = ?', ['pending'])->with('tags');
+
+foreach ($orders as $order) {
+    foreach ($order->tags as $tag) {
+        echo $tag->name;
+    }
+}
+
+// Load tags with their polymorphic parent — one query per distinct type present
+$tags = Tag::find()->with('tagable');
+
+foreach ($tags as $tag) {
+    // $tag->tagable is an Order or Product depending on tagable_type
+}
+
+// Chains work too: orders → tags → tagable (round-trip)
+$orders->with('tags.tagable');
+```
+
+`with('tagable')` issues one `IN(…)` query per distinct type value present in the result
+set — not one query per row.
+
+Tags whose `tagable_type` has no entry in `morphMap` are silently skipped (property stays
+`null`). This makes schema evolution safe: new type values added to the DB before the PHP
+code is updated will not cause errors.
+
+### Schema design advice
+
+Polymorphic relations are the right tool for **cross-cutting concerns** that genuinely
+apply to many entity types: audit logs, tags, comments, attachments, notifications. A
+single `movements` or `audit_entries` table referencing heterogeneous sources is cleaner
+than a combinatorial explosion of nullable FKs or duplicated tables.
+
+They come with trade-offs that are worth knowing before committing:
+
+| Concern                                 | Impact                                                                                                                                            |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No referential integrity                | The database cannot enforce a FK on `(tagable_type, tagable_id)`. Orphaned rows accumulate silently unless you clean them up in application code. |
+| String discriminators couple DB to code | Renaming a class or changing a type string silently breaks all existing rows. Prefer stable short keys (`'order'`, `'product'`) over class names. |
+| Index overhead                          | A composite index on `(tagable_type, tagable_id)` is required for acceptable query performance; it will not be created automatically.             |
+
+**Prefer integer discriminators for high-volume tables.** Instead of storing `'order'`
+as a varchar, store the FK of a `movement_types` lookup table. This is faster to index,
+smaller on disk, and decouples the DB entirely from PHP class names:
+
+```
+movement_types
+  id    tinyint PK
+  name  varchar   ← 'order', 'transfer', 'adjustment', …
+
+movements
+  id                 bigint PK
+  movement_type_id   tinyint FK → movement_types.id   ← integer discriminator
+  movement_ref_id    bigint                            ← polymorphic FK
+  …
+```
+
+```php
+#[Relation(RelationType::MorphTo,
+    morphType: 'movement_type_id',
+    morphKey:  'movement_ref_id',
+    morphMap:  [1 => PurchaseOrder::class, 2 => Transfer::class, 3 => Adjustment::class])]
+public PurchaseOrder|Transfer|Adjustment|null $source = null;
+```
+
+**When not to use polymorphic relations:**
+
+- You only have two or three parent types and the table is small — separate nullable FKs
+  with `CHECK (exactly one is non-null)` give you referential integrity for free.
+- You want JOINs in raw SQL — the polymorphic pattern makes ad-hoc queries awkward because
+  the join target varies per row.
+- The child table exists primarily to serve one parent type — a dedicated table with a real
+  FK is simpler and more maintainable.
 
 ---
 
@@ -348,13 +485,13 @@ $session->reset();     // clear log
 
 ## Column types
 
-| PHP type             | `ColumnType` cases                                                   |
-|----------------------|----------------------------------------------------------------------|
-| `int`                | `TinyInt`, `SmallInt`, `MediumInt`, `Int`, `BigInt`, `*Unsigned`, `Year`, `Bit` |
-| `bool`               | `Bool`                                                               |
-| `float`              | `Float`, `Double`, `Decimal`                                         |
+| PHP type             | `ColumnType` cases                                                                                            |
+| -------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `int`                | `TinyInt`, `SmallInt`, `MediumInt`, `Int`, `BigInt`, `*Unsigned`, `Year`, `Bit`                               |
+| `bool`               | `Bool`                                                                                                        |
+| `float`              | `Float`, `Double`, `Decimal`                                                                                  |
 | `string`             | `Char`, `VarChar`, `TinyText`, `Text`, `MediumText`, `LongText`, `Json`, `Enum`, `Set`, `Binary`, `VarBinary` |
-| `\DateTimeImmutable` | `Date`, `DateTime`, `Timestamp`                                      |
+| `\DateTimeImmutable` | `Date`, `DateTime`, `Timestamp`                                                                               |
 
 **Column options:**
 
@@ -363,7 +500,7 @@ $session->reset();     // clear log
     type:          ColumnType::VarChar,
     nullable:      true,    // allows NULL; PHP property becomes ?string
     autoIncrement: true,    // skipped in INSERT/UPDATE; PK assigned after INSERT
-    trimOnSet:     true,    // trim() on hydration
+    trimOnSave:    true,    // trim whitespace on save; also suppresses dirty-detection for whitespace-only changes
     length:        255,     // informational; not enforced by this library
     precision:     10,      // for Decimal
     scale:         2,       // for Decimal
@@ -374,19 +511,40 @@ $session->reset();     // clear log
 
 ## Relation types
 
-| `RelationType`      | FK location                              | PHP property type |
-|---------------------|------------------------------------------|-------------------|
-| `OneToMany`         | Related table has FK pointing here       | `?RecordSet<T>`   |
-| `ManyToOne`         | This table has FK pointing to related PK | `?T`              |
-| `OneToOne`          | This table has FK                        | `?T`              |
-| `OneToOneReversed`  | Related table has FK                     | `?T`              |
+| `RelationType`     | FK location                              | PHP property type | Required parameters                            |
+| ------------------ | ---------------------------------------- | ----------------- | ---------------------------------------------- |
+| `OneToMany`        | Related table has FK pointing here       | `?RecordSet<T>`   | `class`, `foreignKey`                          |
+| `ManyToOne`        | This table has FK pointing to related PK | `?T`              | `class`, `foreignKey`                          |
+| `OneToOne`         | This table has FK                        | `?T`              | `class`, `foreignKey`                          |
+| `OneToOneReversed` | Related table has FK                     | `?T`              | `class`, `foreignKey`                          |
+| `MorphMany`        | Related table has type+FK pointing here  | `?RecordSet<T>`   | `class`, `morphType`, `morphKey`, `morphValue` |
+| `MorphOne`         | Related table has type+FK pointing here  | `?T`              | `class`, `morphType`, `morphKey`, `morphValue` |
+| `MorphTo`          | This table has type+FK columns           | `?T` (union)      | `morphType`, `morphKey`, `morphMap`            |
 
 ```php
+// Standard relation
 #[Relation(
     type:       RelationType::OneToMany,
     class:      OrderLine::class,   // target Record subclass
     foreignKey: 'order_id',         // FK column name
     localKey:   'id',               // optional; defaults to this table's PK
+)]
+
+// Polymorphic parent
+#[Relation(
+    type:       RelationType::MorphMany,
+    class:      Tag::class,
+    morphType:  'tagable_type',     // type-discriminator column on the related table
+    morphKey:   'tagable_id',       // FK column on the related table
+    morphValue: 'order',            // value stored in morphType for this class (string or int)
+)]
+
+// Polymorphic child
+#[Relation(
+    type:      RelationType::MorphTo,
+    morphType: 'tagable_type',      // local type-discriminator column
+    morphKey:  'tagable_id',        // local FK column
+    morphMap:  ['order' => Order::class, 'product' => Product::class],
 )]
 ```
 

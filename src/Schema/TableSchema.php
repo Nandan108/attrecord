@@ -101,16 +101,24 @@ final class TableSchema
                 $colAttr = $colAttrs[0]->newInstance();
                 $name = $prop->getName();
 
-                $columns[$name] = new ColumnDefinition(
+                $col = new ColumnDefinition(
                     name: $name,
                     type: $colAttr->type,
                     nullable: $colAttr->nullable,
                     autoIncrement: $colAttr->autoIncrement,
-                    trimOnSet: $colAttr->trimOnSet,
+                    trimOnSave: $colAttr->trimOnSave,
                     length: $colAttr->length,
                     precision: $colAttr->precision,
                     scale: $colAttr->scale,
                 );
+
+                if (true === $colAttr->trimOnSave && !$col->isString) {
+                    throw new SchemaException(
+                        "{$class}::\${$name}: trimOnSave is only valid for string column types.",
+                    );
+                }
+
+                $columns[$name] = $col;
                 $reflProperties[$name] = $prop;
                 continue;
             }
@@ -119,12 +127,19 @@ final class TableSchema
             if (!empty($relAttrs)) {
                 $relAttr = $relAttrs[0]->newInstance();
                 $name = $prop->getName();
+
+                self::validateRelationAttribute($class, $name, $relAttr);
+
                 $relations[$name] = new RelationDefinition(
                     propertyName: $name,
                     type: $relAttr->type,
                     targetClass: $relAttr->class,
                     foreignKey: $relAttr->foreignKey,
                     localKey: $relAttr->localKey,
+                    morphType: $relAttr->morphType,
+                    morphKey: $relAttr->morphKey,
+                    morphValue: $relAttr->morphValue,
+                    morphMap: $relAttr->morphMap,
                 );
                 $reflProperties[$name] = $prop;
             }
@@ -148,6 +163,60 @@ final class TableSchema
             relations: $relations,
             reflProperties: $reflProperties,
         );
+    }
+
+    /**
+     * Validate a #[Relation] attribute at schema-build time so mistakes surface immediately.
+     *
+     * @param class-string $ownerClass
+     */
+    private static function validateRelationAttribute(
+        string $ownerClass,
+        string $propName,
+        Relation $rel,
+    ): void {
+        $loc = "{$ownerClass}::\${$propName}";
+        $type = $rel->type->name;
+
+        $isMorphParent = \Nandan108\Attrecord\Enum\RelationType::MorphMany === $rel->type
+            || \Nandan108\Attrecord\Enum\RelationType::MorphOne === $rel->type;
+        $isMorphChild = \Nandan108\Attrecord\Enum\RelationType::MorphTo === $rel->type;
+
+        if (!$isMorphChild) {
+            if (null === $rel->class) {
+                throw new SchemaException(
+                    "{$loc}: #[Relation({$type})] requires the \"class\" parameter.",
+                );
+            }
+        }
+
+        if (!$isMorphParent && !$isMorphChild) {
+            if (null === $rel->foreignKey) {
+                throw new SchemaException(
+                    "{$loc}: #[Relation({$type})] requires the \"foreignKey\" parameter.",
+                );
+            }
+        }
+
+        if ($isMorphParent || $isMorphChild) {
+            if (null === $rel->morphType || null === $rel->morphKey) {
+                throw new SchemaException(
+                    "{$loc}: #[Relation({$type})] requires \"morphType\" and \"morphKey\" parameters.",
+                );
+            }
+        }
+
+        if ($isMorphParent && null === $rel->morphValue) {
+            throw new SchemaException(
+                "{$loc}: #[Relation({$type})] requires the \"morphValue\" parameter.",
+            );
+        }
+
+        if ($isMorphChild && null === $rel->morphMap) {
+            throw new SchemaException(
+                "{$loc}: #[Relation(MorphTo)] requires the \"morphMap\" parameter.",
+            );
+        }
     }
 
     /** Remove cached schema for a class. Useful in tests that mock entities. */

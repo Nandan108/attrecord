@@ -10,6 +10,7 @@ use Nandan108\Attrecord\Attribute\Table;
 use Nandan108\Attrecord\Enum\ColumnType;
 use Nandan108\Attrecord\Enum\RelationType;
 use Nandan108\Attrecord\Record;
+use Nandan108\Attrecord\RecordSet;
 
 #[Table(name: 'attrecord_posts')]
 final class PostRecord extends Record
@@ -28,4 +29,8 @@ final class PostRecord extends Record
 
     #[Relation(RelationType::ManyToOne, class: UserRecord::class, foreignKey: 'user_id')]
     public ?UserRecord $user = null;
+
+    /** @var RecordSet<TagRecord>|null */
+    #[Relation(RelationType::MorphMany, class: TagRecord::class, morphType: 'tagable_type', morphKey: 'tagable_id', morphValue: 'post')]
+    public ?RecordSet $tags = null;
 }

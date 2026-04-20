@@ -30,4 +30,11 @@ final class UserRecord extends Record
     /** @var RecordSet<PostRecord>|null */
     #[Relation(RelationType::OneToMany, class: PostRecord::class, foreignKey: 'user_id')]
     public ?RecordSet $posts = null;
+
+    /** @var RecordSet<TagRecord>|null */
+    #[Relation(RelationType::MorphMany, class: TagRecord::class, morphType: 'tagable_type', morphKey: 'tagable_id', morphValue: 'user')]
+    public ?RecordSet $tags = null;
+
+    #[Relation(RelationType::MorphOne, class: TagRecord::class, morphType: 'tagable_type', morphKey: 'tagable_id', morphValue: 'user')]
+    public ?TagRecord $firstTag = null;
 }

@@ -153,7 +153,7 @@ final class MysqlDialectTest extends TestCase
             type: $type,
             nullable: $nullable,
             autoIncrement: false,
-            trimOnSet: false,
+            trimOnSave: null,
             length: null,
             precision: null,
             scale: null,

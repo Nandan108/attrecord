@@ -25,36 +25,22 @@ final class ColumnSerializer
      */
     public static function fromDb(mixed $raw, ColumnDefinition $col): mixed
     {
-        if (null === $raw) {
-            return null;
-        }
+        return match (true) {
+            null === $raw    => null,
+            $col->isBool     => (bool) (int) $raw,
+            $col->isInteger  => (int) $raw,
+            $col->isFloat    => (float) $raw,
+            $col->isDateTime => self::tryParseDateTime((string) $raw, 'Y-m-d H:i:s'),
+            $col->isDate     => self::tryParseDateTime((string) $raw, 'Y-m-d'),
+            default          => (string) $raw, // String and Binary — return as-is (binary is raw bytes from DB)
+        };
+    }
 
-        if ($col->isBool) {
-            return (bool) (int) $raw;
-        }
+    private static function tryParseDateTime(string $raw, string $format): ?\DateTimeImmutable
+    {
+        $dt = \DateTimeImmutable::createFromFormat($format, $raw);
 
-        if ($col->isInteger) {
-            return (int) $raw;
-        }
-
-        if ($col->isFloat) {
-            return (float) $raw;
-        }
-
-        if ($col->isDateTime) {
-            $dt = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', (string) $raw);
-
-            return false !== $dt ? $dt : null;
-        }
-
-        if ($col->isDate) {
-            $dt = \DateTimeImmutable::createFromFormat('Y-m-d', (string) $raw);
-
-            return false !== $dt ? $dt : null;
-        }
-
-        // String and Binary — return as-is (binary is raw bytes from DB)
-        return (string) $raw;
+        return false !== $dt ? $dt : null;
     }
 
     /**
@@ -64,36 +50,21 @@ final class ColumnSerializer
      */
     public static function toParam(mixed $value, ColumnDefinition $col): int | float | string | null
     {
-        if (null === $value) {
-            return null;
-        }
-
-        if ($col->isBool) {
-            return (int) (bool) $value;
-        }
-
-        if ($col->isInteger) {
-            return (int) $value;
-        }
-
-        if ($col->isFloat) {
-            return (float) $value;
-        }
-
-        if ($col->isDateTime) {
-            return $value instanceof \DateTimeImmutable
+        return match (true) {
+            null === $value  => null,
+            $col->isBool     => (int) (bool) $value,
+            $col->isInteger  => (int) $value,
+            $col->isFloat    => (float) $value,
+            $col->isDateTime => $value instanceof \DateTimeImmutable
                 ? $value->format('Y-m-d H:i:s')
-                : (string) $value;
-        }
-
-        if ($col->isDate) {
-            return $value instanceof \DateTimeImmutable
+                : (string) $value,
+            $col->isDate => $value instanceof \DateTimeImmutable
                 ? $value->format('Y-m-d')
-                : (string) $value;
-        }
-
-        // String + Binary (raw bytes passed as string)
-        return (string) $value;
+                : (string) $value,
+            default => $col->trimOnSave // String and Binary
+                ? trim((string) $value)
+                : (string) $value
+        };
     }
 
     /**
@@ -101,6 +72,11 @@ final class ColumnSerializer
      *
      * Must produce the same string that the DB would return via fetchAll() for the same
      * value, so that snapshot[col] === toSnapshotString(current_value) means "clean".
+     *
+     * Because this delegates to toParam(), trimOnSave is applied here too. This means
+     * setting a string property to a value that differs only in surrounding whitespace
+     * is NOT considered dirty when trimOnSave is true — the record would write the same
+     * trimmed bytes as what is already stored, so suppressing the UPDATE is correct.
      */
     public static function toSnapshotString(mixed $value, ColumnDefinition $col): ?string
     {

@@ -27,7 +27,7 @@ final readonly class ColumnDefinition
         public ColumnType $type,
         public bool $nullable,
         public bool $autoIncrement,
-        public bool $trimOnSet,
+        public ?bool $trimOnSave,
         public ?int $length,
         public ?int $precision,
         public ?int $scale,
