@@ -109,9 +109,9 @@ final class RecordDirtyTrackingTest extends TestCase
         $user = UserRecord::hydrateFromArray(['id' => 5, 'name' => 'Alice', 'email' => null, 'active' => null]);
         $this->session->reset();
 
-        $saved = $user->save();
+        $user->save();
 
-        $this->assertFalse($saved);
+        $this->assertFalse($user->_saved);
         $this->assertNull($this->session->lastSql());
     }
 
@@ -134,6 +134,73 @@ final class RecordDirtyTrackingTest extends TestCase
         $this->assertStringContainsString('DELETE FROM `attrecord_users`', $sql);
         $this->assertStringContainsString('`id` = ?', $sql);
         $this->assertContains(5, $this->session->lastParams() ?? []);
+    }
+
+    // -----------------------------------------------------------------
+    // newWith / set / $_saved
+    // -----------------------------------------------------------------
+
+    public function testNewWithSetsAttributes(): void
+    {
+        $user = UserRecord::newWith(['name' => 'Alice', 'email' => 'al@i.ce']);
+        $this->assertSame('Alice', $user->name);
+        $this->assertSame('al@i.ce', $user->email);
+        $this->assertTrue($user->isNew());
+    }
+
+    public function testNewWithReturnsFluent(): void
+    {
+        $user = UserRecord::newWith(['name' => 'Alice']);
+        $this->assertInstanceOf(UserRecord::class, $user);
+    }
+
+    public function testSetBulkAssignsProperties(): void
+    {
+        $user = new UserRecord();
+        $returned = $user->set(['name' => 'Bob', 'email' => 'bob@test.com']);
+
+        $this->assertSame('Bob', $user->name);
+        $this->assertSame('bob@test.com', $user->email);
+        $this->assertSame($user, $returned);
+    }
+
+    public function testSetChainedWithSave(): void
+    {
+        $this->session->setNextInsertId(99);
+        $user = UserRecord::newWith(['name' => 'Alice'])->set(['email' => 'al@i.ce'])->save();
+        $this->assertInstanceOf(UserRecord::class, $user);
+        $this->assertTrue($user->_saved);
+        $this->assertSame(99, $user->id);
+    }
+
+    public function testSavedIsNullBeforeFirstSave(): void
+    {
+        $user = new UserRecord();
+        $this->assertNull($user->_saved);
+    }
+
+    public function testSavedIsTrueAfterInsert(): void
+    {
+        $this->session->setNextInsertId(1);
+        $user = new UserRecord();
+        $user->name = 'Alice';
+        $user->save();
+        $this->assertTrue($user->_saved);
+    }
+
+    public function testSavedIsFalseWhenClean(): void
+    {
+        $user = UserRecord::hydrateFromArray(['id' => 5, 'name' => 'Alice', 'email' => null, 'active' => null]);
+        $user->save();
+        $this->assertFalse($user->_saved);
+    }
+
+    public function testSavedIsTrueAfterDirtyUpdate(): void
+    {
+        $user = UserRecord::hydrateFromArray(['id' => 5, 'name' => 'Alice', 'email' => null, 'active' => null]);
+        $user->name = 'Bob';
+        $user->save();
+        $this->assertTrue($user->_saved);
     }
 
     public function testLastInsertIdAdvancesPerExec(): void

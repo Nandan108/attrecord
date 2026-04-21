@@ -103,7 +103,7 @@ final class RecordCrudPgsqlTest extends PgsqlIntegrationTestCase
         $user->name = 'Alice';
         $user->save();
 
-        $this->assertFalse($user->save());
+        $this->assertFalse($user->save()->_saved);
     }
 
     public function testReload(): void

@@ -44,6 +44,17 @@ abstract class Record
     /** True for records that have never been persisted (no PK from DB yet). */
     private bool $_isNew = true;
 
+    /**
+     * Whether the last save() call wrote to the database.
+     *
+     * true  — an INSERT or UPDATE was issued.
+     * false — the record was clean; nothing was sent to the database.
+     * null  — save() has not been called yet on this instance.
+     *
+     * @api
+     */
+    public ?bool $_saved = null;
+
     // -----------------------------------------------------------------
     // Connection management
     // -----------------------------------------------------------------
@@ -93,6 +104,45 @@ abstract class Record
     public static function schema(): TableSchema
     {
         return TableSchema::fromClass(static::class);
+    }
+
+    // -----------------------------------------------------------------
+    // Factory / bulk-setter
+    // -----------------------------------------------------------------
+
+    /**
+     * Create a new (unsaved) instance with the given attributes pre-populated.
+     *
+     * Equivalent to `new static()` followed by `set($attrs)`.
+     *
+     * @api
+     *
+     * @param array<string, mixed> $attrs
+     *
+     * @psalm-suppress UnsafeInstantiation
+     */
+    public static function newWith(array $attrs): static
+    {
+        return (new static())->set($attrs);
+    }
+
+    /**
+     * Bulk-assign column properties and return $this for chaining.
+     *
+     * Only sets properties that exist as public column members on the record;
+     * unknown keys are silently ignored.
+     *
+     * @api
+     *
+     * @param array<string, mixed> $attrs
+     */
+    public function set(array $attrs): static
+    {
+        foreach ($attrs as $key => $value) {
+            $this->$key = $value;
+        }
+
+        return $this;
     }
 
     // -----------------------------------------------------------------
@@ -336,11 +386,11 @@ abstract class Record
      *
      * @param bool $force save all columns regardless of dirty state
      *
-     * @return bool true = written to DB, false = nothing to save (record was clean)
+     * Sets $_saved to true if a write occurred, false if the record was already clean
      *
      * @throws RecordSaveException on DB error
      */
-    public function save(bool $force = false): bool
+    public function save(bool $force = false): static
     {
         $schema = static::schema();
         $conn = static::connection();
@@ -373,7 +423,9 @@ abstract class Record
         }
 
         if (empty($colNames)) {
-            return false;
+            $this->_saved = false;
+
+            return $this;
         }
 
         $qt = $dialect->quoteIdentifier($schema->tableName);
@@ -411,8 +463,9 @@ abstract class Record
         }
 
         $this->refreshSnapshot($schema);
+        $this->_saved = true;
 
-        return true;
+        return $this;
     }
 
     /**
