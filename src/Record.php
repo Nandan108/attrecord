@@ -56,6 +56,30 @@ abstract class Record
     public ?bool $_saved = null;
 
     // -----------------------------------------------------------------
+    // Table prefix
+    // -----------------------------------------------------------------
+
+    private static string $_tablePrefix = '';
+
+    /**
+     * Set a global prefix prepended to every Record subclass table name.
+     * Clears the schema cache so subsequent schema builds pick up the new prefix.
+     *
+     * @api
+     */
+    public static function setTablePrefix(string $prefix): void
+    {
+        self::$_tablePrefix = $prefix;
+        TableSchema::clearCache();
+    }
+
+    /** @api */
+    public static function tablePrefix(): string
+    {
+        return self::$_tablePrefix;
+    }
+
+    // -----------------------------------------------------------------
     // Connection management
     // -----------------------------------------------------------------
 
@@ -138,6 +162,7 @@ abstract class Record
      */
     public function set(array $attrs): static
     {
+        /** @psalm-var mixed $value */
         foreach ($attrs as $key => $value) {
             $this->$key = $value;
         }

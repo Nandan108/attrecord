@@ -76,7 +76,7 @@ final class TableSchema
             throw new SchemaException(sprintf('%s must declare #[Table(name: ...)] attribute.', $class));
         }
         $tableAttr = $tableAttrs[0]->newInstance();
-        $tableName = $tableAttr->name;
+        $tableName = \Nandan108\Attrecord\Record::tablePrefix().$tableAttr->name;
         $primaryKey = $tableAttr->primaryKey;
 
         // --- #[LockTier] ---
