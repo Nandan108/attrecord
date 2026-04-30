@@ -53,14 +53,72 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     }
 
     /**
-     * Return all values of one column as a flat array.
+     * Extract field value(s) from each record, keyed by the record PK or custom key fields.
      *
-     * @return list<mixed>
+     *   pluck('name')                    → [$pk => $name]
+     *   pluck(['name', 'email'])          → [$pk => ['name' => …, 'email' => …]]
+     *   pluck('name', 'group')            → ['groupA' => [$name1, $name2], …]
+     *   pluck(['name', 'email'], 'group') → ['groupA' => [['name' => …, 'email' => …], …]]
+     *
+     * When no $keys are given the record PK is used as the outer key.
+     * When $keys are given the same nested grouping logic as recordsGroupedByKeys() applies,
+     * but the leaf values are the extracted field value(s) rather than the full Record.
+     *
+     * @param string|list<string> $fields
+     *
+     * @return array<int|string, mixed>
      */
-    public function pluck(string $field): array
+    public function pluck(string | array $fields, string ...$keys): array
     {
-        /** @psalm-suppress MixedReturnStatement */
-        return array_map(fn (Record $r): mixed => $r->$field, $this->records);
+        if (empty($this->records)) {
+            return [];
+        }
+
+        if (empty($keys)) {
+            $pk = $this->records[0]::schema()->primaryKey;
+            $out = [];
+            foreach ($this->records as $r) {
+                /** @psalm-suppress MixedArrayOffset, MixedAssignment */
+                $out[$r->$pk] = $this->extractFields($r, $fields);
+            }
+
+            return $out;
+        }
+
+        $out = [];
+        foreach ($this->records as $r) {
+            /** @psalm-suppress MixedAssignment */
+            $bucket = &$out;
+            foreach ($keys as $k) {
+                /** @psalm-suppress MixedAssignment, MixedArrayOffset, MixedArrayAccess, MixedArrayAssignment, UnsupportedReferenceUsage */
+                $bucket = &$bucket[$r->$k];
+            }
+            /** @psalm-suppress MixedAssignment, MixedArrayAssignment */
+            $bucket[] = $this->extractFields($r, $fields);
+            unset($bucket);
+        }
+
+        /** @var array<int|string, mixed> $out */
+        return $out;
+    }
+
+    /**
+     * @param string|list<string> $fields
+     */
+    private function extractFields(Record $r, string | array $fields): mixed
+    {
+        if (\is_string($fields)) {
+            /** @psalm-suppress MixedReturnStatement */
+            return $r->$fields;
+        }
+
+        $out = [];
+        foreach ($fields as $f) {
+            /** @psalm-suppress MixedAssignment */
+            $out[$f] = $r->$f;
+        }
+
+        return $out;
     }
 
     /**
@@ -80,7 +138,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     }
 
     /**
-     * Group records by a (possibly non-unique) column value.
+     * Group records by a single column value.
      *
      * @return array<int|string, self<T>>
      */
@@ -96,16 +154,18 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     }
 
     /**
-     * Group records by multiple keys into a nested associative array.
+     * Group records by one or more keys into a nested associative array.
+     * Leaf buckets are wrapped in a RecordSet rather than left as plain arrays.
      *
      * @return array<int|string, mixed>
      */
-    public function recordsGroupedByKeys(string ...$fields): array
+    public function recordsGroupedByKeys(string $key, string ...$additionalKeys): array
     {
-        $out = [];
+        $fields = [$key, ...$additionalKeys];
+        $raw = [];
         foreach ($this->records as $r) {
             /** @psalm-suppress MixedAssignment */
-            $bucket = &$out;
+            $bucket = &$raw;
             foreach ($fields as $f) {
                 /** @psalm-suppress MixedAssignment, MixedArrayOffset, MixedArrayAccess, MixedArrayAssignment, UnsupportedReferenceUsage */
                 $bucket = &$bucket[$r->$f];
@@ -115,6 +175,40 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             unset($bucket);
         }
 
+        /** @var array<int|string, mixed> $raw */
+        $result = $this->wrapLeaf($raw);
+
+        return \is_array($result) ? $result : [];
+    }
+
+    /**
+     * Recursively wrap leaf arrays (plain lists of Records) in RecordSet instances.
+     * Intermediate nodes (arrays whose values are also arrays) are recursed into.
+     * Returns a RecordSet for leaf nodes, or an array for intermediate nodes.
+     *
+     * @param array<int|string, mixed> $node
+     */
+    private function wrapLeaf(array $node): self | array
+    {
+        if ([] === $node) {
+            return $node;
+        }
+
+        /** @psalm-suppress MixedAssignment */
+        $first = reset($node);
+
+        if ($first instanceof Record) {
+            /** @var list<Record> $node */
+            return new self($node);
+        }
+
+        $out = [];
+        /** @psalm-suppress MixedAssignment */
+        foreach ($node as $key => $child) {
+            /** @psalm-suppress MixedArgument, MixedAssignment */
+            $out[$key] = \is_array($child) ? $this->wrapLeaf($child) : $child;
+        }
+
         /** @var array<int|string, mixed> $out */
         return $out;
     }
@@ -122,6 +216,25 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     // -----------------------------------------------------------------
     // Bulk write operations
     // -----------------------------------------------------------------
+
+    /**
+     * Apply the same attribute bulk-assignment to every record in the set.
+     *
+     * Useful for stamping a shared field (e.g. updated_at, updated_by_actor_id)
+     * across all records before a saveAll() call.
+     *
+     * @param array<string, mixed> $attrs
+     *
+     * @return $this
+     */
+    public function bulkSet(array $attrs): static
+    {
+        foreach ($this->records as $r) {
+            $r->set($attrs);
+        }
+
+        return $this;
+    }
 
     /**
      * Save all dirty records using a deadlock-safe bulk strategy:

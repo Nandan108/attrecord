@@ -309,4 +309,108 @@ final class RecordCrudTest extends IntegrationTestCase
         $found = UserRecord::find($clause);
         $this->assertCount(2, $found);
     }
+
+    public function testPluckKeyedByPkSingleField(): void
+    {
+        $ids = [];
+        foreach (['Alice', 'Bob'] as $name) {
+            $u = new UserRecord();
+            $u->name = $name;
+            $u->save();
+            $ids[$name] = (int) $u->id;
+        }
+
+        $result = UserRecord::find()->pluck('name');
+
+        $this->assertSame('Alice', $result[$ids['Alice']]);
+        $this->assertSame('Bob', $result[$ids['Bob']]);
+    }
+
+    public function testPluckKeyedByPkMultipleFields(): void
+    {
+        $u = new UserRecord();
+        $u->name = 'Alice';
+        $u->email = 'alice@example.com';
+        $u->save();
+        $id = (int) $u->id;
+
+        $result = UserRecord::find()->pluck(['name', 'email']);
+
+        $this->assertSame(['name' => 'Alice', 'email' => 'alice@example.com'], $result[$id]);
+    }
+
+    public function testPluckWithCustomKeysGroupsSingleField(): void
+    {
+        foreach ([['Alice', 'admin'], ['Bob', 'admin'], ['Carol', 'user']] as [$name, $role]) {
+            $u = new UserRecord();
+            $u->name = $name;
+            $u->email = $role;
+            $u->save();
+        }
+
+        $result = UserRecord::find()->pluck('name', 'email');
+
+        $this->assertArrayHasKey('admin', $result);
+        $this->assertArrayHasKey('user', $result);
+        /** @psalm-suppress MixedAssignment */
+        $adminNames = $result['admin'];
+        $this->assertIsArray($adminNames);
+        sort($adminNames);
+        $this->assertSame(['Alice', 'Bob'], $adminNames);
+        /** @psalm-suppress MixedArgument */
+        $this->assertSame(['Carol'], $result['user']);
+    }
+
+    public function testPluckEmptySetReturnsEmptyArray(): void
+    {
+        $this->assertSame([], UserRecord::find('1 = 0')->pluck('name'));
+    }
+
+    public function testBulkSetAppliesAttrsToAllRecords(): void
+    {
+        foreach (['Alice', 'Bob'] as $name) {
+            $u = new UserRecord();
+            $u->name = $name;
+            $u->save();
+        }
+
+        $found = UserRecord::find();
+        $found->bulkSet(['email' => 'shared@example.com'])->saveAll();
+
+        $reloaded = UserRecord::find();
+        foreach ($reloaded as $r) {
+            $this->assertSame('shared@example.com', $r->email);
+        }
+    }
+
+    public function testBulkSetReturnsSelf(): void
+    {
+        $u = new UserRecord();
+        $u->name = 'Alice';
+        $u->save();
+
+        $set = UserRecord::find();
+        $result = $set->bulkSet(['email' => 'x@x.com']);
+        $this->assertSame($set, $result);
+    }
+
+    public function testRecordsGroupedByKeysWrapsLeavesInRecordSet(): void
+    {
+        foreach ([['Alice', 'admin'], ['Bob', 'admin'], ['Carol', 'user']] as [$name, $role]) {
+            $u = new UserRecord();
+            $u->name = $name;
+            $u->email = $role;
+            $u->save();
+        }
+
+        $grouped = UserRecord::find()->recordsGroupedByKeys('email');
+
+        $this->assertArrayHasKey('admin', $grouped);
+        /** @psalm-suppress MixedArgument */
+        $this->assertInstanceOf(\Nandan108\Attrecord\RecordSet::class, $grouped['admin']);
+        /** @psalm-suppress MixedArgument */
+        $this->assertCount(2, $grouped['admin']);
+        /** @psalm-suppress MixedArgument */
+        $this->assertCount(1, $grouped['user']);
+    }
 }

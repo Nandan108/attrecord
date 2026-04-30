@@ -93,12 +93,25 @@ Record::setConnection($tenantConn, forClass: Order::class);
 ### 3 — Use
 
 ```php
-// INSERT
+// INSERT — classic style
 $order = new Order();
 $order->status = 'pending';
 $order->total  = 99.95;
-$order->save();               // INSERT INTO `orders` SET ...
+$order->save();               // INSERT INTO `orders` …
 echo $order->id;              // auto-assigned PK
+
+// INSERT — fluent factory style
+$order = Order::newWith(['status' => 'pending', 'total' => 99.95])->save();
+echo $order->id;              // auto-assigned PK
+
+// Bulk-assign on an existing instance
+$order->set(['status' => 'confirmed', 'total' => 149.00])->save();
+
+// save() always returns $this — check $_saved if you need to know whether a write occurred
+$order->save();
+$order->_saved;   // true  = INSERT or UPDATE was issued
+                  // false = record was clean, nothing sent to DB
+                  // null  = save() not yet called on this instance
 
 // SELECT by PK
 $order = Order::getOne(42);          // ?Order
@@ -108,9 +121,6 @@ $order = Order::getOneOrNew(42);     // Order (new, unsaved instance if missing)
 // UPDATE — only dirty columns
 $order->status = 'confirmed';
 $order->save();   // UPDATE `orders` SET `status` = ? WHERE `id` = ?
-
-// No-op when clean
-$order->save();   // returns false, no SQL
 
 // DELETE
 $order->delete();

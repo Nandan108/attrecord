@@ -32,7 +32,10 @@ abstract class IntegrationTestCase extends TestCase
                 [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION],
             );
         } catch (\PDOException $e) {
-            self::markTestSkipped('MariaDB not available: '.$e->getMessage());
+            self::markTestSkipped(
+                "MariaDB not available ({$e->getMessage()}).\n".
+                'Start the test database with: docker compose up -d',
+            );
         }
 
         $conn = new Connection(new PdoDbSession(static::$pdo), new MysqlDialect());
