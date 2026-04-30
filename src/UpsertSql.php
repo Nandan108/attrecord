@@ -15,12 +15,12 @@ namespace Nandan108\Attrecord;
  *
  * @api
  */
-final readonly class UpsertSql
+final class UpsertSql
 {
     public function __construct(
-        public string $create,
-        public string $lock,
-        public ?string $update,
+        public readonly string $create,
+        public readonly string $lock,
+        public readonly ?string $update,
     ) {
     }
 }

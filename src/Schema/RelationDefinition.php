@@ -11,7 +11,7 @@ use Nandan108\Attrecord\Enum\RelationType;
  *
  * @api
  */
-final readonly class RelationDefinition
+final class RelationDefinition
 {
     /**
      * @param string                               $propertyName Property name on the owning class
@@ -24,15 +24,15 @@ final readonly class RelationDefinition
      * @param array<int|string, class-string>|null $morphMap     Discriminator → class map (MorphTo)
      */
     public function __construct(
-        public string $propertyName,
-        public RelationType $type,
-        public ?string $targetClass,
-        public ?string $foreignKey,
-        public ?string $localKey,
-        public ?string $morphType = null,
-        public ?string $morphKey = null,
-        public int | string | null $morphValue = null,
-        public ?array $morphMap = null,
+        public readonly string $propertyName,
+        public readonly RelationType $type,
+        public readonly ?string $targetClass,
+        public readonly ?string $foreignKey,
+        public readonly ?string $localKey,
+        public readonly ?string $morphType = null,
+        public readonly ?string $morphKey = null,
+        public readonly int | string | null $morphValue = null,
+        public readonly ?array $morphMap = null,
     ) {
     }
 }

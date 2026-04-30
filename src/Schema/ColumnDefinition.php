@@ -11,26 +11,26 @@ use Nandan108\Attrecord\Enum\ColumnType;
  *
  * @api
  */
-final readonly class ColumnDefinition
+final class ColumnDefinition
 {
-    public bool $isInteger;
-    public bool $isBool;
-    public bool $isFloat;
-    public bool $isNumeric;
-    public bool $isBinary;
-    public bool $isDateTime;
-    public bool $isDate;
-    public bool $isString;
+    public readonly bool $isInteger;
+    public readonly bool $isBool;
+    public readonly bool $isFloat;
+    public readonly bool $isNumeric;
+    public readonly bool $isBinary;
+    public readonly bool $isDateTime;
+    public readonly bool $isDate;
+    public readonly bool $isString;
 
     public function __construct(
-        public string $name,
-        public ColumnType $type,
-        public bool $nullable,
-        public bool $autoIncrement,
-        public ?bool $trimOnSave,
-        public ?int $length,
-        public ?int $precision,
-        public ?int $scale,
+        public readonly string $name,
+        public readonly ColumnType $type,
+        public readonly bool $nullable,
+        public readonly bool $autoIncrement,
+        public readonly ?bool $trimOnSave,
+        public readonly ?int $length,
+        public readonly ?int $precision,
+        public readonly ?int $scale,
     ) {
         $this->isInteger = $type->isInteger();
         $this->isBool = $type->isBool();

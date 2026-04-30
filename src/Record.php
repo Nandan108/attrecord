@@ -415,8 +415,19 @@ abstract class Record
      *
      * @throws RecordSaveException on DB error
      */
+    /**
+     * Called just before every save (insert or update). Override to set timestamps, defaults, etc.
+     *
+     * @internal called by Record::save() and RecordSet::saveAll(); not part of the public API
+     */
+    public function beforeSave(): void
+    {
+    }
+
     public function save(bool $force = false): static
     {
+        $this->beforeSave();
+
         $schema = static::schema();
         $conn = static::connection();
         $dialect = $conn->dialect;

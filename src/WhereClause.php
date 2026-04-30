@@ -13,85 +13,85 @@ interface WhereNode
 }
 
 /** @internal */
-final readonly class WhereNode_Leaf implements WhereNode
+final class WhereNode_Leaf implements WhereNode
 {
     public function __construct(
-        public string $col,
-        public string $op,
-        public int | float | string | bool | null $value,
+        public readonly string $col,
+        public readonly string $op,
+        public readonly int | float | string | bool | null $value,
     ) {
     }
 }
 
 /** @internal */
-final readonly class WhereNode_Not implements WhereNode
+final class WhereNode_Not implements WhereNode
 {
     public function __construct(
-        public WhereClause $child,
+        public readonly WhereClause $child,
     ) {
     }
 }
 
 /** @internal */
-final readonly class WhereNode_Between implements WhereNode
+final class WhereNode_Between implements WhereNode
 {
     public function __construct(
-        public string $col,
-        public int | float | string $low,
-        public int | float | string $high,
-        public bool $negate = false,
+        public readonly string $col,
+        public readonly int | float | string $low,
+        public readonly int | float | string $high,
+        public readonly bool $negate = false,
     ) {
     }
 }
 
 /** @internal */
-final readonly class WhereNode_In implements WhereNode
+final class WhereNode_In implements WhereNode
 {
     /** @param list<scalar|null> $values */
     public function __construct(
-        public string $col,
-        public array $values,
-        public bool $negate = false,
+        public readonly string $col,
+        public readonly array $values,
+        public readonly bool $negate = false,
     ) {
     }
 }
 
 /** @internal */
-final readonly class WhereNode_InTuples implements WhereNode
+final class WhereNode_InTuples implements WhereNode
 {
     /**
      * @param list<string>            $cols
      * @param list<list<scalar|null>> $rows
      */
     public function __construct(
-        public array $cols,
-        public array $rows,
-        public bool $negate = false,
+        public readonly array $cols,
+        public readonly array $rows,
+        public readonly bool $negate = false,
     ) {
     }
 }
 
 /** @internal */
-final readonly class WhereNode_Raw implements WhereNode
+final class WhereNode_Raw implements WhereNode
 {
     /** @param list<scalar|null> $params */
     public function __construct(
-        public string $sql,
-        public array $params,
+        public readonly string $sql,
+        public readonly array $params,
     ) {
     }
 }
 
 /** @internal */
-final readonly class WhereNode_Compound implements WhereNode
+final class WhereNode_Compound implements WhereNode
 {
     /**
      * @param 'AND'|'OR'        $op
      * @param list<WhereClause> $parts
      */
     public function __construct(
-        public string $op,
-        public array $parts,
+        public readonly string $op,
+        public readonly array $parts,
     ) {
     }
 }

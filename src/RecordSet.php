@@ -276,6 +276,10 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             return null;
         }
 
+        foreach ($dirtyRecords as $r) {
+            $r->beforeSave();
+        }
+
         $dirtyRecords = array_values($dirtyRecords);
 
         $plan = $this->buildPlan($dirtyRecords, $pk, $conn->dialect, $schema);

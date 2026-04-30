@@ -11,11 +11,11 @@ namespace Nandan108\Attrecord;
  *
  * @api
  */
-final readonly class Connection
+final class Connection
 {
     public function __construct(
-        public DbSession $session,
-        public SqlDialect $dialect,
+        public readonly DbSession $session,
+        public readonly SqlDialect $dialect,
     ) {
     }
 }
