@@ -126,6 +126,12 @@ final class CapturingDbSession implements DbSession
     }
 
     #[\Override]
+    public function withAdvisoryLock(string $lockName, int $timeoutSeconds, \Closure $callback): mixed
+    {
+        return $callback();
+    }
+
+    #[\Override]
     public function inTransaction(): bool
     {
         return $this->transactionDepth > 0;

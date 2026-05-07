@@ -106,6 +106,20 @@ final class WpDbSession implements DbSession
     }
 
     #[\Override]
+    public function withAdvisoryLock(string $lockName, int $timeoutSeconds, \Closure $callback): mixed
+    {
+        $acquired = $this->fetchScalar('SELECT GET_LOCK(?, ?)', [$lockName, $timeoutSeconds]);
+        if (1 !== (int) $acquired) {
+            throw new \RuntimeException(sprintf('Could not acquire advisory lock "%s" within %d second(s).', $lockName, $timeoutSeconds));
+        }
+        try {
+            return $callback();
+        } finally {
+            $this->fetchScalar('SELECT RELEASE_LOCK(?)', [$lockName]);
+        }
+    }
+
+    #[\Override]
     public function inTransaction(): bool
     {
         return $this->txDepth > 0;

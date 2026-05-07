@@ -409,10 +409,6 @@ abstract class Record
      *
      * @api
      *
-     * @param bool $force save all columns regardless of dirty state
-     *
-     * Sets $_saved to true if a write occurred, false if the record was already clean
-     *
      * @throws RecordSaveException on DB error
      */
     /**

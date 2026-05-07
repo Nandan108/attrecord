@@ -61,6 +61,25 @@ interface DbSession
      */
     public function transactional(\Closure $operation): mixed;
 
+    /**
+     * Acquire a named advisory lock, execute a callback, then release the lock.
+     *
+     * Uses MySQL GET_LOCK / RELEASE_LOCK. Advisory locks are connection-scoped and do not
+     * interact with table or row locks. Safe to nest inside a transaction.
+     *
+     * $timeoutSeconds controls the wait: 0 = fail immediately if unavailable,
+     * positive = wait up to N seconds, -1 = wait indefinitely.
+     *
+     * Throws when the lock cannot be acquired within the timeout.
+     *
+     * @template TResult
+     *
+     * @param \Closure(): TResult $callback
+     *
+     * @return TResult
+     */
+    public function withAdvisoryLock(string $lockName, int $timeoutSeconds, \Closure $callback): mixed;
+
     /** Return whether this session is currently inside a transaction. */
     public function inTransaction(): bool;
 
