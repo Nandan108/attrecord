@@ -141,13 +141,34 @@ final class WpDbSession implements DbSession
             return $sql;
         }
 
+        // NULL params cannot be passed to wpdb::prepare() via %s (they become '').
+        // Substitute NULL literals directly into the SQL for null params; keep ? for non-null params.
+        $params = array_values($params);
+        $nonNullParams = [];
+        $paramIndex = 0;
+        $processedSql = (string) preg_replace_callback('/\?/', function () use (&$params, &$paramIndex, &$nonNullParams): string {
+            /** @psalm-suppress MixedAssignment */
+            $param = $params[$paramIndex++] ?? null;
+            if (null === $param) {
+                return 'NULL';
+            }
+            /** @psalm-suppress MixedAssignment */
+            $nonNullParams[] = $param;
+
+            return '?';
+        }, $sql);
+
+        if (empty($nonNullParams)) {
+            return $processedSql;
+        }
+
         // Escape existing % (e.g. LIKE '%foo%') before wpdb interprets them as format directives.
-        $escaped = str_replace('%', '%%', $sql);
-        // Convert ? positional markers to %s for wpdb::prepare().
+        $escaped = str_replace('%', '%%', $processedSql);
+        // Convert remaining ? positional markers to %s for wpdb::prepare().
         $wpSql = str_replace('?', '%s', $escaped);
 
         /** @psalm-suppress MixedReturnStatement */
-        return $this->wpdb->prepare($wpSql, ...$params);
+        return $this->wpdb->prepare($wpSql, ...$nonNullParams);
     }
 
     private function checkError(): void

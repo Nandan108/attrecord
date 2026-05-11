@@ -91,6 +91,38 @@ final class PgsqlDialect implements SqlDialect
     }
 
     /**
+     * @param list<string> $columnNames
+     * @param list<string> $conflictCols
+     * @param list<string> $updateCols
+     */
+    #[\Override]
+    public function buildSingleUpsertSql(
+        string $tableName,
+        array $columnNames,
+        array $conflictCols,
+        array $updateCols,
+    ): string {
+        $qt = $this->quoteIdentifier($tableName);
+        $quotedCols = \implode(', ', \array_map($this->quoteIdentifier(...), $columnNames));
+        $placeholders = \implode(', ', \array_fill(0, \count($columnNames), '?'));
+        $conflictTarget = \implode(', ', \array_map($this->quoteIdentifier(...), $conflictCols));
+
+        $sql = "INSERT INTO {$qt} ({$quotedCols}) VALUES ({$placeholders})";
+
+        if (!empty($updateCols)) {
+            $setParts = \array_map(
+                fn (string $col): string => $this->quoteIdentifier($col).' = EXCLUDED.'.$this->quoteIdentifier($col),
+                $updateCols,
+            );
+            $sql .= " ON CONFLICT ({$conflictTarget}) DO UPDATE SET ".\implode(', ', $setParts);
+        } else {
+            $sql .= " ON CONFLICT ({$conflictTarget}) DO NOTHING";
+        }
+
+        return $sql;
+    }
+
+    /**
      * @param list<string>       $columnNames
      * @param list<list<string>> $rows
      */

@@ -8,6 +8,7 @@ use Nandan108\Attrecord\Exception\AttrecordException;
 use Nandan108\Attrecord\Exception\RecordDeleteException;
 use Nandan108\Attrecord\Exception\RecordNotFoundException;
 use Nandan108\Attrecord\Exception\RecordSaveException;
+use Nandan108\Attrecord\Exception\SchemaException;
 use Nandan108\Attrecord\Schema\TableSchema;
 
 /**
@@ -299,11 +300,11 @@ abstract class Record
      *
      * @api
      *
-     * @param array<array-key, scalar|null> $params
+     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
      *
      * @psalm-suppress MoreSpecificReturnType, LessSpecificReturnStatement
      */
-    public static function findOne(string $where, array $params = []): ?static
+    public static function findOne(string | WhereClause $where, array $params = []): ?static
     {
         return static::find($where, $params)->first();
     }
@@ -371,10 +372,14 @@ abstract class Record
     /**
      * @api
      *
-     * @param array<array-key, scalar|null> $params
+     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
      */
-    public static function countWhere(string $where, array $params = []): int
+    public static function countWhere(string | WhereClause $where, array $params = []): int
     {
+        if ($where instanceof WhereClause) {
+            $params = $where->params();
+            $where = $where->render(static::connection()->dialect);
+        }
         ['sql' => $normSql, 'params' => $normParams] = NamedPlaceholderSql::positional($where, $params);
         $schema = static::schema();
         $sql = 'SELECT COUNT(*) FROM '.static::qi($schema->tableName)." WHERE {$normSql}";
@@ -383,14 +388,79 @@ abstract class Record
     }
 
     /**
+     * Execute a bulk UPDATE on all rows matching a WHERE clause.
+     *
      * @api
      *
-     * @param array<array-key, scalar|null> $params
+     * @param array<string, mixed>          $set    Column name → value pairs to write
+     * @param string|WhereClause            $where  WHERE clause (? or :named placeholders), or a WhereClause instance;
+     *                                              empty = update all rows
+     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     *
+     * @return int Affected row count
+     *
+     * @throws SchemaException     when an unknown column name appears in $set
+     * @throws RecordSaveException on DB error
+     */
+    public static function updateWhere(array $set, string | WhereClause $where = '', array $params = []): int
+    {
+        $schema = static::schema();
+        $conn = static::connection();
+        $dialect = $conn->dialect;
+        $session = $conn->session;
+
+        if ($where instanceof WhereClause) {
+            $params = $where->params();
+            $where = $where->render($dialect);
+        }
+        ['sql' => $normWhere, 'params' => $normParams] = NamedPlaceholderSql::positional($where, $params);
+
+        $setParts = [];
+        $setParams = [];
+        /** @psalm-suppress MixedAssignment */
+        foreach ($set as $name => $value) {
+            if (!isset($schema->columns[$name])) {
+                throw new SchemaException(sprintf('updateWhere: unknown column "%s" on %s.', $name, static::class));
+            }
+            if ($value instanceof RawSql) {
+                $setParts[] = $dialect->quoteIdentifier($name).' = '.$value->expression;
+                continue;
+            }
+            $setParts[] = $dialect->quoteIdentifier($name).' = ?';
+            $setParams[] = ColumnSerializer::toParam($value, $schema->columns[$name]);
+        }
+
+        if (empty($setParts)) {
+            return 0;
+        }
+
+        $qt = $dialect->quoteIdentifier($schema->tableName);
+        $sql = 'UPDATE '.$qt.' SET '.implode(', ', $setParts);
+        if ('' !== $normWhere) {
+            $sql .= ' WHERE '.$normWhere;
+        }
+
+        try {
+            /** @psalm-suppress MixedArgumentTypeCoercion */
+            return $session->exec($sql, array_merge($setParams, $normParams));
+        } catch (\Throwable $e) {
+            throw new RecordSaveException($e->getMessage(), $e);
+        }
+    }
+
+    /**
+     * @api
+     *
+     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
      *
      * @return int Number of deleted rows
      */
-    public static function deleteWhere(string $where, array $params = []): int
+    public static function deleteWhere(string | WhereClause $where, array $params = []): int
     {
+        if ($where instanceof WhereClause) {
+            $params = $where->params();
+            $where = $where->render(static::connection()->dialect);
+        }
         ['sql' => $normSql, 'params' => $normParams] = NamedPlaceholderSql::positional($where, $params);
         $schema = static::schema();
         $sql = 'DELETE FROM '.static::qi($schema->tableName)." WHERE {$normSql}";
@@ -532,6 +602,251 @@ abstract class Record
 
         $this->_snapshot = [];
         $this->_isNew = true;
+    }
+
+    /**
+     * INSERT this record; on unique key conflict, UPDATE the given columns instead.
+     *
+     * All non-autoIncrement columns are included in the INSERT. On conflict on the
+     * named unique key, only $updateColumns are overwritten. After execution the
+     * snapshot is refreshed and the record is marked as not-new.
+     *
+     * @api
+     *
+     * @param string       $conflictKey   Name of a #[UniqueKey] declared on this Record class
+     * @param list<string> $updateColumns Non-PK columns to overwrite on conflict
+     *
+     * @throws AttrecordException  when $conflictKey is not declared on this Record
+     * @throws RecordSaveException on DB error
+     */
+    public function upsertByUniqueKey(string $conflictKey, array $updateColumns): void
+    {
+        $schema = static::schema();
+        $conn = static::connection();
+        $dialect = $conn->dialect;
+        $session = $conn->session;
+
+        $conflictCols = $schema->uniqueKeys[$conflictKey]
+            ?? throw new AttrecordException(
+                sprintf('upsertByUniqueKey: unknown unique key "%s" on %s.', $conflictKey, static::class),
+            );
+
+        $columnNames = [];
+        $params = [];
+        foreach ($schema->columns as $name => $col) {
+            if ($col->autoIncrement) {
+                continue;
+            }
+            $columnNames[] = $name;
+            /** @psalm-suppress MixedAssignment */
+            $params[] = ColumnSerializer::toParam($this->$name ?? null, $col);
+        }
+
+        $sql = $dialect->buildSingleUpsertSql($schema->tableName, $columnNames, $conflictCols, $updateColumns);
+
+        try {
+            /** @psalm-suppress MixedArgumentTypeCoercion */
+            $session->exec($sql, $params);
+        } catch (\Throwable $e) {
+            throw new RecordSaveException($e->getMessage(), $e);
+        }
+
+        $this->_isNew = false;
+        $this->refreshSnapshot($schema);
+    }
+
+    /**
+     * Execute a direct UPDATE without loading the record from the DB first.
+     *
+     * WHERE clause is auto-selected: uses the PK value if non-null; otherwise
+     * falls back to the first #[UniqueKey] whose columns are all non-null.
+     *
+     * @api
+     *
+     * @param list<string> $fields Columns to include in SET. If empty, all non-null
+     *                             non-PK non-autoIncrement columns are updated.
+     *                             Pass an explicit list to update columns to null.
+     *
+     * @return int Affected row count (0 if no matching row, 1 on success)
+     *
+     * @throws AttrecordException  when no viable WHERE clause can be built
+     * @throws SchemaException     when an unknown column name is given in $fields
+     * @throws RecordSaveException on DB error
+     */
+    public function updateByUniqueKey(array $fields = []): int
+    {
+        $schema = static::schema();
+        $conn = static::connection();
+        $dialect = $conn->dialect;
+        $session = $conn->session;
+
+        // --- WHERE clause ---
+        $pk = $schema->primaryKey;
+        /** @psalm-suppress MixedAssignment */
+        $pkVal = $this->$pk ?? null;
+        $whereParts = [];
+        $whereParams = [];
+
+        if (null !== $pkVal) {
+            $whereParts[] = $dialect->quoteIdentifier($pk).' = ?';
+            /** @psalm-suppress MixedArgumentTypeCoercion */
+            $whereParams[] = ColumnSerializer::toParam($pkVal, $schema->columns[$pk]);
+        } else {
+            foreach ($schema->uniqueKeys as $keyColumns) {
+                $allSet = true;
+                foreach ($keyColumns as $col) {
+                    if (null === ($this->$col ?? null)) {
+                        $allSet = false;
+                        break;
+                    }
+                }
+                if ($allSet) {
+                    foreach ($keyColumns as $col) {
+                        $whereParts[] = $dialect->quoteIdentifier($col).' = ?';
+                        /** @psalm-suppress MixedAssignment */
+                        $whereParams[] = ColumnSerializer::toParam($this->$col ?? null, $schema->columns[$col]);
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (empty($whereParts)) {
+            throw new AttrecordException(
+                sprintf(
+                    'updateByUniqueKey on %s: no PK or unique key with all values non-null to use as WHERE clause.',
+                    static::class,
+                ),
+            );
+        }
+
+        // --- SET clause ---
+        $setParts = [];
+        $setParams = [];
+
+        if (empty($fields)) {
+            foreach ($schema->columns as $name => $col) {
+                if ($col->autoIncrement || $name === $pk) {
+                    continue;
+                }
+                /** @psalm-suppress MixedAssignment */
+                $value = $this->$name ?? null;
+                if (null !== $value) {
+                    $setParts[] = $dialect->quoteIdentifier($name).' = ?';
+                    $setParams[] = ColumnSerializer::toParam($value, $col);
+                }
+            }
+        } else {
+            foreach ($fields as $name) {
+                $col = $schema->columns[$name]
+                    ?? throw new SchemaException(sprintf('updateByUniqueKey: unknown column "%s".', $name));
+                /** @psalm-suppress MixedAssignment */
+                $value = $this->$name ?? null;
+                $setParts[] = $dialect->quoteIdentifier($name).' = ?';
+                $setParams[] = ColumnSerializer::toParam($value, $col);
+            }
+        }
+
+        if (empty($setParts)) {
+            return 0;
+        }
+
+        $qt = $dialect->quoteIdentifier($schema->tableName);
+        $sql = 'UPDATE '.$qt.' SET '.implode(', ', $setParts).' WHERE '.implode(' AND ', $whereParts);
+        /** @psalm-suppress MixedArgumentTypeCoercion */
+        $params = array_merge($setParams, $whereParams);
+
+        try {
+            /** @psalm-suppress MixedArgumentTypeCoercion */
+            return $session->exec($sql, $params);
+        } catch (\Throwable $e) {
+            throw new RecordSaveException($e->getMessage(), $e);
+        }
+    }
+
+    /**
+     * Execute a bulk UPDATE on all rows matching the given WHERE clause.
+     *
+     * The SET clause is built from instance properties using the same semantics as
+     * updateByUniqueKey(): when $fields is empty, all non-null non-PK non-autoIncrement
+     * columns are updated; when $fields is provided, exactly those columns are written
+     * (allowing null values).
+     *
+     * Useful when type-safe value assignment via record properties is preferred over the
+     * plain array<string, mixed> of the static updateWhere(), but the WHERE clause is
+     * not derivable from a PK or declared unique key.
+     *
+     * @api
+     *
+     * @param string|WhereClause            $where  WHERE clause (? or :named placeholders), or a WhereClause instance;
+     *                                              empty = update all rows
+     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     * @param list<string>                  $fields Columns to include in SET. If empty, all non-null
+     *                                              non-PK non-autoIncrement columns are updated.
+     *                                              Pass an explicit list to update columns to null.
+     *
+     * @return int Affected row count
+     *
+     * @throws SchemaException     when an unknown column name is given in $fields
+     * @throws RecordSaveException on DB error
+     */
+    public function updateByWhere(string | WhereClause $where = '', array $params = [], array $fields = []): int
+    {
+        $schema = static::schema();
+        $conn = static::connection();
+        $dialect = $conn->dialect;
+        $session = $conn->session;
+
+        if ($where instanceof WhereClause) {
+            $params = $where->params();
+            $where = $where->render($dialect);
+        }
+
+        ['sql' => $normWhere, 'params' => $normParams] = NamedPlaceholderSql::positional($where, $params);
+
+        $pk = $schema->primaryKey;
+        $setParts = [];
+        $setParams = [];
+
+        if (empty($fields)) {
+            foreach ($schema->columns as $name => $col) {
+                if ($col->autoIncrement || $name === $pk) {
+                    continue;
+                }
+                /** @psalm-suppress MixedAssignment */
+                $value = $this->$name ?? null;
+                if (null !== $value) {
+                    $setParts[] = $dialect->quoteIdentifier($name).' = ?';
+                    $setParams[] = ColumnSerializer::toParam($value, $col);
+                }
+            }
+        } else {
+            foreach ($fields as $name) {
+                $col = $schema->columns[$name]
+                    ?? throw new SchemaException(sprintf('updateByWhere: unknown column "%s".', $name));
+                /** @psalm-suppress MixedAssignment */
+                $value = $this->$name ?? null;
+                $setParts[] = $dialect->quoteIdentifier($name).' = ?';
+                $setParams[] = ColumnSerializer::toParam($value, $col);
+            }
+        }
+
+        if (empty($setParts)) {
+            return 0;
+        }
+
+        $qt = $dialect->quoteIdentifier($schema->tableName);
+        $sql = 'UPDATE '.$qt.' SET '.implode(', ', $setParts);
+        if ('' !== $normWhere) {
+            $sql .= ' WHERE '.$normWhere;
+        }
+
+        try {
+            /** @psalm-suppress MixedArgumentTypeCoercion */
+            return $session->exec($sql, array_merge($setParams, $normParams));
+        } catch (\Throwable $e) {
+            throw new RecordSaveException($e->getMessage(), $e);
+        }
     }
 
     /**

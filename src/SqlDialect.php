@@ -77,6 +77,25 @@ interface SqlDialect
     ): string;
 
     /**
+     * Build a parameterized INSERT … ON CONFLICT UPDATE for a single record.
+     *
+     * MySQL uses ON DUPLICATE KEY UPDATE col = VALUES(col); conflictCols are accepted
+     * but not required in the SQL (MySQL resolves the conflict implicitly).
+     * PostgreSQL uses ON CONFLICT (cols) DO UPDATE SET col = EXCLUDED.col.
+     *
+     * @param string       $tableName    Unquoted table name
+     * @param list<string> $columnNames  Columns to insert (unquoted; autoIncrement PK excluded)
+     * @param list<string> $conflictCols Unique key columns for conflict detection
+     * @param list<string> $updateCols   Columns to overwrite on conflict
+     */
+    public function buildSingleUpsertSql(
+        string $tableName,
+        array $columnNames,
+        array $conflictCols,
+        array $updateCols,
+    ): string;
+
+    /**
      * Build the three SQL statements for a deadlock-safe bulk upsert.
      *
      * Step 1 (create): INSERT IGNORE — inserts genuinely new rows; silently skips existing ones.

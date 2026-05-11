@@ -22,6 +22,9 @@ final class ColumnDefinition
     public readonly bool $isDate;
     public readonly bool $isString;
 
+    /**
+     * @param list<string> $uniqueKeyNames Names of non-PK unique keys this column belongs to
+     */
     public function __construct(
         public readonly string $name,
         public readonly ColumnType $type,
@@ -31,6 +34,7 @@ final class ColumnDefinition
         public readonly ?int $length,
         public readonly ?int $precision,
         public readonly ?int $scale,
+        public readonly array $uniqueKeyNames = [],
     ) {
         $this->isInteger = $type->isInteger();
         $this->isBool = $type->isBool();

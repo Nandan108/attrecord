@@ -86,6 +86,35 @@ final class MysqlDialect implements SqlDialect
     }
 
     /**
+     * @param list<string> $columnNames
+     * @param list<string> $conflictCols
+     * @param list<string> $updateCols
+     */
+    #[\Override]
+    public function buildSingleUpsertSql(
+        string $tableName,
+        array $columnNames,
+        array $conflictCols,
+        array $updateCols,
+    ): string {
+        $qt = $this->quoteIdentifier($tableName);
+        $quotedCols = \implode(', ', \array_map($this->quoteIdentifier(...), $columnNames));
+        $placeholders = \implode(', ', \array_fill(0, \count($columnNames), '?'));
+
+        $sql = "INSERT INTO {$qt} ({$quotedCols}) VALUES ({$placeholders})";
+
+        if (!empty($updateCols)) {
+            $setParts = \array_map(
+                fn (string $col): string => $this->quoteIdentifier($col).' = VALUES('.$this->quoteIdentifier($col).')',
+                $updateCols,
+            );
+            $sql .= ' ON DUPLICATE KEY UPDATE '.\implode(', ', $setParts);
+        }
+
+        return $sql;
+    }
+
+    /**
      * @param list<string>       $columnNames
      * @param list<list<string>> $rows
      */

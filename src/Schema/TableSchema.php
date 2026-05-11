@@ -8,6 +8,7 @@ use Nandan108\Attrecord\Attribute\Column;
 use Nandan108\Attrecord\Attribute\LockTier;
 use Nandan108\Attrecord\Attribute\Relation;
 use Nandan108\Attrecord\Attribute\Table;
+use Nandan108\Attrecord\Attribute\UniqueKey;
 use Nandan108\Attrecord\Exception\SchemaException;
 
 /**
@@ -32,9 +33,18 @@ final class TableSchema
     public readonly array $dataColumnNames;
 
     /**
+     * Non-PK unique keys declared via #[UniqueKey] on column properties.
+     * Maps key name → ordered list of column names (declaration order within each key).
+     *
+     * @var array<string, list<string>>
+     */
+    public readonly array $uniqueKeys;
+
+    /**
      * @param array<string, ColumnDefinition>    $columns
      * @param array<string, RelationDefinition>  $relations
      * @param array<string, \ReflectionProperty> $reflProperties
+     * @param array<string, list<string>>        $uniqueKeys
      */
     private function __construct(
         public readonly string $tableName,
@@ -43,10 +53,12 @@ final class TableSchema
         array $columns,
         array $relations,
         array $reflProperties,
+        array $uniqueKeys,
     ) {
         $this->columns = $columns;
         $this->relations = $relations;
         $this->reflProperties = $reflProperties;
+        $this->uniqueKeys = $uniqueKeys;
         $this->dataColumnNames = array_values(
             array_filter(array_keys($columns), fn (string $n): bool => $n !== $primaryKey),
         );
@@ -90,6 +102,8 @@ final class TableSchema
         $relations = [];
         /** @var array<string, \ReflectionProperty> $reflProperties */
         $reflProperties = [];
+        /** @var array<string, list<string>> $uniqueKeys */
+        $uniqueKeys = [];
 
         foreach ($reflClass->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
             if ($prop->isStatic()) {
@@ -101,6 +115,14 @@ final class TableSchema
                 $colAttr = $colAttrs[0]->newInstance();
                 $name = $prop->getName();
 
+                // Collect #[UniqueKey] attributes on this property.
+                $ukNames = [];
+                foreach ($prop->getAttributes(UniqueKey::class) as $ukAttr) {
+                    $ukName = $ukAttr->newInstance()->name;
+                    $ukNames[] = $ukName;
+                    $uniqueKeys[$ukName][] = $name;
+                }
+
                 $col = new ColumnDefinition(
                     name: $name,
                     type: $colAttr->type,
@@ -110,6 +132,7 @@ final class TableSchema
                     length: $colAttr->length,
                     precision: $colAttr->precision,
                     scale: $colAttr->scale,
+                    uniqueKeyNames: $ukNames,
                 );
 
                 if (true === $colAttr->trimOnSave && !$col->isString) {
@@ -162,6 +185,7 @@ final class TableSchema
             columns: $columns,
             relations: $relations,
             reflProperties: $reflProperties,
+            uniqueKeys: $uniqueKeys,
         );
     }
 
