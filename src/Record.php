@@ -303,10 +303,21 @@ abstract class Record
      * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
      *
      * @psalm-suppress MoreSpecificReturnType, LessSpecificReturnStatement
+     *
+     * @return ?static
      */
-    public static function findOne(string | WhereClause $where, array $params = []): ?static
-    {
-        return static::find($where, $params)->first();
+    public static function findOne(
+        string | WhereClause $where,
+        array $params = [],
+        string $orderByLimit = 'LIMIT 1',
+        bool $forUpdate = false,
+    ): ?static {
+        // if $orderByLimit doesn't have a LIMIT set, add one to prevent fetching more rows than necessary
+        if ($orderByLimit && !preg_match('/\blimit\b/i', $orderByLimit)) {
+            $orderByLimit .= ' LIMIT 1';
+        }
+
+        return static::find($where, $params, $orderByLimit, $forUpdate)->first();
     }
 
     /**
