@@ -6,6 +6,7 @@ namespace Nandan108\Attrecord\Tests\Unit;
 
 use Nandan108\Attrecord\Dialect\MysqlDialect;
 use Nandan108\Attrecord\Dialect\PgsqlDialect;
+use Nandan108\Attrecord\RawSql;
 use Nandan108\Attrecord\WhereClause;
 use PHPUnit\Framework\TestCase;
 
@@ -339,6 +340,24 @@ final class WhereClauseTest extends TestCase
         $c = WhereClause::whereRaw('deleted_at IS NULL');
         $this->assertSame('(deleted_at IS NULL)', $c->render());
         $this->assertSame([], $c->params());
+    }
+
+    public function testWhereRawAcceptsRawSql(): void
+    {
+        $raw = new RawSql('`total` BETWEEN ? AND ?', [10, 100]);
+        $c = WhereClause::whereRaw($raw);
+
+        $this->assertSame('(`total` BETWEEN ? AND ?)', $c->render());
+        $this->assertSame([10, 100], $c->params());
+    }
+
+    public function testWhereRawWithRawSqlIgnoresParamsArg(): void
+    {
+        // params from RawSql are used; the second argument is ignored when first is a RawSql
+        $raw = new RawSql('`a` = ?', [1]);
+        $c = WhereClause::whereRaw($raw, [999]);
+
+        $this->assertSame([1], $c->params());
     }
 
     // -----------------------------------------------------------------

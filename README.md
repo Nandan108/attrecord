@@ -188,17 +188,17 @@ $updated = Order::updateWhere(
 $deleted = Order::deleteWhere('`status` = ? AND `total` IS NULL', ['draft']);
 ```
 
-### Raw SQL expressions in `updateWhere()`
+### `RawSql` — raw SQL fragments with optional bound params
 
-For values that must be evaluated by the database (function calls, CASE expressions,
-column-to-column assignments), wrap the expression in `RawSql`. The expression is
-embedded verbatim — no parameterisation, no escaping. **Never pass user input through
-`RawSql`.**
+`RawSql` wraps an untranslated SQL expression with optional `?`-placeholder params.
+The expression is embedded verbatim — **the caller is responsible for quoting
+identifiers and never embedding user input** — but values can still be bound safely
+through `?` placeholders.
 
 ```php
 use Nandan108\Attrecord\RawSql;
 
-// Increment a counter
+// Increment a counter — no params needed
 Order::updateWhere(
     ['view_count' => new RawSql('`view_count` + 1')],
     '`id` = ?', [$id],
@@ -208,6 +208,27 @@ Order::updateWhere(
 Order::updateWhere(
     ['priority' => new RawSql('CASE WHEN `total` > 500 THEN 1 ELSE 0 END')],
     '`status` = ?', ['pending'],
+);
+
+// Parameterised raw expression — RawSql params come BEFORE the WHERE params
+Order::updateWhere(
+    ['priority' => new RawSql('GREATEST(?, `priority`)', [5])],
+    '`status` = ?', ['pending'],
+);
+```
+
+The same `RawSql` can be reused as a WHERE condition via
+`WhereClause::whereRaw($raw)`, so a complex expression can be built once and applied
+in either position:
+
+```php
+$jsonHas = new RawSql('JSON_CONTAINS(`tags`, ?)', ['"featured"']);
+
+Order::find(WhereClause::whereRaw($jsonHas));
+// ...
+Order::updateWhere(
+    ['featured_at' => new RawSql('NOW()')],
+    WhereClause::whereRaw($jsonHas),
 );
 ```
 

@@ -74,10 +74,8 @@ final class WhereNode_InTuples implements WhereNode
 /** @internal */
 final class WhereNode_Raw implements WhereNode
 {
-    /** @param list<scalar|null> $params */
     public function __construct(
-        public readonly string $sql,
-        public readonly array $params,
+        public readonly RawSql $raw,
     ) {
     }
 }
@@ -223,11 +221,18 @@ final class WhereClause
      * Caller is responsible for quoting identifiers and binding values via ? placeholders.
      * The dialect passed to render() is ignored for this node.
      *
-     * @param list<scalar|null> $params
+     * Accepts either a SQL string (+ optional params), or a pre-built {@see RawSql}.
+     * Passing a `RawSql` lets the same expression be reused in both SET and WHERE
+     * positions, or composed by helper functions.
+     *
+     * @param string|RawSql     $sql    raw SQL fragment, or a pre-built RawSql value
+     * @param list<scalar|null> $params bound values; ignored when $sql is a RawSql
      */
-    public static function whereRaw(string $sql, array $params = []): self
+    public static function whereRaw(string | RawSql $sql, array $params = []): self
     {
-        return new self(new WhereNode_Raw($sql, $params));
+        $raw = $sql instanceof RawSql ? $sql : new RawSql($sql, $params);
+
+        return new self(new WhereNode_Raw($raw));
     }
 
     public static function whereLike(string $col, string $pattern): self
@@ -328,7 +333,7 @@ final class WhereClause
             $node instanceof WhereNode_Leaf      => self::renderLeaf($node, $qi, $dialect),
             $node instanceof WhereNode_In        => self::renderIn($node, $qi),
             $node instanceof WhereNode_InTuples  => self::renderInTuples($node, $qi),
-            $node instanceof WhereNode_Raw       => "({$node->sql})",
+            $node instanceof WhereNode_Raw       => "({$node->raw->expression})",
             $node instanceof WhereNode_Compound  => self::renderCompound($node, $dialect),
             $node instanceof WhereNode_Between   => self::renderBetween($node, $qi),
             $node instanceof WhereNode_Not       => self::renderNot($node, $dialect),
@@ -426,7 +431,7 @@ final class WhereClause
             $node instanceof WhereNode_InTuples => empty($node->rows)
                 ? []
                 : array_merge(...$node->rows),
-            $node instanceof WhereNode_Raw      => $node->params,
+            $node instanceof WhereNode_Raw      => $node->raw->params,
             $node instanceof WhereNode_Compound => empty($node->parts)
                 ? []
                 : array_merge(

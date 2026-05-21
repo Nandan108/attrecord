@@ -464,6 +464,9 @@ abstract class Record
             }
             if ($value instanceof RawSql) {
                 $setParts[] = $dialect->quoteIdentifier($name).' = '.$value->expression;
+                foreach ($value->params as $p) {
+                    $setParams[] = $p;
+                }
                 continue;
             }
             $setParts[] = $dialect->quoteIdentifier($name).' = ?';

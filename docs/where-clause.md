@@ -128,7 +128,7 @@ WhereClause::whereNone(
 // (NOT ((status = ?) OR (status = ?)))
 ```
 
-### `whereRaw($sql, $params = [])`
+### `whereRaw($sql, $params = [])` — also accepts a `RawSql`
 
 Escape hatch for conditions the builder cannot express natively: JSON operators,
 subqueries, `REGEXP`, full-text `MATCH … AGAINST`, etc. The SQL fragment is used
@@ -142,6 +142,26 @@ WhereClause::whereRaw('MATCH(`title`) AGAINST (? IN BOOLEAN MODE)', ['php +mysql
 ```
 
 The dialect passed to `render()` does not affect the output of a `whereRaw` node.
+
+You can also pass a pre-built `RawSql` value object — useful when the same fragment
+is reused as a `SET` value in `Record::updateWhere()` and as a WHERE condition:
+
+```php
+use Nandan108\Attrecord\RawSql;
+
+$jsonHas = new RawSql('JSON_CONTAINS(`tags`, ?)', ['"featured"']);
+
+WhereClause::whereRaw($jsonHas);          // same SQL + params as the string form
+
+// Reused as a SET value
+Order::updateWhere(
+    ['featured_at' => new RawSql('NOW()')],
+    WhereClause::whereRaw($jsonHas),
+);
+```
+
+When the first argument is a `RawSql`, the second `$params` argument is ignored —
+params come from the `RawSql` itself.
 
 ---
 
