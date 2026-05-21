@@ -278,6 +278,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
         foreach ($dirtyRecords as $r) {
             $r->beforeSave();
+            $r->validate();
         }
 
         $dirtyRecords = array_values($dirtyRecords);

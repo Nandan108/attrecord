@@ -6,7 +6,9 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
 - Dirty-tracking — `save()` only writes changed columns
 - Bulk upsert via `RecordSet::saveAll()` with a single SQL statement
 - Eager relation loading with no N+1 queries (`with()`)
-- Deadlock-safe locking helpers (`LockTier`, `Transaction`)
+- Domain invariants enforced at assignment and save time via a `validate()` hook
+- Deadlock-safe locking helpers (`LockTier`, `LockSet`, `Transaction`) + advisory locks
+- Unique-key aware upserts (`upsertByUniqueKey`, `updateByUniqueKey`)
 - Three included `DbSession` adapters: PDO, mysqli, and WordPress `wpdb`
 - Psalm-clean at level 1
 
@@ -90,6 +92,16 @@ Per-class override (e.g. a multi-tenant setup):
 Record::setConnection($tenantConn, forClass: Order::class);
 ```
 
+Optional: prefix every `Record` subclass table name globally (useful for WordPress or
+multi-tenant single-DB setups). Call before any DB operation:
+
+```php
+Record::setTablePrefix('wp_');   // Order → `wp_orders`, OrderLine → `wp_order_lines`
+```
+
+The prefix is prepended to whatever appears in `#[Table(name: …)]`. Changing it clears
+the schema cache so subsequent operations see the new prefix.
+
 ### 3 — Use
 
 ```php
@@ -106,6 +118,11 @@ echo $order->id;              // auto-assigned PK
 
 // Bulk-assign on an existing instance
 $order->set(['status' => 'confirmed', 'total' => 149.00])->save();
+
+// set() calls validate() by default — pass false to defer validation
+// (useful for test fixtures or staged construction across multiple set() calls).
+// save() / saveAll() will still validate at the boundary.
+$order->set(['status' => 'confirmed'], validate: false);
 
 // save() always returns $this — check $_saved if you need to know whether a write occurred
 $order->save();
@@ -149,11 +166,49 @@ $top10 = Order::find('`total` > ?', [100], 'ORDER BY `total` DESC LIMIT 10');
 // First match or null
 $draft = Order::findOne('`status` = ?', ['draft']);
 
+// findOne accepts ORDER BY and FOR UPDATE too
+$latestPending = Order::findOne(
+    '`status` = ?',
+    ['pending'],
+    orderByLimit: 'ORDER BY `placed_at` DESC',
+    forUpdate:    true,    // inside transactional() only
+);
+
 // Count
 $count = Order::countWhere('`status` = ?', ['pending']);
 
+// Bulk update — column → value map; values are typed via the column's serializer
+$updated = Order::updateWhere(
+    ['status' => 'archived'],
+    '`status` = ? AND `placed_at` < ?',
+    ['draft', '2024-01-01'],
+);
+
 // Bulk delete
 $deleted = Order::deleteWhere('`status` = ? AND `total` IS NULL', ['draft']);
+```
+
+### Raw SQL expressions in `updateWhere()`
+
+For values that must be evaluated by the database (function calls, CASE expressions,
+column-to-column assignments), wrap the expression in `RawSql`. The expression is
+embedded verbatim — no parameterisation, no escaping. **Never pass user input through
+`RawSql`.**
+
+```php
+use Nandan108\Attrecord\RawSql;
+
+// Increment a counter
+Order::updateWhere(
+    ['view_count' => new RawSql('`view_count` + 1')],
+    '`id` = ?', [$id],
+);
+
+// Conditional bulk write
+Order::updateWhere(
+    ['priority' => new RawSql('CASE WHEN `total` > 500 THEN 1 ELSE 0 END')],
+    '`status` = ?', ['pending'],
+);
 ```
 
 ### Convenience finders
@@ -196,7 +251,99 @@ $orders = Order::find($clause);
 via the class's configured dialect.
 
 See [docs/where-clause.md](docs/where-clause.md) for the full reference: `whereIn`,
-`whereInTuples`, `whereRaw`, variadic combinators, and the `render($dialect)` API.
+`whereInTuples`, `whereLike`, `whereBetween`, `whereNot`, `whereRaw`, variadic
+combinators, and the `render($dialect)` API.
+
+---
+
+## Unique keys & targeted upserts
+
+Declare non-PK unique keys with the repeatable `#[UniqueKey('name')]` attribute. Apply
+it to every column in the key using the same name (compound keys share one name across
+all member columns, listed in declaration order):
+
+```php
+use Nandan108\Attrecord\Attribute\{Column, UniqueKey};
+
+#[Table(name: 'inventory_items')]
+class InventoryItem extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+
+    // Single-column unique key
+    #[Column(ColumnType::VarChar, length: 64)]
+    #[UniqueKey('sku')]
+    public string $sku = '';
+
+    // Compound unique key: (location_id, bin) — same name on both columns
+    #[Column(ColumnType::BigIntUnsigned)]
+    #[UniqueKey('loc_bin')]
+    public int $location_id = 0;
+
+    #[Column(ColumnType::VarChar, length: 32)]
+    #[UniqueKey('loc_bin')]
+    public string $bin = '';
+
+    #[Column(ColumnType::IntUnsigned)]
+    public int $qty = 0;
+}
+```
+
+### `upsertByUniqueKey($conflictKey, $updateColumns)`
+
+INSERT this record; on conflict on the named unique key, UPDATE only the listed
+columns. Dialect-aware (uses `ON DUPLICATE KEY UPDATE` on MySQL/MariaDB, `ON CONFLICT
+… DO UPDATE` on PostgreSQL).
+
+```php
+$item = new InventoryItem();
+$item->sku = 'WIDGET-1';
+$item->location_id = 1;
+$item->bin = 'A-01';
+$item->qty = 10;
+
+// Insert if new; on SKU conflict, only overwrite qty
+$item->upsertByUniqueKey('sku', updateColumns: ['qty']);
+```
+
+### `updateByUniqueKey($fields = [])`
+
+Direct UPDATE without loading the row first. The WHERE clause is built automatically
+from the PK if non-null, else from the first declared `#[UniqueKey]` whose columns are
+all non-null. With an empty `$fields`, all non-null non-PK non-autoIncrement columns
+are written; pass an explicit list when you need to write nulls or restrict the SET
+clause.
+
+```php
+$item = new InventoryItem();
+$item->sku = 'WIDGET-1';   // matches the 'sku' unique key
+$item->qty = 25;
+
+// UPDATE inventory_items SET qty = 25 WHERE sku = 'WIDGET-1'
+$affected = $item->updateByUniqueKey();
+
+// Restrict / allow nulls explicitly
+$item->updateByUniqueKey(fields: ['qty', 'notes']);
+```
+
+Returns the affected row count (0 if no match, 1 on success). Throws
+`AttrecordException` when no viable WHERE clause can be built.
+
+### `updateByWhere($where, $params = [], $fields = [])`
+
+Bulk UPDATE driven by instance properties — same SET-clause semantics as
+`updateByUniqueKey()` but with a caller-supplied WHERE clause. Useful when you want
+type-safe value assignment via record properties but the WHERE is not derivable from
+a PK or declared unique key.
+
+```php
+$proto = new InventoryItem();
+$proto->qty = 0;
+
+// Zero out qty for every item at a given location
+$proto->updateByWhere('`location_id` = ?', [$locationId]);
+```
 
 ---
 
@@ -217,6 +364,49 @@ $order->dirtyFields();
 
 ---
 
+## Validation
+
+Subclasses override `validate()` to enforce domain invariants — field-level rules
+(positive ids, non-empty required strings) and cross-field constraints (mutually
+exclusive flags, dates ordered, etc.). The base implementation is a no-op, so records
+without invariants need not override.
+
+```php
+use Nandan108\Attrecord\Exception\RecordValidationException;
+
+class Order extends Record
+{
+    // ... columns ...
+
+    public function validate(): void
+    {
+        if ($this->total !== null && $this->total < 0) {
+            throw new RecordValidationException(
+                'Order total cannot be negative.',
+                context: ['total' => $this->total],
+            );
+        }
+        if ($this->status === 'shipped' && $this->placed_at === null) {
+            throw new RecordValidationException('Shipped order must have a placed_at.');
+        }
+    }
+}
+```
+
+`validate()` runs automatically at three points:
+
+- At the end of `set()` when `$validate` is true (the default) — catches invalid state
+  at the point of mass assignment.
+- Inside `save()` just after `beforeSave()` — guarantees no invalid row reaches the DB,
+  even if a caller bypassed `set()` and assigned properties directly.
+- Inside `RecordSet::saveAll()` in the same loop as `beforeSave()`.
+
+Throw `RecordValidationException` (or a subclass) with a human-readable message and
+optional `context` array. The context is stored on the exception for the caller's
+error handling.
+
+---
+
 ## RecordSet
 
 `find()` returns a `RecordSet<T>` — a typed, iterable collection.
@@ -230,21 +420,41 @@ foreach ($orders as $o) {} // Iterator
 $orders->first();           // ?Order
 $orders->last();            // ?Order
 
-// Map a column to a flat array
-$ids = $orders->pluck('id');   // list<mixed>
+// Extract one field, keyed by the PK
+$idToTotal = $orders->pluck('total');           // [pk => total]
+
+// Extract multiple fields, keyed by the PK
+$details = $orders->pluck(['status', 'total']); // [pk => ['status' => …, 'total' => …]]
+
+// Group + extract — extra args are the grouping key(s); leaves are field values
+$byStatusTotals = $orders->pluck('total', 'status');
+// ['pending' => [10.0, 25.5, …], 'confirmed' => [99.95, …]]
+
+$byStatusDetails = $orders->pluck(['id', 'total'], 'status');
+// ['pending' => [['id' => 1, 'total' => 10.0], …], …]
 
 // Index by a unique column
 $byId = $orders->recordsByKey('id');  // array<int|string, Order>
 
-// Group by a column
+// Group by a single column
 $byStatus = $orders->recordsGroupedByKey('status');  // array<string, RecordSet<Order>>
+
+// Nested group by multiple columns — leaves are RecordSets, not plain arrays
+$byStatusByYear = $orders->recordsGroupedByKeys('status', 'year');
+// ['pending' => [2024 => RecordSet<Order>, 2025 => RecordSet<Order>], …]
+
+// Convert to raw arrays (column → scalar) — useful for serialisation
+$rows = $orders->toArraySet();   // list<array<string, scalar|null>>
 ```
 
 ### Bulk operations
 
 ```php
-// Batch upsert — deadlock-safe 3-step strategy for all dirty records
+// Stamp a shared field on every record before saving (e.g. updated_at, actor_id)
 $set = new RecordSet([$line1, $line2, $line3]);
+$set->bulkSet(['updated_by' => $userId]);
+
+// Batch upsert — deadlock-safe 3-step strategy for all dirty records
 $result = $set->saveAll();   // ?SaveResult — null when nothing to save
 
 $result->inserted;      // rows newly written
@@ -252,18 +462,25 @@ $result->updated;       // rows overwritten
 $result->total();       // inserted + updated
 $result->insertedIds;   // list<int|string> — PKs of newly inserted auto-increment records
 
+// Force-save (skip dirty filter) — useful in tests and for re-asserting state
+$set->saveAll(force: true);
+
 // Bulk delete
 $deleted = $set->deleteAll();  // DELETE FROM … WHERE id IN (…)
 ```
 
 **Notes on `saveAll()`:**
 
-- Clean records are skipped automatically.
+- Clean records are skipped automatically (pass `force: true` to override).
+- `beforeSave()` and `validate()` run on every dirty record before any SQL is issued.
 - `insertedIds` is populated for new (no-PK) records: via `RETURNING` on PostgreSQL, or via
   `lastInsertId()` + sequential range on MySQL/MariaDB. On MySQL/MariaDB clustered setups with
   non-sequential auto-increment, use individual `Record::save()` calls instead.
 - For tables with natural (non-auto-increment) PKs, `saveAll()` performs a true upsert (PKs are
   already set on the PHP objects).
+
+`Record::save()` accepts the same `$force` flag — `$order->save(force: true)` writes every
+column regardless of dirty state.
 
 ---
 
@@ -424,6 +641,55 @@ Order::transactional(function (Transaction $tx): void {
 
     // Reversed order would throw LockTierConflictException
 });
+```
+
+### `LockSet::acquire()` — multi-class lock acquisition
+
+For compound operations that lock rows across several entity classes at once, use
+`LockSet::acquire()`. It sorts the targets by their declared `#[LockTier]` (lowest
+first), then issues `SELECT … FOR UPDATE` with `ORDER BY pk ASC` within each table.
+This eliminates the class of deadlock caused by inconsistent acquisition order across
+concurrent transactions.
+
+```php
+use Nandan108\Attrecord\LockSet;
+
+PurchaseOrder::transactional(function (Transaction $tx) use ($poId, $lineIds, $slotId): void {
+    $session = PurchaseOrder::connection()->session;
+
+    $locks = LockSet::acquire($session, [
+        PurchaseOrder::class     => [$poId],
+        PurchaseOrderLine::class => $lineIds,
+        InventorySlot::class     => [$slotId],
+    ], $tx);
+
+    // $locks[PurchaseOrder::class]     is RecordSet<PurchaseOrder>
+    // $locks[PurchaseOrderLine::class] is RecordSet<PurchaseOrderLine>
+    foreach ($locks[PurchaseOrderLine::class] as $line) {
+        // … process under lock
+    }
+});
+```
+
+Throws `MissingLockTierException` if any target class lacks `#[LockTier]`, and
+`LockTierConflictException` if two classes share the same tier in the same set.
+
+### Advisory locks
+
+`DbSession::withAdvisoryLock()` wraps `GET_LOCK` / `RELEASE_LOCK` (MySQL/MariaDB) for
+named application-level mutexes. Advisory locks are connection-scoped and do not
+interact with row or table locks — safe to nest inside a transaction.
+
+```php
+$conn = Record::connection();
+
+$conn->session->withAdvisoryLock(
+    lockName:       'invflux.reconcile.shipment-42',
+    timeoutSeconds: 5,          // 0 = fail immediately, -1 = wait indefinitely
+    callback:       function () {
+        // ... serialise this critical section across all PHP workers
+    },
+);
 ```
 
 ---

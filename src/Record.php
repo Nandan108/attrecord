@@ -8,6 +8,7 @@ use Nandan108\Attrecord\Exception\AttrecordException;
 use Nandan108\Attrecord\Exception\RecordDeleteException;
 use Nandan108\Attrecord\Exception\RecordNotFoundException;
 use Nandan108\Attrecord\Exception\RecordSaveException;
+use Nandan108\Attrecord\Exception\RecordValidationException;
 use Nandan108\Attrecord\Exception\SchemaException;
 use Nandan108\Attrecord\Schema\TableSchema;
 
@@ -157,18 +158,48 @@ abstract class Record
      * Only sets properties that exist as public column members on the record;
      * unknown keys are silently ignored.
      *
+     * Calls {@see validate()} at the end by default to surface invariant violations
+     * at the point of assignment. Pass `false` to defer validation (useful for
+     * test fixtures or for staged construction that completes invariants over
+     * multiple `set()` calls — but `save()` will still validate at the boundary).
+     *
      * @api
      *
      * @param array<string, mixed> $attrs
+     *
+     * @throws RecordValidationException when `$validate` is true and `validate()` rejects the resulting state
      */
-    public function set(array $attrs): static
+    public function set(array $attrs, bool $validate = true): static
     {
         /** @psalm-var mixed $value */
         foreach ($attrs as $key => $value) {
             $this->$key = $value;
         }
 
+        if ($validate) {
+            $this->validate();
+        }
+
         return $this;
+    }
+
+    /**
+     * Verify that the record's current property values satisfy its domain invariants.
+     *
+     * Subclasses override this hook to enforce field-level and cross-field constraints
+     * (positive ids, non-empty required strings, mutually exclusive flags, etc.). The
+     * base implementation is a no-op so records without invariants need not override.
+     *
+     * Called automatically by {@see set()} (when `$validate` is true) and by
+     * {@see save()} and {@see RecordSet::saveAll()} after `beforeSave()`. Throw
+     * {@see RecordValidationException} (or a subclass) on violation.
+     *
+     * @api
+     *
+     * @throws RecordValidationException when an invariant is violated
+     */
+    public function validate(): void
+    {
     }
 
     // -----------------------------------------------------------------
@@ -303,8 +334,6 @@ abstract class Record
      * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
      *
      * @psalm-suppress MoreSpecificReturnType, LessSpecificReturnStatement
-     *
-     * @return ?static
      */
     public static function findOne(
         string | WhereClause $where,
@@ -504,6 +533,7 @@ abstract class Record
     public function save(bool $force = false): static
     {
         $this->beforeSave();
+        $this->validate();
 
         $schema = static::schema();
         $conn = static::connection();
