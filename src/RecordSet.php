@@ -293,9 +293,11 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $qpk = $conn->dialect->quoteIdentifier($pk);
         $returningSuffix = $conn->dialect->insertReturningSuffix($qpk);
 
+        $pkAutoIncrement = $schema->columns[$pk]->autoIncrement;
+
         try {
             $counts = $session->transactional(
-                function () use ($session, $plan, $pk, $returningSuffix): array {
+                function () use ($session, $plan, $pk, $returningSuffix, $pkAutoIncrement): array {
                     $inserted = 0;
                     $updated = 0;
                     $insertedIds = [];
@@ -310,9 +312,12 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                             }
                             $inserted += \count($rows);
                         } else {
-                            // MySQL/MariaDB: lastInsertId() is the first ID; range is sequential
+                            // MySQL/MariaDB: lastInsertId() is the first ID; range is sequential.
+                            // Only meaningful for auto-increment PKs — for application-minted
+                            // PKs (e.g. BINARY(16) UUIDs) the caller already knows the IDs,
+                            // so leave $insertedIds empty.
                             $n = $session->exec($plan['insert']);
-                            if ($n > 0) {
+                            if ($n > 0 && $pkAutoIncrement) {
                                 $firstId = (int) $session->lastInsertId();
                                 for ($i = 0; $i < $n; ++$i) {
                                     $insertedIds[] = $firstId + $i;

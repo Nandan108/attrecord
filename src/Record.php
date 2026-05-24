@@ -592,7 +592,13 @@ abstract class Record
                 } else {
                     /** @psalm-suppress MixedArgumentTypeCoercion */
                     $session->exec($insertSql, $params);
-                    $this->$pk = $session->lastInsertId();
+                    // Only backfill the PK from lastInsertId() when the PK is
+                    // an auto-increment integer. For application-minted PKs
+                    // (e.g. BINARY(16) UUIDs), the application already set
+                    // $this->$pk before save() and lastInsertId() is meaningless.
+                    if ($schema->columns[$pk]->autoIncrement) {
+                        $this->$pk = $session->lastInsertId();
+                    }
                 }
                 $this->_isNew = false;
             } else {
