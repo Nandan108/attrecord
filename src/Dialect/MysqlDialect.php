@@ -21,6 +21,15 @@ use Nandan108\Attrecord\UpsertSql;
  */
 final class MysqlDialect implements SqlDialect
 {
+    /** Default storage engine used when a Record does not declare #[MysqlTableOptions]. */
+    public const DEFAULT_ENGINE = 'InnoDB';
+
+    /** Default charset used when a Record does not declare #[MysqlTableOptions]. */
+    public const DEFAULT_CHARSET = 'utf8mb4';
+
+    /** Default collation used when a Record does not declare #[MysqlTableOptions]. */
+    public const DEFAULT_COLLATION = 'utf8mb4_unicode_ci';
+
     #[\Override]
     public function quoteIdentifier(string $name): string
     {
@@ -226,9 +235,10 @@ final class MysqlDialect implements SqlDialect
 
         $sql = "CREATE TABLE {$qt} (\n".\implode(",\n", $lines)."\n)";
 
-        $sql .= ' ENGINE='.$schema->engine;
-        $sql .= ' DEFAULT CHARSET='.$schema->charset;
-        $sql .= ' COLLATE='.$schema->collation;
+        $opts = $schema->mysqlOptions;
+        $sql .= ' ENGINE='.($opts?->engine ?? self::DEFAULT_ENGINE);
+        $sql .= ' DEFAULT CHARSET='.($opts?->charset ?? self::DEFAULT_CHARSET);
+        $sql .= ' COLLATE='.($opts?->collation ?? self::DEFAULT_COLLATION);
 
         if (null !== $schema->comment) {
             $sql .= " COMMENT='".$this->escapeString($schema->comment)."'";

@@ -420,18 +420,23 @@ support is Phase 2.
 )]
 ```
 
-`#[Table]` additions:
+`#[Table]` carries only cross-dialect fields (`name`, `primaryKey`, `comment`).
+MySQL-specific options live on a separate `#[MysqlTableOptions]` class-level
+attribute that other dialects ignore. Every field is nullable so you override
+only what you care about; `MysqlDialect` supplies sensible defaults
+(`InnoDB` / `utf8mb4` / `utf8mb4_unicode_ci`) for fields left null and for
+Records that omit `#[MysqlTableOptions]` entirely.
 
 ```php
-#[Table(
-    name:       'orders',
-    primaryKey: 'id',
-    engine:     'InnoDB',
-    charset:    'utf8mb4',
-    collation:  'utf8mb4_unicode_ci',
-    comment:    'Customer orders',
-)]
+use Nandan108\Attrecord\Attribute\{Table, MysqlTableOptions};
+
+#[Table(name: 'orders', primaryKey: 'id', comment: 'Customer orders')]
+#[MysqlTableOptions(engine: 'Memory')]   // override engine only; charset/collation stay default
+final class Order extends Record { /* ... */ }
 ```
+
+A future `#[PgsqlTableOptions(...)]` will carry Postgres-specific options
+(tablespace, UNLOGGED, etc.) following the same pattern.
 
 `#[Relation]` FK-constraint controls:
 

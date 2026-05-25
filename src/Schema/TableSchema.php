@@ -7,6 +7,7 @@ namespace Nandan108\Attrecord\Schema;
 use Nandan108\Attrecord\Attribute\Column;
 use Nandan108\Attrecord\Attribute\Index;
 use Nandan108\Attrecord\Attribute\LockTier;
+use Nandan108\Attrecord\Attribute\MysqlTableOptions;
 use Nandan108\Attrecord\Attribute\Relation;
 use Nandan108\Attrecord\Attribute\Table;
 use Nandan108\Attrecord\Attribute\UniqueKey;
@@ -83,10 +84,8 @@ final class TableSchema
         array $uniqueKeys,
         array $indexes,
         array $foreignKeys,
-        public readonly string $engine,
-        public readonly string $charset,
-        public readonly string $collation,
         public readonly ?string $comment,
+        public readonly ?MysqlTableOptions $mysqlOptions,
     ) {
         $this->columns = $columns;
         $this->relations = $relations;
@@ -325,6 +324,10 @@ final class TableSchema
         // --- Foreign keys from owning-side relations ---
         $foreignKeys = self::collectForeignKeys($class, $tableName, $relations, $columns);
 
+        // --- Dialect-specific options (read by the matching dialect only) ---
+        $mysqlOptionsAttrs = $reflClass->getAttributes(MysqlTableOptions::class);
+        $mysqlOptions = empty($mysqlOptionsAttrs) ? null : $mysqlOptionsAttrs[0]->newInstance();
+
         return self::$cache[$class] = new self(
             tableName: $tableName,
             pk: $pk,
@@ -335,10 +338,8 @@ final class TableSchema
             uniqueKeys: $uniqueKeys,
             indexes: $indexes,
             foreignKeys: $foreignKeys,
-            engine: $tableAttr->engine,
-            charset: $tableAttr->charset,
-            collation: $tableAttr->collation,
             comment: $tableAttr->comment,
+            mysqlOptions: $mysqlOptions,
         );
     }
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord\Tests\Unit;
 
 use Nandan108\Attrecord\Attribute\Column;
+use Nandan108\Attrecord\Attribute\MysqlTableOptions;
 use Nandan108\Attrecord\Attribute\Table;
 use Nandan108\Attrecord\Attribute\UniqueKey;
 use Nandan108\Attrecord\Dialect\MysqlDialect;
@@ -38,8 +39,9 @@ final class MysqlDialectCreateTableTest extends TestCase
     // Header / column / table options
     // -----------------------------------------------------------------
 
-    public function testEmitsHeaderAndTableOptions(): void
+    public function testEmitsHeaderAndDefaultTableOptionsWhenAttributeAbsent(): void
     {
+        // DdlOrderRecord has no #[MysqlTableOptions] — dialect defaults apply.
         $sql = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlOrderRecord::class));
 
         $this->assertStringStartsWith('CREATE TABLE `attrecord_ddl_orders` (', $sql);
@@ -47,6 +49,26 @@ final class MysqlDialectCreateTableTest extends TestCase
         $this->assertStringContainsString('DEFAULT CHARSET=utf8mb4', $sql);
         $this->assertStringContainsString('COLLATE=utf8mb4_unicode_ci', $sql);
         $this->assertStringContainsString("COMMENT='Test orders table'", $sql);
+    }
+
+    public function testMysqlTableOptionsAttributeOverridesAllThreeDefaults(): void
+    {
+        $sql = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlMysqlOptionsRecord::class));
+
+        $this->assertStringContainsString(') ENGINE=Memory', $sql);
+        $this->assertStringContainsString('DEFAULT CHARSET=latin1', $sql);
+        $this->assertStringContainsString('COLLATE=latin1_swedish_ci', $sql);
+    }
+
+    public function testMysqlTableOptionsAttributeOverridesOnlySpecifiedFields(): void
+    {
+        // DdlPartialMysqlOptionsRecord overrides ENGINE only; CHARSET and COLLATE
+        // must fall back to dialect defaults (NOT to a hardcoded value on the attribute).
+        $sql = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlPartialMysqlOptionsRecord::class));
+
+        $this->assertStringContainsString(') ENGINE=Memory', $sql);
+        $this->assertStringContainsString('DEFAULT CHARSET=utf8mb4', $sql);
+        $this->assertStringContainsString('COLLATE=utf8mb4_unicode_ci', $sql);
     }
 
     public function testEmitsAutoIncrementPrimaryKey(): void
@@ -315,4 +337,22 @@ final class DdlPhantomColumnUniqueKeyRecord extends Record
 
     #[Column(ColumnType::VarChar, length: 10)]
     public string $name = '';
+}
+
+/** @internal Exercises #[MysqlTableOptions] overriding all three table-level fields. */
+#[Table(name: 'attrecord_mysql_opts')]
+#[MysqlTableOptions(engine: 'Memory', charset: 'latin1', collation: 'latin1_swedish_ci')]
+final class DdlMysqlOptionsRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+}
+
+/** @internal Exercises partial override — engine only; charset/collation fall back to dialect defaults. */
+#[Table(name: 'attrecord_partial_mysql_opts')]
+#[MysqlTableOptions(engine: 'Memory')]
+final class DdlPartialMysqlOptionsRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
 }

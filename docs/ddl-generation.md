@@ -100,14 +100,38 @@ sanctioned way to diverge property name from column name.
 
 ### `#[Table]` — new fields
 
-| Field       | Default                | Purpose                       |
-| ----------- | ---------------------- | ----------------------------- |
-| `engine`    | `'InnoDB'`             | MySQL storage engine.         |
-| `charset`   | `'utf8mb4'`            | Default charset for the table.|
-| `collation` | `'utf8mb4_unicode_ci'` | Default collation.            |
-| `comment`   | `null`                 | Table comment.                |
+| Field       | Default | Purpose                                                                 |
+| ----------- | ------- | ----------------------------------------------------------------------- |
+| `comment`   | `null`  | Table comment. Both MySQL and Postgres support this (different syntax). |
 
-These are MySQL-specific; the Postgres implementation will ignore them.
+`#[Table]` carries only **cross-dialect** fields. MySQL-specific options (engine,
+charset, collation) live on a separate `#[MysqlTableOptions]` attribute — see
+below.
+
+### `#[MysqlTableOptions]` — MySQL-only table options
+
+Class-level attribute read **only** by `MysqlDialect`. Other dialects ignore it
+entirely. Every field is nullable so users override only what they care about;
+the dialect supplies sensible defaults for any field left null (and for Records
+that omit this attribute entirely).
+
+```php
+#[Table(name: 'fast_lookup')]
+#[MysqlTableOptions(engine: 'Memory')]    // override engine only
+final class FastLookup extends Record { ... }
+```
+
+| Field       | Dialect default        | Purpose                          |
+| ----------- | ---------------------- | -------------------------------- |
+| `engine`    | `'InnoDB'`             | MySQL storage engine.            |
+| `charset`   | `'utf8mb4'`            | Default charset for the table.   |
+| `collation` | `'utf8mb4_unicode_ci'` | Default collation.               |
+
+Defaults live in `MysqlDialect::DEFAULT_ENGINE` / `DEFAULT_CHARSET` /
+`DEFAULT_COLLATION` constants — single source of truth.
+
+Future `#[PgsqlTableOptions(tablespace, unlogged, ...)]` will follow the same
+pattern; not defined speculatively.
 
 ### `#[Relation]` — new fields
 
@@ -181,7 +205,8 @@ Rules enforced at schema build:
 - `$reflProperties` — `array<string, \ReflectionProperty>` keyed by **column name** (paired with `$columns`).
 - `$uniqueKeys`, `$indexes` — `array<string, list<string>>` mapping key name → ordered column names.
 - `$foreignKeys` — `list<ForeignKeyDefinition>` collected from owning-side relations (`ManyToOne`, `OneToOne`) with `emitFk: true`.
-- `$engine`, `$charset`, `$collation`, `$comment` — from `#[Table]`.
+- `$comment` — from `#[Table]`.
+- `$mysqlOptions` — `?MysqlTableOptions` from the optional `#[MysqlTableOptions]` class-level attribute. Null when the attribute is absent; `MysqlDialect` resolves field-by-field against its own defaults.
 - `propFor(string $columnName): string` — resolves a column name to its corresponding property name (used by relation loaders that translate `#[Relation]` column refs to PHP property accessors).
 
 ---
