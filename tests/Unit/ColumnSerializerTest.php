@@ -21,6 +21,7 @@ final class ColumnSerializerTest extends TestCase
     {
         return new ColumnDefinition(
             name: 'col',
+            propertyName: 'col',
             type: $type,
             nullable: false,
             autoIncrement: false,

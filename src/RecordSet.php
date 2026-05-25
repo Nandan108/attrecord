@@ -75,11 +75,11 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         }
 
         if (empty($keys)) {
-            $pk = $this->records[0]::schema()->primaryKey;
+            $pkProp = $this->records[0]::schema()->pkProp;
             $out = [];
             foreach ($this->records as $r) {
                 /** @psalm-suppress MixedArrayOffset, MixedAssignment */
-                $out[$r->$pk] = $this->extractFields($r, $fields);
+                $out[$r->{$pkProp}] = $this->extractFields($r, $fields);
             }
 
             return $out;
@@ -266,7 +266,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $first = $this->records[0];
         $schema = $first::schema();
         $conn = $first::connection();
-        $pk = $schema->primaryKey;
+        $pk = $schema->pk;
 
         $dirtyRecords = $force
             ? $this->records
@@ -283,7 +283,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
         $dirtyRecords = array_values($dirtyRecords);
 
-        $plan = $this->buildPlan($dirtyRecords, $pk, $conn->dialect, $schema);
+        $plan = $this->buildPlan($dirtyRecords, $schema, $conn->dialect);
 
         if (null === $plan['insert'] && null === $plan['upsert']) {
             return null;
@@ -369,7 +369,6 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $first = $this->records[0];
         $schema = $first::schema();
         $conn = $first::connection();
-        $pk = $schema->primaryKey;
 
         $dirty = $force
             ? $this->records
@@ -380,7 +379,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             return null;
         }
 
-        $plan = $this->buildPlan($dirty, $pk, $conn->dialect, $schema);
+        $plan = $this->buildPlan($dirty, $schema, $conn->dialect);
 
         return $plan['upsert'];
     }
@@ -392,37 +391,43 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      *
      * @return array{insert: ?string, upsert: ?UpsertSql}
      */
-    private function buildPlan(array $dirty, string $pk, SqlDialect $dialect, TableSchema $schema): array
+    private function buildPlan(array $dirty, TableSchema $schema, SqlDialect $dialect): array
     {
-        $noKeyRecords = array_values(array_filter($dirty, fn (Record $r) => null === $r->$pk));
-        $keyedRecords = array_values(array_filter($dirty, fn (Record $r) => null !== $r->$pk));
+        $pk = $schema->pk;
+        $pkProp = $schema->pkProp;
+        $noKeyRecords = array_values(array_filter($dirty, fn (Record $r) => null === $r->{$pkProp}));
+        $keyedRecords = array_values(array_filter($dirty, fn (Record $r) => null !== $r->{$pkProp}));
 
         $insert = null;
         $upsert = null;
 
         // Plain INSERT for new (auto-increment PK) records — no upsert semantics needed
         if (!empty($noKeyRecords)) {
-            $candidates = array_keys(array_filter(
+            $candidates = array_filter(
                 $schema->columns,
                 fn ($col) => !$col->autoIncrement,
-            ));
+            );
 
             $presentCols = [];
             foreach ($noKeyRecords as $record) {
-                foreach ($candidates as $name) {
-                    if (($record->$name ?? null) !== null) {
-                        $presentCols[$name] = true;
+                foreach ($candidates as $colName => $col) {
+                    if (($record->{$col->propertyName} ?? null) !== null) {
+                        $presentCols[$colName] = true;
                     }
                 }
             }
-            $colNames = array_values(array_filter($candidates, fn ($n) => isset($presentCols[$n])));
+            $colNames = array_values(array_filter(
+                array_keys($candidates),
+                fn ($n) => isset($presentCols[$n]),
+            ));
 
             if (!empty($colNames)) {
                 $rows = [];
                 foreach ($noKeyRecords as $record) {
                     $row = [];
-                    foreach ($colNames as $name) {
-                        $row[] = $dialect->toLiteral($record->$name ?? null, $schema->columns[$name]);
+                    foreach ($colNames as $colName) {
+                        $col = $schema->columns[$colName];
+                        $row[] = $dialect->toLiteral($record->{$col->propertyName} ?? null, $col);
                     }
                     $rows[] = $row;
                 }
@@ -432,25 +437,27 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
         // Deadlock-safe 3-step upsert for records with a known PK
         if (!empty($keyedRecords)) {
-            $candidates = array_keys($schema->columns);
-
             // Always include PK; include other columns present in at least one record
             $presentCols = [$pk => true];
             foreach ($keyedRecords as $record) {
-                foreach ($candidates as $name) {
-                    if (($record->$name ?? null) !== null) {
-                        $presentCols[$name] = true;
+                foreach ($schema->columns as $colName => $col) {
+                    if (($record->{$col->propertyName} ?? null) !== null) {
+                        $presentCols[$colName] = true;
                     }
                 }
             }
-            $colNames = array_values(array_filter($candidates, fn ($n) => isset($presentCols[$n])));
+            $colNames = array_values(array_filter(
+                array_keys($schema->columns),
+                fn ($n) => isset($presentCols[$n]),
+            ));
 
             if (!empty($colNames)) {
                 $rows = [];
                 foreach ($keyedRecords as $record) {
                     $row = [];
-                    foreach ($colNames as $name) {
-                        $row[] = $dialect->toLiteral($record->$name ?? null, $schema->columns[$name]);
+                    foreach ($colNames as $colName) {
+                        $col = $schema->columns[$colName];
+                        $row[] = $dialect->toLiteral($record->{$col->propertyName} ?? null, $col);
                     }
                     $rows[] = $row;
                 }
@@ -475,10 +482,11 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
         $first = $this->records[0];
         $schema = $first::schema();
-        $pk = $schema->primaryKey;
+        $pk = $schema->pk;
+        $pkProp = $schema->pkProp;
         /** @psalm-suppress MixedReturnStatement */
         $ids = array_values(array_filter(
-            array_map(fn (Record $r): mixed => $r->$pk, $this->records),
+            array_map(fn (Record $r): mixed => $r->{$pkProp}, $this->records),
         ));
 
         if (empty($ids)) {
@@ -527,7 +535,8 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                 \sprintf('Unknown relation "%s" on %s.', $relName, $first::class),
             );
 
-        $localKey = $relDef->localKey ?? $schema->primaryKey;
+        $localKey = $relDef->localKey ?? $schema->pk;
+        $localProp = $schema->propFor($localKey);
 
         switch ($relDef->type) {
             case RelationType::OneToMany:
@@ -536,16 +545,18 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                 /** @var class-string<Record> $targetClass */
                 $targetClass = $relDef->targetClass;
                 $fk = (string) $relDef->foreignKey;
-                $localValues = array_values(array_unique($this->pluck($localKey)));
+                $targetSchema = TableSchema::fromClass($targetClass);
+                $fkProp = $targetSchema->propFor($fk);
+                $localValues = array_values(array_unique($this->pluck($localProp)));
                 $placeholders = implode(', ', array_fill(0, \count($localValues), '?'));
                 $qfk = $targetClass::connection()->dialect->quoteIdentifier($fk);
                 /** @psalm-suppress MixedArgumentTypeCoercion */
                 $related = $targetClass::find("{$qfk} IN ({$placeholders})", $localValues);
 
-                $grouped = $related->recordsGroupedByKey($fk);
+                $grouped = $related->recordsGroupedByKey($fkProp);
                 foreach ($this->records as $record) {
                     /** @psalm-suppress MixedArrayOffset */
-                    $record->$relName = $grouped[$record->$localKey] ?? new self([]);
+                    $record->$relName = $grouped[$record->{$localProp}] ?? new self([]);
                 }
                 break;
 
@@ -555,24 +566,26 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                 /** @var class-string<Record> $targetClass */
                 $targetClass = $relDef->targetClass;
                 $fk = (string) $relDef->foreignKey;
-                $fkValues = array_values(array_unique(array_filter($this->pluck($fk))));
+                $fkProp = $schema->propFor($fk);
+                $fkValues = array_values(array_unique(array_filter($this->pluck($fkProp))));
                 $targetSchema = TableSchema::fromClass($targetClass);
-                $targetPk = $targetSchema->primaryKey;
+                $targetPk = $targetSchema->pk;
+                $targetPkProp = $targetSchema->pkProp;
                 $placeholders = implode(', ', array_fill(0, \count($fkValues), '?'));
                 $qtpk = $targetClass::connection()->dialect->quoteIdentifier($targetPk);
                 /** @psalm-suppress MixedArgumentTypeCoercion */
                 $related = $targetClass::find("{$qtpk} IN ({$placeholders})", $fkValues);
 
-                $byPk = $related->recordsByKey($targetPk);
+                $byPk = $related->recordsByKey($targetPkProp);
                 foreach ($this->records as $record) {
                     /** @psalm-suppress MixedArrayOffset */
-                    $record->$relName = $byPk[$record->$fk] ?? null;
+                    $record->$relName = $byPk[$record->{$fkProp}] ?? null;
                 }
                 break;
 
             case RelationType::MorphMany:
             case RelationType::MorphOne:
-                $this->loadMorphParent($relName, $relDef, $localKey);
+                $this->loadMorphParent($relName, $relDef, $localProp);
                 break;
 
             case RelationType::MorphTo:
@@ -616,7 +629,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     private function loadMorphParent(
         string $relName,
         RelationDefinition $relDef,
-        string $localKey,
+        string $localProp,
     ): void {
         /** @var class-string<Record> $targetClass */
         $targetClass = $relDef->targetClass;
@@ -624,7 +637,10 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $morphKeyCol = (string) $relDef->morphKey;
         $morphValue = $relDef->morphValue;
 
-        $localValues = array_values(array_unique($this->pluck($localKey)));
+        $targetSchema = TableSchema::fromClass($targetClass);
+        $morphKeyProp = $targetSchema->propFor($morphKeyCol);
+
+        $localValues = array_values(array_unique($this->pluck($localProp)));
         if (empty($localValues)) {
             $empty = RelationType::MorphOne === $relDef->type ? null : new self([]);
             foreach ($this->records as $record) {
@@ -645,16 +661,16 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         );
 
         if (RelationType::MorphOne === $relDef->type) {
-            $grouped = $related->recordsGroupedByKey($morphKeyCol);
+            $grouped = $related->recordsGroupedByKey($morphKeyProp);
             foreach ($this->records as $record) {
                 /** @psalm-suppress MixedArrayOffset */
-                $record->$relName = ($grouped[$record->$localKey] ?? null)?->first();
+                $record->$relName = ($grouped[$record->{$localProp}] ?? null)?->first();
             }
         } else {
-            $grouped = $related->recordsGroupedByKey($morphKeyCol);
+            $grouped = $related->recordsGroupedByKey($morphKeyProp);
             foreach ($this->records as $record) {
                 /** @psalm-suppress MixedArrayOffset */
-                $record->$relName = $grouped[$record->$localKey] ?? new self([]);
+                $record->$relName = $grouped[$record->{$localProp}] ?? new self([]);
             }
         }
     }
@@ -668,8 +684,14 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      */
     private function loadMorphChild(string $relName, RelationDefinition $relDef): void
     {
+        if (empty($this->records)) {
+            return;
+        }
+        $localSchema = $this->records[0]::schema();
         $morphTypeCol = (string) $relDef->morphType;
         $morphKeyCol = (string) $relDef->morphKey;
+        $morphTypeProp = $localSchema->propFor($morphTypeCol);
+        $morphKeyProp = $localSchema->propFor($morphKeyCol);
         /** @var array<int|string, class-string<Record>> $morphMap */
         $morphMap = $relDef->morphMap ?? [];
 
@@ -678,7 +700,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $groups = [];
         foreach ($this->records as $record) {
             /** @psalm-suppress MixedAssignment */
-            $typeVal = $record->$morphTypeCol;
+            $typeVal = $record->{$morphTypeProp};
             // Records with no type set are skipped; the morphMap lookup below
             // handles unknown discriminator values gracefully.
             if (null === $typeVal) {
@@ -696,20 +718,22 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
             /** @psalm-suppress MixedReturnStatement, MixedAssignment */
             $ids = array_values(array_unique(array_map(
-                fn (Record $r): mixed => $r->$morphKeyCol,
+                fn (Record $r): mixed => $r->{$morphKeyProp},
                 $groupRecords,
             )));
 
-            $targetPk = TableSchema::fromClass($morphTargetClass)->primaryKey;
+            $targetSchema = TableSchema::fromClass($morphTargetClass);
+            $targetPk = $targetSchema->pk;
+            $targetPkProp = $targetSchema->pkProp;
             $placeholders = implode(', ', array_fill(0, \count($ids), '?'));
             $qtpk = $morphTargetClass::connection()->dialect->quoteIdentifier($targetPk);
             /** @psalm-suppress MixedArgumentTypeCoercion */
             $related = $morphTargetClass::find("{$qtpk} IN ({$placeholders})", $ids);
-            $byPk = $related->recordsByKey($targetPk);
+            $byPk = $related->recordsByKey($targetPkProp);
 
             foreach ($groupRecords as $record) {
                 /** @psalm-suppress MixedArrayOffset */
-                $record->$relName = $byPk[$record->$morphKeyCol] ?? null;
+                $record->$relName = $byPk[$record->{$morphKeyProp}] ?? null;
             }
         }
     }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord;
 
 use Nandan108\Attrecord\Schema\ColumnDefinition;
+use Nandan108\Attrecord\Schema\TableSchema;
 
 /**
  * Strategy for dialect-specific SQL generation.
@@ -119,4 +120,16 @@ interface SqlDialect
         array $rows,
         array $updateColumns,
     ): UpsertSql;
+
+    /**
+     * Emit a `CREATE TABLE` statement for a compiled {@see TableSchema}.
+     *
+     * Includes primary key, unique keys, secondary indexes, and FOREIGN KEY
+     * constraints derived from owning-side relations. Table options (engine,
+     * charset, collation, comment) are dialect-dependent and may be ignored
+     * by non-MySQL dialects.
+     *
+     * @throws Exception\SchemaException for invalid metadata that the schema builder did not already catch
+     */
+    public function buildCreateTable(TableSchema $schema): string;
 }

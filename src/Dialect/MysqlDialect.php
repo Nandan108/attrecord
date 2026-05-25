@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord\Dialect;
 
+use Nandan108\Attrecord\Enum\ColumnType;
 use Nandan108\Attrecord\Schema\ColumnDefinition;
+use Nandan108\Attrecord\Schema\ForeignKeyDefinition;
+use Nandan108\Attrecord\Schema\TableSchema;
 use Nandan108\Attrecord\SqlDialect;
 use Nandan108\Attrecord\UpsertSql;
 
@@ -187,6 +190,121 @@ final class MysqlDialect implements SqlDialect
         }
 
         return new UpsertSql($create, $lock, $update);
+    }
+
+    #[\Override]
+    public function buildCreateTable(TableSchema $schema): string
+    {
+        $qt = $this->quoteIdentifier($schema->tableName);
+
+        $lines = [];
+
+        // Columns
+        foreach ($schema->columns as $col) {
+            $lines[] = '  '.$this->buildColumnLine($col);
+        }
+
+        // PRIMARY KEY
+        $lines[] = '  PRIMARY KEY ('.$this->quoteIdentifier($schema->pk).')';
+
+        // UNIQUE KEYs
+        foreach ($schema->uniqueKeys as $keyName => $colNames) {
+            $quotedCols = \implode(', ', \array_map($this->quoteIdentifier(...), $colNames));
+            $lines[] = '  UNIQUE KEY '.$this->quoteIdentifier($keyName).' ('.$quotedCols.')';
+        }
+
+        // Secondary indexes
+        foreach ($schema->indexes as $ixName => $colNames) {
+            $quotedCols = \implode(', ', \array_map($this->quoteIdentifier(...), $colNames));
+            $lines[] = '  KEY '.$this->quoteIdentifier($ixName).' ('.$quotedCols.')';
+        }
+
+        // FOREIGN KEYs
+        foreach ($schema->foreignKeys as $fk) {
+            $lines[] = '  '.$this->buildForeignKeyLine($fk);
+        }
+
+        $sql = "CREATE TABLE {$qt} (\n".\implode(",\n", $lines)."\n)";
+
+        $sql .= ' ENGINE='.$schema->engine;
+        $sql .= ' DEFAULT CHARSET='.$schema->charset;
+        $sql .= ' COLLATE='.$schema->collation;
+
+        if (null !== $schema->comment) {
+            $sql .= " COMMENT='".$this->escapeString($schema->comment)."'";
+        }
+
+        return $sql;
+    }
+
+    private function buildColumnLine(ColumnDefinition $col): string
+    {
+        $parts = [$this->quoteIdentifier($col->name), $this->renderColumnType($col)];
+
+        if (!$col->nullable) {
+            $parts[] = 'NOT NULL';
+        }
+
+        if (null !== $col->defaultExpr) {
+            $parts[] = 'DEFAULT '.$col->defaultExpr;
+        } elseif (null !== $col->default) {
+            $parts[] = 'DEFAULT '.$this->toLiteral($col->default, $col);
+        }
+
+        if (null !== $col->onUpdate) {
+            $parts[] = 'ON UPDATE '.$col->onUpdate;
+        }
+
+        if ($col->autoIncrement) {
+            $parts[] = 'AUTO_INCREMENT';
+        }
+
+        if (null !== $col->comment) {
+            $parts[] = "COMMENT '".$this->escapeString($col->comment)."'";
+        }
+
+        return \implode(' ', $parts);
+    }
+
+    private function renderColumnType(ColumnDefinition $col): string
+    {
+        $type = $col->type;
+
+        return match (true) {
+            ColumnType::Bool === $type      => 'TINYINT(1)',
+            ColumnType::VarChar === $type   => 'VARCHAR('.((int) $col->length).')',
+            ColumnType::Char === $type      => 'CHAR('.((int) $col->length).')',
+            ColumnType::VarBinary === $type => 'VARBINARY('.((int) $col->length).')',
+            ColumnType::Binary === $type    => 'BINARY('.((int) $col->length).')',
+            ColumnType::Bit === $type       => null !== $col->length ? 'BIT('.$col->length.')' : 'BIT',
+            ColumnType::Decimal === $type   => 'DECIMAL('.((int) $col->precision).', '.((int) $col->scale).')',
+            ColumnType::Enum === $type      => 'ENUM('.$this->renderEnumValues($col).')',
+            ColumnType::Set === $type       => 'SET('.$this->renderEnumValues($col).')',
+            default                         => \strtoupper($type->value),
+        };
+    }
+
+    private function renderEnumValues(ColumnDefinition $col): string
+    {
+        // enumValues non-emptiness is enforced at schema-build time for Enum/Set.
+        $values = $col->enumValues ?? [];
+
+        return \implode(', ', \array_map(
+            fn (string $v): string => "'".$this->escapeString($v)."'",
+            $values,
+        ));
+    }
+
+    private function buildForeignKeyLine(ForeignKeyDefinition $fk): string
+    {
+        $targetSchema = TableSchema::fromClass($fk->targetClass);
+
+        return 'CONSTRAINT '.$this->quoteIdentifier($fk->constraintName)
+            .' FOREIGN KEY ('.$this->quoteIdentifier($fk->localColumn).')'
+            .' REFERENCES '.$this->quoteIdentifier($targetSchema->tableName)
+            .' ('.$this->quoteIdentifier($targetSchema->pk).')'
+            .' ON DELETE '.$fk->onDelete->value
+            .' ON UPDATE '.$fk->onUpdate->value;
     }
 
     /**

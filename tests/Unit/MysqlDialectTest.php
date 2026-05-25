@@ -270,6 +270,7 @@ final class MysqlDialectTest extends TestCase
     {
         return new ColumnDefinition(
             name: 'col',
+            propertyName: 'col',
             type: $type,
             nullable: $nullable,
             autoIncrement: false,

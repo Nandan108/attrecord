@@ -219,7 +219,7 @@ abstract class Record
         ?Transaction $tx = null,
     ): ?static {
         $schema = static::schema();
-        $sql = self::buildSelectSql($schema->tableName, $schema->primaryKey, $forUpdate);
+        $sql = self::buildSelectSql($schema->tableName, $schema->pk, $forUpdate);
         $row = static::connection()->session->fetchOne($sql, [$id]);
 
         if (null === $row) {
@@ -262,7 +262,7 @@ abstract class Record
 
         /** @psalm-suppress UnsafeInstantiation */
         $record = new static();
-        $record->{static::schema()->primaryKey} = $id;
+        $record->{static::schema()->pkProp} = $id;
 
         return $record;
     }
@@ -304,7 +304,7 @@ abstract class Record
         $qt = static::qi($schema->tableName);
         if ($forUpdate) {
             // Deadlock prevention: always lock in ascending PK order
-            $qpk = static::qi($schema->primaryKey);
+            $qpk = static::qi($schema->pk);
             $sql = "SELECT * FROM {$qt} {$whereClause} ORDER BY {$qpk} ASC FOR UPDATE";
         } else {
             $sql = "SELECT * FROM {$qt} {$whereClause} {$orderByLimit}";
@@ -547,22 +547,22 @@ abstract class Record
         $setParts = [];
         $params = [];
 
-        foreach ($schema->columns as $name => $col) {
+        foreach ($schema->columns as $colName => $col) {
             if ($col->autoIncrement) {
                 continue;
             }
 
             /** @psalm-suppress MixedAssignment */
-            $value = $this->$name ?? null;
+            $value = $this->{$col->propertyName} ?? null;
 
             if (!$force && !$this->_isNew) {
                 $snapshot = ColumnSerializer::toSnapshotString($value, $col);
-                if ($snapshot === ($this->_snapshot[$name] ?? null)) {
+                if ($snapshot === ($this->_snapshot[$colName] ?? null)) {
                     continue; // clean
                 }
             }
 
-            $qcol = $dialect->quoteIdentifier($name);
+            $qcol = $dialect->quoteIdentifier($colName);
             $colNames[] = $qcol;
             $setParts[] = "{$qcol} = ?";
             $params[] = ColumnSerializer::toParam($value, $col);
@@ -575,7 +575,8 @@ abstract class Record
         }
 
         $qt = $dialect->quoteIdentifier($schema->tableName);
-        $pk = $schema->primaryKey;
+        $pk = $schema->pk;
+        $pkProp = $schema->pkProp;
         $qpk = $dialect->quoteIdentifier($pk);
 
         try {
@@ -587,7 +588,7 @@ abstract class Record
                 if ('' !== $suffix) {
                     /** @psalm-suppress MixedArgumentTypeCoercion */
                     $row = $session->fetchOne("{$insertSql} {$suffix}", $params);
-                    $this->$pk = $row[$pk]
+                    $this->{$pkProp} = $row[$pk]
                         ?? throw new RecordSaveException('INSERT did not return a generated key.');
                 } else {
                     /** @psalm-suppress MixedArgumentTypeCoercion */
@@ -595,15 +596,15 @@ abstract class Record
                     // Only backfill the PK from lastInsertId() when the PK is
                     // an auto-increment integer. For application-minted PKs
                     // (e.g. BINARY(16) UUIDs), the application already set
-                    // $this->$pk before save() and lastInsertId() is meaningless.
+                    // $this->{$pkProp} before save() and lastInsertId() is meaningless.
                     if ($schema->columns[$pk]->autoIncrement) {
-                        $this->$pk = $session->lastInsertId();
+                        $this->{$pkProp} = $session->lastInsertId();
                     }
                 }
                 $this->_isNew = false;
             } else {
                 /** @psalm-suppress MixedAssignment */
-                $params[] = $this->$pk;
+                $params[] = $this->{$pkProp};
                 $sql = "UPDATE {$qt} SET ".implode(', ', $setParts)." WHERE {$qpk} = ?";
                 /** @psalm-suppress MixedArgumentTypeCoercion */
                 $session->exec($sql, $params);
@@ -630,9 +631,9 @@ abstract class Record
     public function delete(): void
     {
         $schema = static::schema();
-        $pk = $schema->primaryKey;
+        $pk = $schema->pk;
         /** @psalm-suppress MixedAssignment */
-        $pkVal = $this->$pk;
+        $pkVal = $this->{$schema->pkProp};
 
         if (null === $pkVal) {
             throw new RecordDeleteException('Cannot delete a record with no primary key value.');
@@ -683,13 +684,13 @@ abstract class Record
 
         $columnNames = [];
         $params = [];
-        foreach ($schema->columns as $name => $col) {
+        foreach ($schema->columns as $colName => $col) {
             if ($col->autoIncrement) {
                 continue;
             }
-            $columnNames[] = $name;
+            $columnNames[] = $colName;
             /** @psalm-suppress MixedAssignment */
-            $params[] = ColumnSerializer::toParam($this->$name ?? null, $col);
+            $params[] = ColumnSerializer::toParam($this->{$col->propertyName} ?? null, $col);
         }
 
         $sql = $dialect->buildSingleUpsertSql($schema->tableName, $columnNames, $conflictCols, $updateColumns);
@@ -731,9 +732,9 @@ abstract class Record
         $session = $conn->session;
 
         // --- WHERE clause ---
-        $pk = $schema->primaryKey;
+        $pk = $schema->pk;
         /** @psalm-suppress MixedAssignment */
-        $pkVal = $this->$pk ?? null;
+        $pkVal = $this->{$schema->pkProp} ?? null;
         $whereParts = [];
         $whereParams = [];
 
@@ -744,17 +745,19 @@ abstract class Record
         } else {
             foreach ($schema->uniqueKeys as $keyColumns) {
                 $allSet = true;
-                foreach ($keyColumns as $col) {
-                    if (null === ($this->$col ?? null)) {
+                foreach ($keyColumns as $colName) {
+                    $colDef = $schema->columns[$colName];
+                    if (null === ($this->{$colDef->propertyName} ?? null)) {
                         $allSet = false;
                         break;
                     }
                 }
                 if ($allSet) {
-                    foreach ($keyColumns as $col) {
-                        $whereParts[] = $dialect->quoteIdentifier($col).' = ?';
+                    foreach ($keyColumns as $colName) {
+                        $colDef = $schema->columns[$colName];
+                        $whereParts[] = $dialect->quoteIdentifier($colName).' = ?';
                         /** @psalm-suppress MixedAssignment */
-                        $whereParams[] = ColumnSerializer::toParam($this->$col ?? null, $schema->columns[$col]);
+                        $whereParams[] = ColumnSerializer::toParam($this->{$colDef->propertyName} ?? null, $colDef);
                     }
                     break;
                 }
@@ -775,24 +778,24 @@ abstract class Record
         $setParams = [];
 
         if (empty($fields)) {
-            foreach ($schema->columns as $name => $col) {
-                if ($col->autoIncrement || $name === $pk) {
+            foreach ($schema->columns as $colName => $col) {
+                if ($col->autoIncrement || $colName === $pk) {
                     continue;
                 }
                 /** @psalm-suppress MixedAssignment */
-                $value = $this->$name ?? null;
+                $value = $this->{$col->propertyName} ?? null;
                 if (null !== $value) {
-                    $setParts[] = $dialect->quoteIdentifier($name).' = ?';
+                    $setParts[] = $dialect->quoteIdentifier($colName).' = ?';
                     $setParams[] = ColumnSerializer::toParam($value, $col);
                 }
             }
         } else {
-            foreach ($fields as $name) {
-                $col = $schema->columns[$name]
-                    ?? throw new SchemaException(sprintf('updateByUniqueKey: unknown column "%s".', $name));
+            foreach ($fields as $colName) {
+                $col = $schema->columns[$colName]
+                    ?? throw new SchemaException(sprintf('updateByUniqueKey: unknown column "%s".', $colName));
                 /** @psalm-suppress MixedAssignment */
-                $value = $this->$name ?? null;
-                $setParts[] = $dialect->quoteIdentifier($name).' = ?';
+                $value = $this->{$col->propertyName} ?? null;
+                $setParts[] = $dialect->quoteIdentifier($colName).' = ?';
                 $setParams[] = ColumnSerializer::toParam($value, $col);
             }
         }
@@ -854,29 +857,29 @@ abstract class Record
 
         ['sql' => $normWhere, 'params' => $normParams] = NamedPlaceholderSql::positional($where, $params);
 
-        $pk = $schema->primaryKey;
+        $pk = $schema->pk;
         $setParts = [];
         $setParams = [];
 
         if (empty($fields)) {
-            foreach ($schema->columns as $name => $col) {
-                if ($col->autoIncrement || $name === $pk) {
+            foreach ($schema->columns as $colName => $col) {
+                if ($col->autoIncrement || $colName === $pk) {
                     continue;
                 }
                 /** @psalm-suppress MixedAssignment */
-                $value = $this->$name ?? null;
+                $value = $this->{$col->propertyName} ?? null;
                 if (null !== $value) {
-                    $setParts[] = $dialect->quoteIdentifier($name).' = ?';
+                    $setParts[] = $dialect->quoteIdentifier($colName).' = ?';
                     $setParams[] = ColumnSerializer::toParam($value, $col);
                 }
             }
         } else {
-            foreach ($fields as $name) {
-                $col = $schema->columns[$name]
-                    ?? throw new SchemaException(sprintf('updateByWhere: unknown column "%s".', $name));
+            foreach ($fields as $colName) {
+                $col = $schema->columns[$colName]
+                    ?? throw new SchemaException(sprintf('updateByWhere: unknown column "%s".', $colName));
                 /** @psalm-suppress MixedAssignment */
-                $value = $this->$name ?? null;
-                $setParts[] = $dialect->quoteIdentifier($name).' = ?';
+                $value = $this->{$col->propertyName} ?? null;
+                $setParts[] = $dialect->quoteIdentifier($colName).' = ?';
                 $setParams[] = ColumnSerializer::toParam($value, $col);
             }
         }
@@ -909,9 +912,9 @@ abstract class Record
     public function reload(): void
     {
         $schema = static::schema();
-        $pk = $schema->primaryKey;
+        $pk = $schema->pk;
         /** @psalm-suppress MixedAssignment */
-        $pkVal = $this->$pk;
+        $pkVal = $this->{$schema->pkProp};
 
         $sql = self::buildSelectSql($schema->tableName, $pk, false);
         /** @psalm-suppress MixedArgumentTypeCoercion */
@@ -956,14 +959,14 @@ abstract class Record
         $check = empty($fields) ? array_keys($schema->columns) : $fields;
         $dirty = [];
 
-        foreach ($check as $name) {
-            $col = $schema->columns[$name];
+        foreach ($check as $colName) {
+            $col = $schema->columns[$colName];
             /** @psalm-suppress MixedAssignment */
-            $current = ColumnSerializer::toSnapshotString($this->$name ?? null, $col);
-            $snapshot = $this->_snapshot[$name] ?? null;
+            $current = ColumnSerializer::toSnapshotString($this->{$col->propertyName} ?? null, $col);
+            $snapshot = $this->_snapshot[$colName] ?? null;
 
             if ($current !== $snapshot) {
-                $dirty[$name] = [$snapshot, $current];
+                $dirty[$colName] = [$snapshot, $current];
             }
         }
 
@@ -1016,10 +1019,10 @@ abstract class Record
     {
         $schema = static::schema();
 
-        foreach ($schema->columns as $name => $col) {
-            $raw = $row[$name] ?? null;
-            $this->_snapshot[$name] = null !== $raw ? (string) $raw : null;
-            $this->$name = ColumnSerializer::fromDb($raw, $col);
+        foreach ($schema->columns as $colName => $col) {
+            $raw = $row[$colName] ?? null;
+            $this->_snapshot[$colName] = null !== $raw ? (string) $raw : null;
+            $this->{$col->propertyName} = ColumnSerializer::fromDb($raw, $col);
         }
 
         $this->_isNew = false;
@@ -1076,9 +1079,9 @@ abstract class Record
     {
         $schema = static::schema();
         $out = [];
-        foreach ($schema->columns as $name => $col) {
+        foreach ($schema->columns as $colName => $col) {
             /** @psalm-suppress MixedAssignment */
-            $out[$name] = ColumnSerializer::toParam($this->$name ?? null, $col);
+            $out[$colName] = ColumnSerializer::toParam($this->{$col->propertyName} ?? null, $col);
         }
 
         return $out;
@@ -1104,8 +1107,8 @@ abstract class Record
 
     private function refreshSnapshot(TableSchema $schema): void
     {
-        foreach ($schema->columns as $name => $col) {
-            $this->_snapshot[$name] = ColumnSerializer::toSnapshotString($this->$name ?? null, $col);
+        foreach ($schema->columns as $colName => $col) {
+            $this->_snapshot[$colName] = ColumnSerializer::toSnapshotString($this->{$col->propertyName} ?? null, $col);
         }
     }
 }

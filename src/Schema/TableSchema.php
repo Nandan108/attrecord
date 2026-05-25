@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord\Schema;
 
 use Nandan108\Attrecord\Attribute\Column;
+use Nandan108\Attrecord\Attribute\Index;
 use Nandan108\Attrecord\Attribute\LockTier;
 use Nandan108\Attrecord\Attribute\Relation;
 use Nandan108\Attrecord\Attribute\Table;
 use Nandan108\Attrecord\Attribute\UniqueKey;
+use Nandan108\Attrecord\Enum\ColumnType;
+use Nandan108\Attrecord\Enum\RelationType;
 use Nandan108\Attrecord\Exception\SchemaException;
 
 /**
@@ -32,36 +35,69 @@ final class TableSchema
     /** @var list<string> column names excluding the PK */
     public readonly array $dataColumnNames;
 
+    /** PHP property name corresponding to the PK column. Equals `$pk` when no `name:` override is used on the PK column. */
+    public readonly string $pkProp;
+
     /**
-     * Non-PK unique keys declared via #[UniqueKey] on column properties.
-     * Maps key name → ordered list of column names (declaration order within each key).
+     * Non-PK unique keys. Map: key name → ordered list of column names.
+     * Property-level keys list members in property-declaration order; class-level
+     * keys list members in the order given by the attribute's `columns` parameter.
      *
      * @var array<string, list<string>>
      */
     public readonly array $uniqueKeys;
 
     /**
+     * Non-unique indexes. Map: index name → ordered list of column names.
+     * Property-level indexes list members in property-declaration order; class-level
+     * indexes list members in the order given by the attribute's `columns` parameter.
+     *
+     * @var array<string, list<string>>
+     */
+    public readonly array $indexes;
+
+    /**
+     * Foreign-key constraints derived from owning-side #[Relation] attributes
+     * (ManyToOne, OneToOne) with `emitFk: true`. Polymorphic and inverse-side
+     * relations are skipped.
+     *
+     * @var list<ForeignKeyDefinition>
+     */
+    public readonly array $foreignKeys;
+
+    /**
      * @param array<string, ColumnDefinition>    $columns
      * @param array<string, RelationDefinition>  $relations
      * @param array<string, \ReflectionProperty> $reflProperties
      * @param array<string, list<string>>        $uniqueKeys
+     * @param array<string, list<string>>        $indexes
+     * @param list<ForeignKeyDefinition>         $foreignKeys
      */
     private function __construct(
         public readonly string $tableName,
-        public readonly string $primaryKey,
+        public readonly string $pk,
         public readonly ?int $lockTier,
         array $columns,
         array $relations,
         array $reflProperties,
         array $uniqueKeys,
+        array $indexes,
+        array $foreignKeys,
+        public readonly string $engine,
+        public readonly string $charset,
+        public readonly string $collation,
+        public readonly ?string $comment,
     ) {
         $this->columns = $columns;
         $this->relations = $relations;
         $this->reflProperties = $reflProperties;
         $this->uniqueKeys = $uniqueKeys;
+        $this->indexes = $indexes;
+        $this->foreignKeys = $foreignKeys;
         $this->dataColumnNames = array_values(
-            array_filter(array_keys($columns), fn (string $n): bool => $n !== $primaryKey),
+            array_filter(array_keys($columns), fn (string $n): bool => $n !== $pk),
         );
+        $this->pkProp = $columns[$pk]->propertyName;
     }
 
     /** @var array<class-string, self> */
@@ -89,13 +125,13 @@ final class TableSchema
         }
         $tableAttr = $tableAttrs[0]->newInstance();
         $tableName = \Nandan108\Attrecord\Record::tablePrefix().$tableAttr->name;
-        $primaryKey = $tableAttr->primaryKey;
+        $pk = $tableAttr->primaryKey;
 
         // --- #[LockTier] ---
         $lockTierAttrs = $reflClass->getAttributes(LockTier::class);
         $lockTier = empty($lockTierAttrs) ? null : $lockTierAttrs[0]->newInstance()->tier;
 
-        // --- Properties ---
+        // --- Properties: columns and relations, plus property-level keys/indexes ---
         /** @var array<string, ColumnDefinition> $columns */
         $columns = [];
         /** @var array<string, RelationDefinition> $relations */
@@ -104,6 +140,12 @@ final class TableSchema
         $reflProperties = [];
         /** @var array<string, list<string>> $uniqueKeys */
         $uniqueKeys = [];
+        /** @var array<string, list<string>> $indexes */
+        $indexes = [];
+        /** @var array<string, true> $uniqueKeysFromProperty   key-name → true (origin tracking) */
+        $uniqueKeysFromProperty = [];
+        /** @var array<string, true> $indexesFromProperty */
+        $indexesFromProperty = [];
 
         foreach ($reflClass->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
             if ($prop->isStatic()) {
@@ -113,18 +155,55 @@ final class TableSchema
             $colAttrs = $prop->getAttributes(Column::class);
             if (!empty($colAttrs)) {
                 $colAttr = $colAttrs[0]->newInstance();
-                $name = $prop->getName();
+                $propName = $prop->getName();
+                $colName = $colAttr->name ?? $propName;
 
-                // Collect #[UniqueKey] attributes on this property.
+                self::validateColumnAttribute($class, $propName, $colAttr);
+
+                if (isset($columns[$colName])) {
+                    throw new SchemaException(sprintf(
+                        '%s::$%s: column name "%s" is already used by another #[Column] property on the same class.',
+                        $class,
+                        $propName,
+                        $colName,
+                    ));
+                }
+
                 $ukNames = [];
-                foreach ($prop->getAttributes(UniqueKey::class) as $ukAttr) {
-                    $ukName = $ukAttr->newInstance()->name;
-                    $ukNames[] = $ukName;
-                    $uniqueKeys[$ukName][] = $name;
+                foreach ($prop->getAttributes(UniqueKey::class) as $ukAttrRefl) {
+                    $ukAttr = $ukAttrRefl->newInstance();
+                    if (null !== $ukAttr->columns) {
+                        throw new SchemaException(sprintf(
+                            '%s::$%s: #[UniqueKey(\'%s\')] at property level must not specify the `columns` parameter (use class-level form for explicit column lists).',
+                            $class,
+                            $propName,
+                            $ukAttr->name,
+                        ));
+                    }
+                    $ukNames[] = $ukAttr->name;
+                    $uniqueKeys[$ukAttr->name][] = $colName;
+                    $uniqueKeysFromProperty[$ukAttr->name] = true;
+                }
+
+                $ixNames = [];
+                foreach ($prop->getAttributes(Index::class) as $ixAttrRefl) {
+                    $ixAttr = $ixAttrRefl->newInstance();
+                    if (null !== $ixAttr->columns) {
+                        throw new SchemaException(sprintf(
+                            '%s::$%s: #[Index(\'%s\')] at property level must not specify the `columns` parameter (use class-level form for explicit column lists).',
+                            $class,
+                            $propName,
+                            $ixAttr->name,
+                        ));
+                    }
+                    $ixNames[] = $ixAttr->name;
+                    $indexes[$ixAttr->name][] = $colName;
+                    $indexesFromProperty[$ixAttr->name] = true;
                 }
 
                 $col = new ColumnDefinition(
-                    name: $name,
+                    name: $colName,
+                    propertyName: $propName,
                     type: $colAttr->type,
                     nullable: $colAttr->nullable,
                     autoIncrement: $colAttr->autoIncrement,
@@ -133,28 +212,34 @@ final class TableSchema
                     precision: $colAttr->precision,
                     scale: $colAttr->scale,
                     uniqueKeyNames: $ukNames,
+                    indexNames: $ixNames,
+                    default: $colAttr->default,
+                    defaultExpr: $colAttr->defaultExpr,
+                    onUpdate: $colAttr->onUpdate,
+                    comment: $colAttr->comment,
+                    enumValues: $colAttr->enumValues,
                 );
 
                 if (true === $colAttr->trimOnSave && !$col->isString) {
                     throw new SchemaException(
-                        "{$class}::\${$name}: trimOnSave is only valid for string column types.",
+                        "{$class}::\${$propName}: trimOnSave is only valid for string column types.",
                     );
                 }
 
-                $columns[$name] = $col;
-                $reflProperties[$name] = $prop;
+                $columns[$colName] = $col;
+                $reflProperties[$colName] = $prop;
                 continue;
             }
 
             $relAttrs = $prop->getAttributes(Relation::class);
             if (!empty($relAttrs)) {
                 $relAttr = $relAttrs[0]->newInstance();
-                $name = $prop->getName();
+                $propName = $prop->getName();
 
-                self::validateRelationAttribute($class, $name, $relAttr);
+                self::validateRelationAttribute($class, $propName, $relAttr);
 
-                $relations[$name] = new RelationDefinition(
-                    propertyName: $name,
+                $relations[$propName] = new RelationDefinition(
+                    propertyName: $propName,
                     type: $relAttr->type,
                     targetClass: $relAttr->class,
                     foreignKey: $relAttr->foreignKey,
@@ -164,29 +249,229 @@ final class TableSchema
                     morphValue: $relAttr->morphValue,
                     morphMap: $relAttr->morphMap,
                 );
-                $reflProperties[$name] = $prop;
             }
         }
 
-        if (!isset($columns[$primaryKey])) {
+        if (!isset($columns[$pk])) {
             throw new SchemaException(
                 sprintf(
-                    '%s declares primaryKey="%s" but no #[Column] property with that name exists.',
+                    '%s declares primaryKey="%s" but no #[Column] with that column name exists.',
                     $class,
-                    $primaryKey,
+                    $pk,
                 ),
             );
         }
 
+        // --- Class-level #[UniqueKey] ---
+        foreach ($reflClass->getAttributes(UniqueKey::class) as $ukAttrRefl) {
+            $ukAttr = $ukAttrRefl->newInstance();
+            if (null === $ukAttr->columns || [] === $ukAttr->columns) {
+                throw new SchemaException(sprintf(
+                    '%s: #[UniqueKey(\'%s\')] at class level requires a non-empty `columns` list.',
+                    $class,
+                    $ukAttr->name,
+                ));
+            }
+            if (isset($uniqueKeysFromProperty[$ukAttr->name]) || isset($uniqueKeys[$ukAttr->name])) {
+                throw new SchemaException(sprintf(
+                    '%s: unique key "%s" is declared both at class level and at property level; pick one form.',
+                    $class,
+                    $ukAttr->name,
+                ));
+            }
+            foreach ($ukAttr->columns as $colName) {
+                if (!isset($columns[$colName])) {
+                    throw new SchemaException(sprintf(
+                        '%s: #[UniqueKey(\'%s\')] references column "%s" which is not a declared #[Column].',
+                        $class,
+                        $ukAttr->name,
+                        $colName,
+                    ));
+                }
+            }
+            $uniqueKeys[$ukAttr->name] = $ukAttr->columns;
+        }
+
+        // --- Class-level #[Index] ---
+        foreach ($reflClass->getAttributes(Index::class) as $ixAttrRefl) {
+            $ixAttr = $ixAttrRefl->newInstance();
+            if (null === $ixAttr->columns || [] === $ixAttr->columns) {
+                throw new SchemaException(sprintf(
+                    '%s: #[Index(\'%s\')] at class level requires a non-empty `columns` list.',
+                    $class,
+                    $ixAttr->name,
+                ));
+            }
+            if (isset($indexesFromProperty[$ixAttr->name]) || isset($indexes[$ixAttr->name])) {
+                throw new SchemaException(sprintf(
+                    '%s: index "%s" is declared both at class level and at property level; pick one form.',
+                    $class,
+                    $ixAttr->name,
+                ));
+            }
+            foreach ($ixAttr->columns as $colName) {
+                if (!isset($columns[$colName])) {
+                    throw new SchemaException(sprintf(
+                        '%s: #[Index(\'%s\')] references column "%s" which is not a declared #[Column].',
+                        $class,
+                        $ixAttr->name,
+                        $colName,
+                    ));
+                }
+            }
+            $indexes[$ixAttr->name] = $ixAttr->columns;
+        }
+
+        // --- Foreign keys from owning-side relations ---
+        $foreignKeys = self::collectForeignKeys($class, $tableName, $relations, $columns);
+
         return self::$cache[$class] = new self(
             tableName: $tableName,
-            primaryKey: $primaryKey,
+            pk: $pk,
             lockTier: $lockTier,
             columns: $columns,
             relations: $relations,
             reflProperties: $reflProperties,
             uniqueKeys: $uniqueKeys,
+            indexes: $indexes,
+            foreignKeys: $foreignKeys,
+            engine: $tableAttr->engine,
+            charset: $tableAttr->charset,
+            collation: $tableAttr->collation,
+            comment: $tableAttr->comment,
         );
+    }
+
+    /**
+     * Validate a #[Column] attribute at schema-build time.
+     */
+    private static function validateColumnAttribute(string $class, string $propName, Column $col): void
+    {
+        $loc = "{$class}::\${$propName}";
+
+        if (null !== $col->default && null !== $col->defaultExpr) {
+            throw new SchemaException(
+                "{$loc}: #[Column] cannot set both `default` and `defaultExpr` (they are mutually exclusive).",
+            );
+        }
+
+        $needsLength = ColumnType::VarChar === $col->type
+            || ColumnType::Char === $col->type
+            || ColumnType::VarBinary === $col->type
+            || ColumnType::Binary === $col->type;
+
+        if ($needsLength && null === $col->length) {
+            throw new SchemaException(
+                "{$loc}: #[Column(ColumnType::{$col->type->name})] requires `length`.",
+            );
+        }
+
+        if (ColumnType::Decimal === $col->type) {
+            if (null === $col->precision || null === $col->scale) {
+                throw new SchemaException(
+                    "{$loc}: #[Column(ColumnType::Decimal)] requires both `precision` and `scale`.",
+                );
+            }
+        }
+
+        if (ColumnType::Enum === $col->type || ColumnType::Set === $col->type) {
+            if (null === $col->enumValues || [] === $col->enumValues) {
+                throw new SchemaException(
+                    "{$loc}: #[Column(ColumnType::{$col->type->name})] requires a non-empty `enumValues` list.",
+                );
+            }
+        }
+    }
+
+    /**
+     * Derive FK definitions from owning-side relations (ManyToOne, OneToOne).
+     *
+     * @param class-string                      $class
+     * @param array<string, RelationDefinition> $relations
+     * @param array<string, ColumnDefinition>   $columns
+     *
+     * @return list<ForeignKeyDefinition>
+     */
+    private static function collectForeignKeys(
+        string $class,
+        string $tableName,
+        array $relations,
+        array $columns,
+    ): array {
+        $fks = [];
+        $seenColumns = [];
+
+        foreach ($relations as $propName => $rel) {
+            $isOwningSide = RelationType::ManyToOne === $rel->type
+                || RelationType::OneToOne === $rel->type;
+            if (!$isOwningSide) {
+                continue;
+            }
+
+            // Re-read the attribute to check emitFk + onDelete/onUpdate (not stored in RelationDefinition).
+            // The validation in fromClass() already guarantees foreignKey is set for these types.
+            $fk = $rel->foreignKey;
+            if (null === $fk) {
+                continue;
+            }
+            if (!isset($columns[$fk])) {
+                throw new SchemaException(sprintf(
+                    '%s::$%s: #[Relation] references foreignKey "%s" which is not a declared #[Column].',
+                    $class,
+                    $propName,
+                    $fk,
+                ));
+            }
+        }
+
+        // Walk attributes directly to access onDelete / onUpdate / emitFk.
+        $reflClass = new \ReflectionClass($class);
+        foreach ($reflClass->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
+            $relAttrs = $prop->getAttributes(Relation::class);
+            if (empty($relAttrs)) {
+                continue;
+            }
+            $relAttr = $relAttrs[0]->newInstance();
+
+            $isOwningSide = RelationType::ManyToOne === $relAttr->type
+                || RelationType::OneToOne === $relAttr->type;
+            if (!$isOwningSide || !$relAttr->emitFk) {
+                continue;
+            }
+
+            $fkColumn = $relAttr->foreignKey;
+            $targetClass = $relAttr->class;
+            if (null === $fkColumn || null === $targetClass) {
+                continue;
+            }
+
+            if (isset($seenColumns[$fkColumn])) {
+                throw new SchemaException(sprintf(
+                    '%s::$%s: foreign-key column "%s" is already used by another #[Relation] on the same class.',
+                    $class,
+                    $prop->getName(),
+                    $fkColumn,
+                ));
+            }
+            $seenColumns[$fkColumn] = true;
+
+            // Strip leading "prefix_" from the table name to keep the
+            // constraint name compact when a prefix is in use. Falls back to
+            // the full table name when no underscore appears.
+            $shortened = (string) preg_replace('/^[a-z0-9]+_/', '', $tableName);
+            $constraintName = 'fk_'.('' !== $shortened ? $shortened : $tableName).'_'.$fkColumn;
+
+            /** @var class-string $targetClass */
+            $fks[] = new ForeignKeyDefinition(
+                constraintName: $constraintName,
+                localColumn: $fkColumn,
+                targetClass: $targetClass,
+                onDelete: $relAttr->onDelete,
+                onUpdate: $relAttr->onUpdate,
+            );
+        }
+
+        return $fks;
     }
 
     /**
@@ -202,9 +487,9 @@ final class TableSchema
         $loc = "{$ownerClass}::\${$propName}";
         $type = $rel->type->name;
 
-        $isMorphParent = \Nandan108\Attrecord\Enum\RelationType::MorphMany === $rel->type
-            || \Nandan108\Attrecord\Enum\RelationType::MorphOne === $rel->type;
-        $isMorphChild = \Nandan108\Attrecord\Enum\RelationType::MorphTo === $rel->type;
+        $isMorphParent = RelationType::MorphMany === $rel->type
+            || RelationType::MorphOne === $rel->type;
+        $isMorphChild = RelationType::MorphTo === $rel->type;
 
         if (!$isMorphChild) {
             if (null === $rel->class) {
@@ -257,6 +542,19 @@ final class TableSchema
     {
         return $this->columns[$name]
             ?? throw new SchemaException(sprintf('Unknown column "%s".', $name));
+    }
+
+    /**
+     * Resolve a column name to its corresponding PHP property name.
+     *
+     * Use this on any code path that has a column name in hand (typically from
+     * a #[Relation] attribute or schema field) and needs to access the value
+     * on a Record instance via PHP property syntax.
+     */
+    public function propFor(string $columnName): string
+    {
+        return $this->columns[$columnName]?->propertyName
+            ?? throw new SchemaException(sprintf('Unknown column "%s".', $columnName));
     }
 
     /** All column names including the PK. */

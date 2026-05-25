@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord\Dialect;
 
 use Nandan108\Attrecord\Schema\ColumnDefinition;
+use Nandan108\Attrecord\Schema\TableSchema;
 use Nandan108\Attrecord\SqlDialect;
 use Nandan108\Attrecord\UpsertSql;
 
@@ -196,6 +197,16 @@ final class PgsqlDialect implements SqlDialect
         }
 
         return new UpsertSql($create, $lock, $update);
+    }
+
+    #[\Override]
+    public function buildCreateTable(TableSchema $schema): string
+    {
+        throw new \RuntimeException(
+            'PgsqlDialect::buildCreateTable() is not yet implemented. '
+            .'DDL generation currently targets MySQL/MariaDB only; '
+            .'see attrecord/docs/ddl-generation.md (Phase 2).',
+        );
     }
 
     /**

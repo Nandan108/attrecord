@@ -65,7 +65,7 @@ final class LockSet
             }
 
             $placeholders = implode(', ', array_fill(0, count($ids), '?'));
-            $pk = $schema->primaryKey;
+            $pk = $schema->pk;
             $table = $schema->tableName;
             $sql = "SELECT * FROM `{$table}` WHERE `{$pk}` IN ({$placeholders}) ORDER BY `{$pk}` ASC FOR UPDATE";
 

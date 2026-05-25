@@ -5,33 +5,31 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord\Attribute;
 
 /**
- * Declares a non-PK unique key.
+ * Declares a non-unique (secondary) index.
  *
- * **Property-level form** (single-column keys, or composites with column order
- * matching property declaration order):
+ * Mirrors {@see UniqueKey} in shape; emits `KEY` rather than `UNIQUE KEY`.
+ *
+ * **Property-level form** (single-column or declaration-ordered composite):
  *
  *     #[Column(...)]
- *     #[UniqueKey('uk_external')]
- *     public string $external_ref = '';
+ *     #[Index('idx_orders_status')]
+ *     public string $status = '';
  *
- *     // Composite: repeat the same name on each member property.
- *     // Column order follows property declaration order.
- *
- * **Class-level form** (composite keys with explicit column ordering):
+ * **Class-level form** (composite with explicit column ordering):
  *
  *     #[Table(name: 'orders')]
- *     #[UniqueKey('uk_customer_date', columns: ['customer_id', 'created_at'])]
+ *     #[Index('idx_status_date', columns: ['status', 'created_at'])]
  *     final class OrderRecord extends Record { ... }
  *
  * Class-level form **requires** `columns: [...]`; property-level form
- * **forbids** it. A given key name must be declared via one form only.
+ * **forbids** it. A given index name must be declared via one form only.
  * Column names in the `columns` list refer to **column names** (post-override),
  * not PHP property names.
  *
  * @api
  */
 #[\Attribute(\Attribute::TARGET_PROPERTY | \Attribute::TARGET_CLASS | \Attribute::IS_REPEATABLE)]
-final class UniqueKey
+final class Index
 {
     /**
      * @param string            $name    index name (must be unique across the table)

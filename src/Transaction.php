@@ -63,7 +63,7 @@ final class Transaction
         $class = $record::class;
         $schema = $record::schema();
         /** @psalm-suppress MixedAssignment */
-        $id = $record->{$schema->primaryKey};
+        $id = $record->{$schema->pkProp};
         /** @psalm-suppress MixedPropertyTypeCoercion */
         $this->lockedRecords[$class][] = $id;
     }
@@ -86,7 +86,7 @@ final class Transaction
         $class = $record::class;
         $schema = $record::schema();
         /** @psalm-suppress MixedAssignment */
-        $id = $record->{$schema->primaryKey};
+        $id = $record->{$schema->pkProp};
 
         if (!in_array($id, $this->lockedRecords[$class] ?? [], strict: true)) {
             /** @psalm-suppress MixedArgument */
