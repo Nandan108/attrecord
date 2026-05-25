@@ -30,8 +30,8 @@ final class ColumnDefinition
      * @param bool                       $autoIncrement  auto-increment / IDENTITY
      * @param bool|null                  $trimOnSave     trim string values on save
      * @param int|null                   $length         length (VARCHAR/CHAR/BINARY/VARBINARY/BIT)
-     * @param int|null                   $precision      decimal precision
-     * @param int|null                   $scale          decimal scale
+     * @param int|null                   $precision      numeric (Decimal: total digits) or temporal (DateTime/Timestamp: fractional-seconds 0-6) precision
+     * @param int|null                   $scale          decimal scale (digits after the decimal point); forbidden on non-Decimal types
      * @param list<string>               $uniqueKeyNames names of non-PK unique keys this column belongs to via property-level #[UniqueKey]
      * @param list<string>               $indexNames     names of non-unique indexes this column belongs to via property-level #[Index]
      * @param int|float|string|bool|null $default        Literal default value. `null` means "no default specified".

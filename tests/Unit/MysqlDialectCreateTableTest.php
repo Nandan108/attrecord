@@ -229,6 +229,43 @@ final class MysqlDialectCreateTableTest extends TestCase
         TableSchema::fromClass(DdlInvalidDecimalRecord::class);
     }
 
+    // -----------------------------------------------------------------
+    // DateTime / Timestamp precision
+    // -----------------------------------------------------------------
+
+    public function testDateTimeWithPrecisionEmitsFractionalSeconds(): void
+    {
+        $sql = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlDateTimePrecisionRecord::class));
+
+        $this->assertStringContainsString('`created_at` DATETIME(6) NOT NULL', $sql);
+        $this->assertStringContainsString('`recorded_at` TIMESTAMP(3) NOT NULL', $sql);
+        $this->assertStringContainsString('`updated_at` DATETIME NOT NULL', $sql);
+    }
+
+    public function testDateTimePrecisionOutOfRangeThrows(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessageMatches('/precision must be between 0 and 6/');
+
+        TableSchema::fromClass(DdlBadDateTimePrecisionRecord::class);
+    }
+
+    public function testScaleOnDateTimeThrows(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessageMatches('/does not accept `scale`/');
+
+        TableSchema::fromClass(DdlDateTimeWithScaleRecord::class);
+    }
+
+    public function testPrecisionOnVarcharThrows(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessageMatches('/does not accept `precision`/');
+
+        TableSchema::fromClass(DdlVarcharWithPrecisionRecord::class);
+    }
+
     public function testEnumWithoutValuesThrows(): void
     {
         $this->expectException(SchemaException::class);
@@ -367,4 +404,55 @@ final class DdlPartialMysqlOptionsRecord extends Record
 {
     #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
     public ?int $id = null;
+}
+
+/** @internal Exercises DateTime(p) / Timestamp(p) precision rendering. */
+#[Table(name: 'attrecord_datetime_precision')]
+final class DdlDateTimePrecisionRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::DateTime, precision: 6)]
+    public ?\DateTimeImmutable $created_at = null;
+
+    #[Column(ColumnType::Timestamp, precision: 3)]
+    public ?\DateTimeImmutable $recorded_at = null;
+
+    // No precision — emits bare DATETIME for the no-fractional-seconds case.
+    #[Column(ColumnType::DateTime)]
+    public ?\DateTimeImmutable $updated_at = null;
+}
+
+/** @internal precision > 6 on DateTime — rejected at schema build. */
+#[Table(name: 'attrecord_bad_dt_precision')]
+final class DdlBadDateTimePrecisionRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::DateTime, precision: 9)]
+    public ?\DateTimeImmutable $created_at = null;
+}
+
+/** @internal scale on DateTime — rejected at schema build (scale is Decimal-only). */
+#[Table(name: 'attrecord_dt_with_scale')]
+final class DdlDateTimeWithScaleRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::DateTime, precision: 6, scale: 2)]
+    public ?\DateTimeImmutable $created_at = null;
+}
+
+/** @internal precision on VarChar — rejected at schema build. */
+#[Table(name: 'attrecord_varchar_with_precision')]
+final class DdlVarcharWithPrecisionRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::VarChar, length: 10, precision: 5)]
+    public string $name = '';
 }

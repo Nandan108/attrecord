@@ -24,8 +24,8 @@ final class Column
      * @param bool                       $autoIncrement auto-increment / IDENTITY
      * @param bool|null                  $trimOnSave    trim string values on save (string types only)
      * @param int|null                   $length        column length (VARCHAR/CHAR/BINARY/VARBINARY/BIT)
-     * @param int|null                   $precision     decimal precision
-     * @param int|null                   $scale         decimal scale
+     * @param int|null                   $precision     numeric/temporal precision: for ColumnType::Decimal — total significant digits (required, paired with $scale); for ColumnType::DateTime / ColumnType::Timestamp — fractional-seconds precision (0-6). Forbidden on other types.
+     * @param int|null                   $scale         decimal scale (digits after the decimal point); only valid with ColumnType::Decimal, forbidden elsewhere
      * @param int|float|string|bool|null $default       Literal default value. `null` means "no default specified" (use `defaultExpr: 'NULL'` for an explicit DEFAULT NULL). Mutually exclusive with $defaultExpr.
      * @param string|null                $defaultExpr   Raw SQL default expression (e.g. 'CURRENT_TIMESTAMP'). Mutually exclusive with $default.
      * @param string|null                $onUpdate      Raw SQL ON UPDATE expression (e.g. 'CURRENT_TIMESTAMP').

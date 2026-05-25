@@ -367,10 +367,36 @@ final class TableSchema
             );
         }
 
+        $acceptsFractionalSeconds = ColumnType::DateTime === $col->type
+            || ColumnType::Timestamp === $col->type;
+
         if (ColumnType::Decimal === $col->type) {
             if (null === $col->precision || null === $col->scale) {
                 throw new SchemaException(
                     "{$loc}: #[Column(ColumnType::Decimal)] requires both `precision` and `scale`.",
+                );
+            }
+        } elseif ($acceptsFractionalSeconds) {
+            if (null !== $col->precision && ($col->precision < 0 || $col->precision > 6)) {
+                throw new SchemaException(
+                    "{$loc}: #[Column(ColumnType::{$col->type->name})] precision must be between 0 and 6 (fractional-seconds), got {$col->precision}.",
+                );
+            }
+            if (null !== $col->scale) {
+                throw new SchemaException(
+                    "{$loc}: #[Column(ColumnType::{$col->type->name})] does not accept `scale` (only Decimal does).",
+                );
+            }
+        } else {
+            // Any other type: precision and scale are both meaningless and a likely user mistake.
+            if (null !== $col->precision) {
+                throw new SchemaException(
+                    "{$loc}: #[Column(ColumnType::{$col->type->name})] does not accept `precision` (only Decimal/DateTime/Timestamp do).",
+                );
+            }
+            if (null !== $col->scale) {
+                throw new SchemaException(
+                    "{$loc}: #[Column(ColumnType::{$col->type->name})] does not accept `scale` (only Decimal does).",
                 );
             }
         }

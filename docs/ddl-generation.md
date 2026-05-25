@@ -222,20 +222,32 @@ mechanical:
 | `*Unsigned`          | `BIGINT UNSIGNED`, etc.               |
 | `VarChar`, `Char`    | `VARCHAR(n)` — `length` required.     |
 | `Binary`, `VarBinary`| `BINARY(n)` / `VARBINARY(n)`.         |
-| `Decimal`            | `DECIMAL(p, s)` — both required.      |
+| `Decimal`            | `DECIMAL(p, s)` — both `precision` and `scale` required. |
 | `Float`, `Double`    | `FLOAT`, `DOUBLE`.                    |
 | `Text*`              | `TINYTEXT`, `TEXT`, `MEDIUMTEXT`, `LONGTEXT`. |
 | `Json`               | `JSON`.                               |
 | `Enum`, `Set`        | `ENUM('a','b',…)` / `SET('a','b',…)` — `enumValues` required. |
-| `Date`, `DateTime`, `Timestamp` | `DATE`, `DATETIME`, `TIMESTAMP`. |
+| `Date`                          | `DATE` (no precision; date-only). |
+| `DateTime`, `Timestamp`         | `DATETIME(p)` / `TIMESTAMP(p)` when `precision` is set (fractional-seconds, 0-6); bare `DATETIME` / `TIMESTAMP` otherwise. |
 | `Bool`               | `TINYINT(1)` (MySQL convention).      |
 | `Bit`                | `BIT(n)` if length set, else `BIT`.   |
 | `Year`               | `YEAR`.                               |
 
+The `precision:` parameter is shared across types but with type-specific
+semantics:
+
+- `Decimal` — total significant digits; **required**, **paired with `scale`**.
+- `DateTime`, `Timestamp` — fractional-seconds precision, 0-6; **optional**;
+  `scale` is forbidden.
+- Any other type — `precision` and `scale` are both forbidden (schema build
+  throws), since the values would be silently ignored otherwise.
+
 Validation at schema build:
 
-- `VarChar` / `Char` require `length`.
+- `VarChar` / `Char` / `Binary` / `VarBinary` require `length`.
 - `Decimal` requires both `precision` and `scale`.
+- `DateTime` / `Timestamp` reject `scale`; reject `precision` outside 0-6.
+- Non-numeric / non-temporal types reject both `precision` and `scale`.
 - `Enum` / `Set` require non-empty `enumValues`.
 
 These already are required in practice; making them mandatory at schema build

@@ -960,8 +960,8 @@ that has to be remembered everywhere.
     autoIncrement: true,        // skipped in INSERT/UPDATE; PK assigned after INSERT
     trimOnSave:    true,        // trim whitespace on save; also suppresses dirty-detection for whitespace-only changes
     length:        255,         // for VarChar/Char/Binary/VarBinary; also enforced at DDL generation time
-    precision:     10,          // for Decimal (required at DDL time)
-    scale:         2,           // for Decimal (required at DDL time)
+    precision:     10,          // Decimal: total digits (required, paired with scale); DateTime/Timestamp: fractional-seconds 0-6 (optional)
+    scale:         2,           // Decimal scale (required); forbidden on other types
     default:       null,        // literal DEFAULT value (int|float|string|bool|null); see DDL section
     defaultExpr:   null,        // raw SQL DEFAULT expression, e.g. 'CURRENT_TIMESTAMP'
     onUpdate:      null,        // raw SQL ON UPDATE expression, e.g. 'CURRENT_TIMESTAMP'

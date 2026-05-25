@@ -289,6 +289,8 @@ final class MysqlDialect implements SqlDialect
             ColumnType::Binary === $type    => 'BINARY('.((int) $col->length).')',
             ColumnType::Bit === $type       => null !== $col->length ? 'BIT('.$col->length.')' : 'BIT',
             ColumnType::Decimal === $type   => 'DECIMAL('.((int) $col->precision).', '.((int) $col->scale).')',
+            ColumnType::DateTime === $type  => null !== $col->precision ? 'DATETIME('.$col->precision.')' : 'DATETIME',
+            ColumnType::Timestamp === $type => null !== $col->precision ? 'TIMESTAMP('.$col->precision.')' : 'TIMESTAMP',
             ColumnType::Enum === $type      => 'ENUM('.$this->renderEnumValues($col).')',
             ColumnType::Set === $type       => 'SET('.$this->renderEnumValues($col).')',
             default                         => \strtoupper($type->value),
