@@ -3,6 +3,8 @@
 Lightweight PHP 8.1+ attribute-driven active-record layer.
 
 - Declare schema with PHP attributes — no XML, no YAML, no separate migration files
+- **Emit `CREATE TABLE` directly from the attributes** — single source of truth for column type, defaults, unique keys, indexes, and FK constraints
+- **camelCase PHP / snake_case SQL** via per-column `name:` override (no auto-conversion — [decision documented](docs/design-note-no-name-auto-conversion.md))
 - Dirty-tracking — `save()` only writes changed columns
 - Bulk upsert via `RecordSet::saveAll()` with a single SQL statement
 - Eager relation loading with no N+1 queries (`with()`)
@@ -277,14 +279,17 @@ combinators, and the `render($dialect)` API.
 
 ---
 
-## Unique keys & targeted upserts
+## Unique keys, indexes & targeted upserts
 
-Declare non-PK unique keys with the repeatable `#[UniqueKey('name')]` attribute. Apply
-it to every column in the key using the same name (compound keys share one name across
-all member columns, listed in declaration order):
+Declare non-PK unique keys with `#[UniqueKey('name')]` and non-unique secondary
+indexes with `#[Index('name')]`. Both attributes can be applied at either property
+or class level.
+
+**Property level** (single-column keys, or composites with column ordering matching
+property declaration order):
 
 ```php
-use Nandan108\Attrecord\Attribute\{Column, UniqueKey};
+use Nandan108\Attrecord\Attribute\{Column, UniqueKey, Index};
 
 #[Table(name: 'inventory_items')]
 class InventoryItem extends Record
@@ -297,7 +302,8 @@ class InventoryItem extends Record
     #[UniqueKey('sku')]
     public string $sku = '';
 
-    // Compound unique key: (location_id, bin) — same name on both columns
+    // Compound unique key: (location_id, bin) — same name on both columns,
+    // composite ordering follows property declaration order
     #[Column(ColumnType::BigIntUnsigned)]
     #[UniqueKey('loc_bin')]
     public int $location_id = 0;
@@ -306,10 +312,25 @@ class InventoryItem extends Record
     #[UniqueKey('loc_bin')]
     public string $bin = '';
 
+    // Single-column secondary index
     #[Column(ColumnType::IntUnsigned)]
+    #[Index('idx_qty')]
     public int $qty = 0;
 }
 ```
+
+**Class level** (composite keys with explicit column ordering, independent of
+property declaration order):
+
+```php
+#[Table(name: 'inventory_items')]
+#[UniqueKey('uk_loc_bin',   columns: ['location_id', 'bin'])]
+#[Index    ('idx_loc_qty',  columns: ['location_id', 'qty'])]
+class InventoryItem extends Record { /* ... */ }
+```
+
+Class-level form **requires** `columns: [...]`; property-level form **forbids** it.
+A given key/index name must be declared via one form only.
 
 ### `upsertByUniqueKey($conflictKey, $updateColumns)`
 
@@ -350,6 +371,97 @@ $item->updateByUniqueKey(fields: ['qty', 'notes']);
 
 Returns the affected row count (0 if no match, 1 on success). Throws
 `AttrecordException` when no viable WHERE clause can be built.
+
+---
+
+## Schema generation — `CREATE TABLE` from your attributes
+
+Emit a fresh-install `CREATE TABLE` statement directly from the compiled
+`TableSchema`. The same attribute metadata that drives CRUD also drives DDL —
+no parallel hand-maintained DDL string.
+
+```php
+use Nandan108\Attrecord\Dialect\MysqlDialect;
+use Nandan108\Attrecord\Schema\TableSchema;
+
+$sql = (new MysqlDialect())->buildCreateTable(
+    TableSchema::fromClass(Order::class),
+);
+// CREATE TABLE `orders` (
+//   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+//   `customer_id` BIGINT UNSIGNED NOT NULL,
+//   `status` VARCHAR(20) NOT NULL DEFAULT 'pending',
+//   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+//   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+//                ON UPDATE CURRENT_TIMESTAMP,
+//   PRIMARY KEY (`id`),
+//   UNIQUE KEY `uk_external` (`external_ref`),
+//   KEY `idx_status_date` (`status`, `created_at`),
+//   CONSTRAINT `fk_orders_customer_id` FOREIGN KEY (`customer_id`)
+//     REFERENCES `customers` (`id`) ON DELETE CASCADE ON UPDATE RESTRICT
+// ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+Currently MySQL/MariaDB only — `PgsqlDialect::buildCreateTable()` throws; Postgres
+support is Phase 2.
+
+### Attribute fields used in DDL emission
+
+`#[Column]` additions beyond type/length/nullable:
+
+```php
+#[Column(
+    type:        ColumnType::DateTime,
+    default:     null,                    // literal default (int|float|string|bool|null)
+    defaultExpr: 'CURRENT_TIMESTAMP',     // raw SQL default expression (mutually exclusive with default)
+    onUpdate:    'CURRENT_TIMESTAMP',     // raw SQL ON UPDATE clause
+    comment:     'When the order was placed',
+    enumValues:  null,                    // list<string> — required for ColumnType::Enum and Set
+)]
+```
+
+`#[Table]` additions:
+
+```php
+#[Table(
+    name:       'orders',
+    primaryKey: 'id',
+    engine:     'InnoDB',
+    charset:    'utf8mb4',
+    collation:  'utf8mb4_unicode_ci',
+    comment:    'Customer orders',
+)]
+```
+
+`#[Relation]` FK-constraint controls:
+
+```php
+#[Relation(
+    type:       RelationType::ManyToOne,
+    class:      Customer::class,
+    foreignKey: 'customer_id',
+    onDelete:   ForeignKeyAction::Cascade,    // default: Restrict
+    onUpdate:   ForeignKeyAction::Restrict,   // default: Restrict
+    emitFk:     true,                          // opt-out per-relation
+)]
+```
+
+FK constraints are emitted only for owning-side relations (`ManyToOne`,
+`OneToOne`). Polymorphic and inverse-side relations carry no local FK column
+and are always skipped.
+
+Schema-build time validation surfaces mistakes early: `VarChar`/`Char`/`Decimal`/
+`Enum`/`Set` required arguments, mutually exclusive `default` / `defaultExpr`,
+class- vs property-level key form conflicts, FK column references.
+
+### Out of scope
+
+`ALTER TABLE` generation, schema diffing, and migration tracking are
+**deliberately out of scope** of attrecord itself. They belong in a separate
+package built on top of `TableSchema`.
+
+→ See [docs/ddl-generation.md](docs/ddl-generation.md) for the full reference
+(type rendering table, column-line format, validation rules, testing strategy).
 
 ### `updateByWhere($where, $params = [], $fields = [])`
 
@@ -784,6 +896,45 @@ $session->reset();     // clear log
 
 ---
 
+## Property name vs column name
+
+PHP convention is `camelCase`; SQL convention is `snake_case`. Each `#[Column]`
+property may declare an explicit column name; when omitted, the column name
+equals the PHP property name:
+
+```php
+#[Table(name: 'orders', primaryKey: 'order_id')]
+final class Order extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, name: 'order_id', autoIncrement: true)]
+    public ?int $orderId = null;
+
+    #[Column(ColumnType::BigIntUnsigned, name: 'customer_id')]
+    public int $customerId = 0;
+
+    // No `name:` override — column name equals property name
+    #[Column(ColumnType::VarChar, length: 20)]
+    public string $status = 'pending';
+}
+```
+
+`#[Table(primaryKey: …)]` references the **column** name (not the property name).
+
+Internally, `TableSchema` exposes both sides:
+
+- `$schema->pk` — primary-key column name (used in SQL).
+- `$schema->pkProp` — primary-key property name (used for PHP property access).
+- `$schema->columns[$colName]->name` / `->propertyName` — same pairing per column.
+- `$schema->propFor(string $colName): string` — helper that resolves column → property.
+
+**No auto-conversion** is provided (not by default, not as opt-in). The rationale
+is documented in [docs/design-note-no-name-auto-conversion.md](docs/design-note-no-name-auto-conversion.md) —
+short version: it would turn IDE Rename Symbol into a silent schema migration,
+hide column names from `grep`, and introduce an algorithmic derivation rule
+that has to be remembered everywhere.
+
+---
+
 ## Column types
 
 | PHP type             | `ColumnType` cases                                                                                            |
@@ -799,12 +950,18 @@ $session->reset();     // clear log
 ```php
 #[Column(
     type:          ColumnType::VarChar,
-    nullable:      true,    // allows NULL; PHP property becomes ?string
-    autoIncrement: true,    // skipped in INSERT/UPDATE; PK assigned after INSERT
-    trimOnSave:    true,    // trim whitespace on save; also suppresses dirty-detection for whitespace-only changes
-    length:        255,     // informational; not enforced by this library
-    precision:     10,      // for Decimal
-    scale:         2,       // for Decimal
+    name:          'col_name',  // SQL column name override (defaults to PHP property name)
+    nullable:      true,        // allows NULL; PHP property becomes ?string
+    autoIncrement: true,        // skipped in INSERT/UPDATE; PK assigned after INSERT
+    trimOnSave:    true,        // trim whitespace on save; also suppresses dirty-detection for whitespace-only changes
+    length:        255,         // for VarChar/Char/Binary/VarBinary; also enforced at DDL generation time
+    precision:     10,          // for Decimal (required at DDL time)
+    scale:         2,           // for Decimal (required at DDL time)
+    default:       null,        // literal DEFAULT value (int|float|string|bool|null); see DDL section
+    defaultExpr:   null,        // raw SQL DEFAULT expression, e.g. 'CURRENT_TIMESTAMP'
+    onUpdate:      null,        // raw SQL ON UPDATE expression, e.g. 'CURRENT_TIMESTAMP'
+    comment:       null,        // column comment (DDL-only)
+    enumValues:    null,        // list<string> — required for ColumnType::Enum and Set
 )]
 ```
 
