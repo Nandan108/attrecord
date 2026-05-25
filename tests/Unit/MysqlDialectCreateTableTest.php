@@ -71,6 +71,18 @@ final class MysqlDialectCreateTableTest extends TestCase
         $this->assertStringContainsString('COLLATE=utf8mb4_unicode_ci', $sql);
     }
 
+    public function testIfNotExistsFlagEmitsConditionalCreate(): void
+    {
+        $schema = TableSchema::fromClass(DdlOrderRecord::class);
+
+        $sqlPlain = $this->dialect->buildCreateTable($schema);
+        $sqlConditional = $this->dialect->buildCreateTable($schema, ifNotExists: true);
+
+        $this->assertStringStartsWith('CREATE TABLE `', $sqlPlain);
+        $this->assertStringNotContainsString('IF NOT EXISTS', $sqlPlain);
+        $this->assertStringStartsWith('CREATE TABLE IF NOT EXISTS `', $sqlConditional);
+    }
+
     public function testEmitsAutoIncrementPrimaryKey(): void
     {
         $sql = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlOrderRecord::class));

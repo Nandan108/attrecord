@@ -129,7 +129,9 @@ interface SqlDialect
      * charset, collation, comment) are dialect-dependent and may be ignored
      * by non-MySQL dialects.
      *
+     * @param bool $ifNotExists When true, emits `CREATE TABLE IF NOT EXISTS`. Use for idempotent install paths; do not use in migration emission where the table is expected to be absent.
+     *
      * @throws Exception\SchemaException for invalid metadata that the schema builder did not already catch
      */
-    public function buildCreateTable(TableSchema $schema): string;
+    public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string;
 }

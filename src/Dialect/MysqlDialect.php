@@ -202,9 +202,10 @@ final class MysqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function buildCreateTable(TableSchema $schema): string
+    public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string
     {
         $qt = $this->quoteIdentifier($schema->tableName);
+        $createKeyword = $ifNotExists ? 'CREATE TABLE IF NOT EXISTS' : 'CREATE TABLE';
 
         $lines = [];
 
@@ -233,7 +234,7 @@ final class MysqlDialect implements SqlDialect
             $lines[] = '  '.$this->buildForeignKeyLine($fk);
         }
 
-        $sql = "CREATE TABLE {$qt} (\n".\implode(",\n", $lines)."\n)";
+        $sql = "{$createKeyword} {$qt} (\n".\implode(",\n", $lines)."\n)";
 
         $opts = $schema->mysqlOptions;
         $sql .= ' ENGINE='.($opts?->engine ?? self::DEFAULT_ENGINE);

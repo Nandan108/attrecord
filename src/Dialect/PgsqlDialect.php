@@ -200,7 +200,7 @@ final class PgsqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function buildCreateTable(TableSchema $schema): string
+    public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string
     {
         throw new \RuntimeException(
             'PgsqlDialect::buildCreateTable() is not yet implemented. '
