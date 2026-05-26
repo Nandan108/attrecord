@@ -459,6 +459,51 @@ Schema-build time validation surfaces mistakes early: `VarChar`/`Char`/`Decimal`
 `Enum`/`Set` required arguments, mutually exclusive `default` / `defaultExpr`,
 class- vs property-level key form conflicts, FK column references.
 
+### Generated columns
+
+A column whose value is computed by the database (`GENERATED ALWAYS AS (...)`)
+is declared by adding `generatedAs:` to the `#[Column]` attribute. The PHP
+property becomes effectively read-only: attrecord excludes generated columns
+from every INSERT and UPDATE it emits — assigning a value in PHP simply has
+no effect on the row.
+
+```php
+use Nandan108\Attrecord\Attribute\Column;
+use Nandan108\Attrecord\Enum\ColumnType;
+use Nandan108\Attrecord\Enum\GeneratedColumnMode;
+
+#[Column(
+    type:           ColumnType::IntUnsigned,
+    generatedAs:    'IFNULL(scope_actor_id, 0)',
+    generatedMode:  GeneratedColumnMode::Stored,   // or Virtual; defaults to Stored
+)]
+public int $scope_actor_key = 0;
+```
+
+Emitted DDL (the `scope_actor_key` column participates in compound keys,
+indexes, and FK targets just like a regular column):
+
+```sql
+`scope_actor_key` INT UNSIGNED GENERATED ALWAYS AS (IFNULL(scope_actor_id, 0)) STORED,
+```
+
+`STORED` columns are materialized on disk (indexable without restriction);
+`VIRTUAL` columns are recomputed on each read (no storage cost, indexable in
+MySQL 8+ with caveats).
+
+Schema-build validation enforces the mutual exclusions MySQL/MariaDB also
+enforce at DDL time:
+
+- `default` / `defaultExpr` not allowed on a generated column
+- `onUpdate` not allowed
+- `autoIncrement` not allowed
+- `generatedAs` must be a non-empty SQL expression
+- `generatedMode` without `generatedAs` is rejected
+
+`NULL` / `NOT NULL` is intentionally not emitted on generated columns —
+MySQL accepts it but MariaDB rejects it, and the generated expression already
+determines nullability. Use this for portable schemas across both engines.
+
 ### Out of scope
 
 `ALTER TABLE` generation, schema diffing, and migration tracking are

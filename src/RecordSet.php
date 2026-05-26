@@ -405,7 +405,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         if (!empty($noKeyRecords)) {
             $candidates = array_filter(
                 $schema->columns,
-                fn ($col) => !$col->autoIncrement,
+                fn ($col) => !$col->autoIncrement && !$col->isGenerated,
             );
 
             $presentCols = [];

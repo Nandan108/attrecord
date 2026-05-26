@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord\Attribute;
 
 use Nandan108\Attrecord\Enum\ColumnType;
+use Nandan108\Attrecord\Enum\GeneratedColumnMode;
 
 /**
  * Marks a public property as a mapped database column.
@@ -31,6 +32,8 @@ final class Column
      * @param string|null                $onUpdate      Raw SQL ON UPDATE expression (e.g. 'CURRENT_TIMESTAMP').
      * @param string|null                $comment       column comment
      * @param list<string>|null          $enumValues    enum/Set allowed values; required for ColumnType::Enum and ColumnType::Set
+     * @param string|null                $generatedAs   Raw SQL expression for a generated column (e.g. 'IFNULL(scope_actor_id, 0)'). Mutually exclusive with $default, $defaultExpr, $onUpdate, $autoIncrement. The corresponding PHP property is read-only at the application layer — the database computes the value.
+     * @param GeneratedColumnMode|null   $generatedMode Storage mode for the generated column. Defaults to `Stored` when $generatedAs is set and $generatedMode is omitted.
      */
     public function __construct(
         public readonly ColumnType $type,
@@ -46,6 +49,8 @@ final class Column
         public readonly ?string $onUpdate = null,
         public readonly ?string $comment = null,
         public readonly ?array $enumValues = null,
+        public readonly ?string $generatedAs = null,
+        public readonly ?GeneratedColumnMode $generatedMode = null,
     ) {
     }
 }

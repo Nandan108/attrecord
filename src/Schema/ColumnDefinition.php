@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord\Schema;
 
 use Nandan108\Attrecord\Enum\ColumnType;
+use Nandan108\Attrecord\Enum\GeneratedColumnMode;
 
 /**
  * Compiled, cached description of a single mapped column.
@@ -21,6 +22,9 @@ final class ColumnDefinition
     public readonly bool $isDateTime;
     public readonly bool $isDate;
     public readonly bool $isString;
+
+    /** True when the column is computed by the database (GENERATED ALWAYS AS ...). Such columns are excluded from INSERT/UPDATE writes. */
+    public readonly bool $isGenerated;
 
     /**
      * @param string                     $name           SQL column name (post-override; equals `$propertyName` when no `name:` override was specified)
@@ -39,6 +43,8 @@ final class ColumnDefinition
      * @param string|null                $onUpdate       raw SQL ON UPDATE expression
      * @param string|null                $comment        column comment
      * @param list<string>|null          $enumValues     allowed values for ColumnType::Enum / Set
+     * @param string|null                $generatedAs    raw SQL expression for a database-generated column; null for a normal column
+     * @param GeneratedColumnMode|null   $generatedMode  storage mode for the generated column; ignored when $generatedAs is null
      */
     public function __construct(
         public readonly string $name,
@@ -57,6 +63,8 @@ final class ColumnDefinition
         public readonly ?string $onUpdate = null,
         public readonly ?string $comment = null,
         public readonly ?array $enumValues = null,
+        public readonly ?string $generatedAs = null,
+        public readonly ?GeneratedColumnMode $generatedMode = null,
     ) {
         $this->isInteger = $type->isInteger();
         $this->isBool = $type->isBool();
@@ -66,5 +74,6 @@ final class ColumnDefinition
         $this->isDateTime = $type->isDateTime();
         $this->isDate = $type->isDate();
         $this->isString = $type->isString();
+        $this->isGenerated = null !== $generatedAs;
     }
 }

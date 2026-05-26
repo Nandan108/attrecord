@@ -548,7 +548,10 @@ abstract class Record
         $params = [];
 
         foreach ($schema->columns as $colName => $col) {
-            if ($col->autoIncrement) {
+            // Skip columns that are not application-writable: auto-increment PKs are
+            // assigned by the DB on INSERT, and database-generated columns are computed
+            // by the DB on every write (their PHP property is read-only).
+            if ($col->autoIncrement || $col->isGenerated) {
                 continue;
             }
 
@@ -685,7 +688,7 @@ abstract class Record
         $columnNames = [];
         $params = [];
         foreach ($schema->columns as $colName => $col) {
-            if ($col->autoIncrement) {
+            if ($col->autoIncrement || $col->isGenerated) {
                 continue;
             }
             $columnNames[] = $colName;
@@ -779,7 +782,7 @@ abstract class Record
 
         if (empty($fields)) {
             foreach ($schema->columns as $colName => $col) {
-                if ($col->autoIncrement || $colName === $pk) {
+                if ($col->autoIncrement || $col->isGenerated || $colName === $pk) {
                     continue;
                 }
                 /** @psalm-suppress MixedAssignment */
@@ -863,7 +866,7 @@ abstract class Record
 
         if (empty($fields)) {
             foreach ($schema->columns as $colName => $col) {
-                if ($col->autoIncrement || $colName === $pk) {
+                if ($col->autoIncrement || $col->isGenerated || $colName === $pk) {
                     continue;
                 }
                 /** @psalm-suppress MixedAssignment */

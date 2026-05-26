@@ -13,6 +13,7 @@ use Nandan108\Attrecord\Enum\ColumnType;
 use Nandan108\Attrecord\Exception\SchemaException;
 use Nandan108\Attrecord\Record;
 use Nandan108\Attrecord\Schema\TableSchema;
+use Nandan108\Attrecord\Tests\Fixtures\DdlGeneratedColumnRecord;
 use Nandan108\Attrecord\Tests\Fixtures\DdlOrderRecord;
 use Nandan108\Attrecord\Tests\Fixtures\UserRecord;
 use PHPUnit\Framework\TestCase;
@@ -99,6 +100,38 @@ final class MysqlDialectCreateTableTest extends TestCase
             "`status` VARCHAR(20) NOT NULL DEFAULT 'pending' COMMENT 'Workflow state'",
             $sql,
         );
+    }
+
+    public function testEmitsGeneratedStoredColumn(): void
+    {
+        $sql = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlGeneratedColumnRecord::class));
+
+        // Generated clause appears between the column type and any further
+        // column constraints. NULL/NOT NULL is intentionally omitted on
+        // generated columns (MariaDB rejects an explicit NOT NULL here, and
+        // the expression already determines nullability).
+        $this->assertStringContainsString(
+            '`scope_key` INT UNSIGNED GENERATED ALWAYS AS (IFNULL(scope_id, 0)) STORED',
+            $sql,
+        );
+        $this->assertStringNotContainsString('STORED NOT NULL', $sql);
+        // Compound UNIQUE key mixing a real column and the generated column.
+        $this->assertStringContainsString('UNIQUE KEY `uq_scope_value` (`scope_key`, `value`)', $sql);
+    }
+
+    public function testGeneratedColumnRejectsDefaultClause(): void
+    {
+        $record = new #[Table(name: 'attrecord_gen_bad')] class extends Record {
+            #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+            public ?int $id = null;
+
+            #[Column(ColumnType::IntUnsigned, generatedAs: 'IFNULL(x, 0)', default: 5)]
+            public int $bad = 0;
+        };
+
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessage('a generated column cannot also declare `default`');
+        TableSchema::fromClass($record::class);
     }
 
     public function testEmitsEnumWithValues(): void

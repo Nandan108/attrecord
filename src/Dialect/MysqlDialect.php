@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord\Dialect;
 
 use Nandan108\Attrecord\Enum\ColumnType;
+use Nandan108\Attrecord\Enum\GeneratedColumnMode;
 use Nandan108\Attrecord\Schema\ColumnDefinition;
 use Nandan108\Attrecord\Schema\ForeignKeyDefinition;
 use Nandan108\Attrecord\Schema\TableSchema;
@@ -252,22 +253,34 @@ final class MysqlDialect implements SqlDialect
     {
         $parts = [$this->quoteIdentifier($col->name), $this->renderColumnType($col)];
 
-        if (!$col->nullable) {
+        // Generated-column clause must appear immediately after the column type.
+        // MySQL accepts an explicit NOT NULL afterwards, but MariaDB rejects it
+        // (the result's nullability is inferred from the expression). For
+        // portability we omit NULL/NOT NULL on generated columns entirely —
+        // the expression decides.
+        if ($col->isGenerated) {
+            $parts[] = 'GENERATED ALWAYS AS ('.((string) $col->generatedAs).')';
+            $parts[] = ($col->generatedMode ?? GeneratedColumnMode::Stored)->value;
+        } elseif (!$col->nullable) {
             $parts[] = 'NOT NULL';
         }
 
-        if (null !== $col->defaultExpr) {
-            $parts[] = 'DEFAULT '.$col->defaultExpr;
-        } elseif (null !== $col->default) {
-            $parts[] = 'DEFAULT '.$this->toLiteral($col->default, $col);
-        }
+        // Generated columns cannot carry DEFAULT, ON UPDATE, or AUTO_INCREMENT
+        // (validated at schema-build time); skip those clauses entirely.
+        if (!$col->isGenerated) {
+            if (null !== $col->defaultExpr) {
+                $parts[] = 'DEFAULT '.$col->defaultExpr;
+            } elseif (null !== $col->default) {
+                $parts[] = 'DEFAULT '.$this->toLiteral($col->default, $col);
+            }
 
-        if (null !== $col->onUpdate) {
-            $parts[] = 'ON UPDATE '.$col->onUpdate;
-        }
+            if (null !== $col->onUpdate) {
+                $parts[] = 'ON UPDATE '.$col->onUpdate;
+            }
 
-        if ($col->autoIncrement) {
-            $parts[] = 'AUTO_INCREMENT';
+            if ($col->autoIncrement) {
+                $parts[] = 'AUTO_INCREMENT';
+            }
         }
 
         if (null !== $col->comment) {

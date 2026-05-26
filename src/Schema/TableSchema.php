@@ -12,6 +12,7 @@ use Nandan108\Attrecord\Attribute\Relation;
 use Nandan108\Attrecord\Attribute\Table;
 use Nandan108\Attrecord\Attribute\UniqueKey;
 use Nandan108\Attrecord\Enum\ColumnType;
+use Nandan108\Attrecord\Enum\GeneratedColumnMode;
 use Nandan108\Attrecord\Enum\RelationType;
 use Nandan108\Attrecord\Exception\SchemaException;
 
@@ -217,6 +218,10 @@ final class TableSchema
                     onUpdate: $colAttr->onUpdate,
                     comment: $colAttr->comment,
                     enumValues: $colAttr->enumValues,
+                    generatedAs: $colAttr->generatedAs,
+                    generatedMode: null !== $colAttr->generatedAs
+                        ? ($colAttr->generatedMode ?? GeneratedColumnMode::Stored)
+                        : null,
                 );
 
                 if (true === $colAttr->trimOnSave && !$col->isString) {
@@ -407,6 +412,36 @@ final class TableSchema
                     "{$loc}: #[Column(ColumnType::{$col->type->name})] requires a non-empty `enumValues` list.",
                 );
             }
+        }
+
+        // Generated columns (GENERATED ALWAYS AS (...) STORED/VIRTUAL) are computed by
+        // the database, so application-side writes (DEFAULT, ON UPDATE, AUTO_INCREMENT)
+        // are forbidden by both MySQL and our INSERT/UPDATE skip logic.
+        if (null !== $col->generatedAs) {
+            if ('' === trim($col->generatedAs)) {
+                throw new SchemaException(
+                    "{$loc}: #[Column] `generatedAs` must be a non-empty SQL expression.",
+                );
+            }
+            if (null !== $col->default || null !== $col->defaultExpr) {
+                throw new SchemaException(
+                    "{$loc}: a generated column cannot also declare `default` or `defaultExpr`.",
+                );
+            }
+            if (null !== $col->onUpdate) {
+                throw new SchemaException(
+                    "{$loc}: a generated column cannot declare `onUpdate`.",
+                );
+            }
+            if ($col->autoIncrement) {
+                throw new SchemaException(
+                    "{$loc}: a generated column cannot also be `autoIncrement`.",
+                );
+            }
+        } elseif (null !== $col->generatedMode) {
+            throw new SchemaException(
+                "{$loc}: #[Column] `generatedMode` requires `generatedAs` to be set.",
+            );
         }
     }
 
