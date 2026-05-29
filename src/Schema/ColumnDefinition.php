@@ -45,6 +45,7 @@ final class ColumnDefinition
      * @param list<string>|null          $enumValues     allowed values for ColumnType::Enum / Set
      * @param string|null                $generatedAs    raw SQL expression for a database-generated column; null for a normal column
      * @param GeneratedColumnMode|null   $generatedMode  storage mode for the generated column; ignored when $generatedAs is null
+     * @param string|null                $phpType        declared PHP type of the bound property (nullability stripped), e.g. 'string'/'float'/'int'; null when not a single named type. Lets serialization honor a string-typed property over the SQL type's default PHP mapping (e.g. keep DECIMAL money as an exact string instead of a lossy float).
      */
     public function __construct(
         public readonly string $name,
@@ -65,6 +66,7 @@ final class ColumnDefinition
         public readonly ?array $enumValues = null,
         public readonly ?string $generatedAs = null,
         public readonly ?GeneratedColumnMode $generatedMode = null,
+        public readonly ?string $phpType = null,
     ) {
         $this->isInteger = $type->isInteger();
         $this->isBool = $type->isBool();

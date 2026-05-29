@@ -30,7 +30,9 @@ final class ColumnSerializer
             // MySQL returns 1/0 (int); PostgreSQL returns 't'/'f' (string) for BOOLEAN columns.
             $col->isBool     => \in_array($raw, [true, 1, '1', 't', 'true'], true),
             $col->isInteger  => (int) $raw,
-            $col->isFloat    => (float) $raw,
+            // A Decimal/float column bound to a string-typed property keeps its exact decimal
+            // string (PDO already returns DECIMAL as a string) instead of a lossy float cast.
+            $col->isFloat    => 'string' === $col->phpType ? (string) $raw : (float) $raw,
             $col->isDateTime => self::tryParseDateTime((string) $raw, 'Y-m-d H:i:s'),
             $col->isDate     => self::tryParseDateTime((string) $raw, 'Y-m-d'),
             default          => (string) $raw, // String and Binary — return as-is (binary is raw bytes from DB)
@@ -55,7 +57,9 @@ final class ColumnSerializer
             null === $value  => null,
             $col->isBool     => (int) (bool) $value,
             $col->isInteger  => (int) $value,
-            $col->isFloat    => (float) $value,
+            // String-typed money/decimal binds as its exact string (the driver handles DECIMAL),
+            // avoiding a float round-trip that could drop precision on wider scales.
+            $col->isFloat    => 'string' === $col->phpType ? (string) $value : (float) $value,
             $col->isDateTime => $value instanceof \DateTimeImmutable
                 ? $value->format('Y-m-d H:i:s')
                 : (string) $value,

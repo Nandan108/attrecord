@@ -201,10 +201,14 @@ final class TableSchema
                     $indexesFromProperty[$ixAttr->name] = true;
                 }
 
+                $propReflType = $prop->getType();
+                $phpType = $propReflType instanceof \ReflectionNamedType ? $propReflType->getName() : null;
+
                 $col = new ColumnDefinition(
                     name: $colName,
                     propertyName: $propName,
                     type: $colAttr->type,
+                    phpType: $phpType,
                     nullable: $colAttr->nullable,
                     autoIncrement: $colAttr->autoIncrement,
                     trimOnSave: $colAttr->trimOnSave,
