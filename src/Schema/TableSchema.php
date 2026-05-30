@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord\Schema;
 
+use Nandan108\Attrecord\Attribute\Cast;
 use Nandan108\Attrecord\Attribute\Column;
 use Nandan108\Attrecord\Attribute\Index;
 use Nandan108\Attrecord\Attribute\LockTier;
@@ -11,10 +12,13 @@ use Nandan108\Attrecord\Attribute\MysqlTableOptions;
 use Nandan108\Attrecord\Attribute\Relation;
 use Nandan108\Attrecord\Attribute\Table;
 use Nandan108\Attrecord\Attribute\UniqueKey;
+use Nandan108\Attrecord\Caster\JsonCaster;
+use Nandan108\Attrecord\ColumnCaster;
 use Nandan108\Attrecord\Enum\ColumnType;
 use Nandan108\Attrecord\Enum\GeneratedColumnMode;
 use Nandan108\Attrecord\Enum\RelationType;
 use Nandan108\Attrecord\Exception\SchemaException;
+use Nandan108\Attrecord\JsonCastable;
 
 /**
  * Compiled, cached schema for one Record subclass.
@@ -204,11 +208,45 @@ final class TableSchema
                 $propReflType = $prop->getType();
                 $phpType = $propReflType instanceof \ReflectionNamedType ? $propReflType->getName() : null;
 
+                // Resolve the column caster: an explicit #[Cast]-family attribute wins;
+                // otherwise a JsonCaster is auto-attached to an array-typed Json column.
+                // Filter by class hierarchy on the class-string (no newInstance on non-casters).
+                $castAttrs = array_values(array_filter(
+                    $prop->getAttributes(),
+                    static fn (\ReflectionAttribute $a): bool => is_a($a->getName(), Cast::class, true),
+                ));
+                if (\count($castAttrs) > 1) {
+                    throw new SchemaException(sprintf(
+                        '%s::$%s: at most one caster attribute is allowed.',
+                        $class,
+                        $propName,
+                    ));
+                }
+                $isJsonCol = ColumnType::Json === $colAttr->type;
+                $autoJson = $isJsonCol && (
+                    'array' === $phpType
+                    || (null !== $phpType && is_a($phpType, JsonCastable::class, true))
+                );
+                $caster = match (true) {
+                    [] !== $castAttrs => $castAttrs[0]->newInstance(),
+                    $autoJson         => new JsonCaster(),
+                    default           => null,
+                };
+                \assert(null === $caster || $caster instanceof ColumnCaster);
+                if (null !== $caster && ($colAttr->autoIncrement || null !== $colAttr->generatedAs)) {
+                    throw new SchemaException(sprintf(
+                        '%s::$%s: a caster cannot be applied to an autoIncrement or generated column.',
+                        $class,
+                        $propName,
+                    ));
+                }
+
                 $col = new ColumnDefinition(
                     name: $colName,
                     propertyName: $propName,
                     type: $colAttr->type,
                     phpType: $phpType,
+                    caster: $caster,
                     nullable: $colAttr->nullable,
                     autoIncrement: $colAttr->autoIncrement,
                     trimOnSave: $colAttr->trimOnSave,

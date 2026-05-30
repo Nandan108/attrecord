@@ -21,12 +21,18 @@ final class ColumnSerializer
     /**
      * Hydrate a raw DB value into the appropriate PHP type for the given column.
      *
-     * @param scalar|null $raw
+     * When the column declares a caster it is authoritative: the raw value (and the
+     * full row, for discriminator-aware casters) is handed to it and native type
+     * handling is skipped. Casters are never invoked for a null raw value.
+     *
+     * @param scalar|null                $raw
+     * @param array<string, scalar|null> $row full raw row being hydrated (for casters that read sibling columns)
      */
-    public static function fromDb(mixed $raw, ColumnDefinition $col): mixed
+    public static function fromDb(mixed $raw, ColumnDefinition $col, array $row = []): mixed
     {
         return match (true) {
-            null === $raw    => null,
+            null === $raw         => null,
+            null !== $col->caster => $col->caster->fromDb($raw, $row, $col),
             // MySQL returns 1/0 (int); PostgreSQL returns 't'/'f' (string) for BOOLEAN columns.
             $col->isBool     => \in_array($raw, [true, 1, '1', 't', 'true'], true),
             $col->isInteger  => (int) $raw,
@@ -47,12 +53,32 @@ final class ColumnSerializer
     }
 
     /**
+     * Apply the column caster (rich value → DB scalar) when one is set and the value is
+     * non-null; otherwise return the value unchanged. Used by both write paths: the
+     * parameter path via toParam(), and the bulk-literal path in RecordSet::buildPlan()
+     * before SqlDialect::toLiteral().
+     */
+    public static function toDbValue(mixed $value, ColumnDefinition $col): mixed
+    {
+        return (null !== $value && null !== $col->caster)
+            ? $col->caster->toDb($value, $col)
+            : $value;
+    }
+
+    /**
      * Convert a typed PHP value to a scalar parameter suitable for DbSession::exec($sql, $params).
      *
-     * Binary columns are passed as raw byte strings — DbSession implementations must handle them.
+     * A column caster, when set, is authoritative: its output is the bound scalar and the
+     * native type handling below is bypassed (so e.g. an EpochCaster on an integer column
+     * is not re-coerced by the integer arm). Binary columns without a caster are passed as
+     * raw byte strings — DbSession implementations must handle them.
      */
     public static function toParam(mixed $value, ColumnDefinition $col): int | float | string | null
     {
+        if (null !== $value && null !== $col->caster) {
+            return $col->caster->toDb($value, $col);
+        }
+
         return match (true) {
             null === $value  => null,
             $col->isBool     => (int) (bool) $value,

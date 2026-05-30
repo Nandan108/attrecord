@@ -6,6 +6,7 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
 - **Emit `CREATE TABLE` directly from the attributes** — single source of truth for column type, defaults, unique keys, indexes, and FK constraints
 - **camelCase PHP / snake_case SQL** via per-column `name:` override (no auto-conversion — [decision documented](docs/design-note-no-name-auto-conversion.md))
 - Dirty-tracking — `save()` only writes changed columns
+- Column casting — map columns to value objects / JSON / custom types via `#[Cast]` attributes ([docs](docs/column-casting.md))
 - Bulk upsert via `RecordSet::saveAll()` with a single SQL statement
 - Eager relation loading with no N+1 queries (`with()`)
 - Domain invariants enforced at assignment and save time via a `validate()` hook
@@ -544,6 +545,45 @@ $order->isDirty('total');       // false
 $order->dirtyFields();
 // ['status' => ['draft', 'confirmed']]  (snapshot → current)
 ```
+
+---
+
+## Column casting
+
+By default each column maps to a native PHP type from its `ColumnType`. **Casting** lets
+a property hold a richer value — a value object, a typed array, a decoded JSON payload —
+serialized transparently on write and reconstructed on read. It's opt-in: native types
+keep their built-in mapping, and a cast only kicks in where you ask for one (or where the
+native default would be wrong, e.g. an `array`-typed `Json` column).
+
+```php
+// array ⇄ JSON — auto-attached on a Json column typed as array
+#[Column(ColumnType::Json, nullable: true)]
+public ?array $meta = null;
+
+// value object ⇄ JSON — auto-attached when the type implements JsonCastable
+#[Column(ColumnType::Json, nullable: true)]
+public ?Money $price = null;
+
+// explicit, parameterized caster
+#[Column(ColumnType::Json, nullable: true)]
+#[JsonCaster(excludeNullFields: ['note'])]
+public ?array $audit = null;
+
+// reshape a native type — e.g. store a timestamp as a unix int
+#[Column(ColumnType::BigIntUnsigned, nullable: true)]
+#[EpochCaster]
+public ?\DateTimeImmutable $logged_at = null;
+```
+
+A caster *is* its attribute: `JsonCaster` / `DateTimeCaster` / `EpochCaster` ship
+built-in, and custom casters extend the `Cast` base (which implements the two-method
+`ColumnCaster` contract). Casting integrates with dirty tracking — including mutable
+value objects — and with bulk `saveAll()`, and has no effect on generated DDL.
+
+→ See [docs/column-casting.md](docs/column-casting.md) for the full reference: the
+`ColumnCaster` contract, `JsonCastable` value objects, discriminated payloads, auto-attach
+rules, and limitations.
 
 ---
 

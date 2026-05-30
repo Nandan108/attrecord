@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord\Schema;
 
+use Nandan108\Attrecord\ColumnCaster;
 use Nandan108\Attrecord\Enum\ColumnType;
 use Nandan108\Attrecord\Enum\GeneratedColumnMode;
 
@@ -46,6 +47,7 @@ final class ColumnDefinition
      * @param string|null                $generatedAs    raw SQL expression for a database-generated column; null for a normal column
      * @param GeneratedColumnMode|null   $generatedMode  storage mode for the generated column; ignored when $generatedAs is null
      * @param string|null                $phpType        declared PHP type of the bound property (nullability stripped), e.g. 'string'/'float'/'int'; null when not a single named type. Lets serialization honor a string-typed property over the SQL type's default PHP mapping (e.g. keep DECIMAL money as an exact string instead of a lossy float).
+     * @param ColumnCaster|null          $caster         bidirectional value caster for this column (the #[Cast]-family attribute instance), or null for native (de)serialization. When set, it is authoritative: ColumnSerializer routes the value through it and skips the native type handling.
      */
     public function __construct(
         public readonly string $name,
@@ -67,6 +69,7 @@ final class ColumnDefinition
         public readonly ?string $generatedAs = null,
         public readonly ?GeneratedColumnMode $generatedMode = null,
         public readonly ?string $phpType = null,
+        public readonly ?ColumnCaster $caster = null,
     ) {
         $this->isInteger = $type->isInteger();
         $this->isBool = $type->isBool();

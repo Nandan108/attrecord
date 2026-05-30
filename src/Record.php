@@ -1024,8 +1024,16 @@ abstract class Record
 
         foreach ($schema->columns as $colName => $col) {
             $raw = $row[$colName] ?? null;
-            $this->_snapshot[$colName] = null !== $raw ? (string) $raw : null;
-            $this->{$col->propertyName} = ColumnSerializer::fromDb($raw, $col);
+            /** @psalm-suppress MixedAssignment */
+            $value = ColumnSerializer::fromDb($raw, $col, $row);
+            $this->{$col->propertyName} = $value;
+            // For casted columns, snapshot the re-encoded canonical form rather than the
+            // raw DB bytes: native JSON storage normalizes (key order / whitespace), so
+            // comparing our own encoding on both sides keeps a freshly loaded, untouched
+            // record clean instead of falsely dirty.
+            $this->_snapshot[$colName] = null !== $col->caster
+                ? ColumnSerializer::toSnapshotString($value, $col)
+                : (null !== $raw ? (string) $raw : null);
         }
 
         $this->_isNew = false;

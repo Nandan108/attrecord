@@ -427,7 +427,10 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                     $row = [];
                     foreach ($colNames as $colName) {
                         $col = $schema->columns[$colName];
-                        $row[] = $dialect->toLiteral($record->{$col->propertyName} ?? null, $col);
+                        $row[] = $dialect->toLiteral(
+                            ColumnSerializer::toDbValue($record->{$col->propertyName} ?? null, $col),
+                            $col,
+                        );
                     }
                     $rows[] = $row;
                 }
@@ -457,7 +460,10 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                     $row = [];
                     foreach ($colNames as $colName) {
                         $col = $schema->columns[$colName];
-                        $row[] = $dialect->toLiteral($record->{$col->propertyName} ?? null, $col);
+                        $row[] = $dialect->toLiteral(
+                            ColumnSerializer::toDbValue($record->{$col->propertyName} ?? null, $col),
+                            $col,
+                        );
                     }
                     $rows[] = $row;
                 }
