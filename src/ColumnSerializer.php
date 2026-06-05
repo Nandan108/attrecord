@@ -39,17 +39,30 @@ final class ColumnSerializer
             // A Decimal/float column bound to a string-typed property keeps its exact decimal
             // string (PDO already returns DECIMAL as a string) instead of a lossy float cast.
             $col->isFloat    => 'string' === $col->phpType ? (string) $raw : (float) $raw,
-            $col->isDateTime => self::tryParseDateTime((string) $raw, 'Y-m-d H:i:s'),
-            $col->isDate     => self::tryParseDateTime((string) $raw, 'Y-m-d'),
+            $col->isDateTime => self::tryParseDateTime((string) $raw, ['Y-m-d H:i:s.u', 'Y-m-d H:i:s']),
+            $col->isDate     => self::tryParseDateTime((string) $raw, ['Y-m-d']),
             default          => (string) $raw, // String and Binary — return as-is (binary is raw bytes from DB)
         };
     }
 
-    private static function tryParseDateTime(string $raw, string $format): ?\DateTimeImmutable
+    /**
+     * Parse a DB datetime/date string, trying each format in order (first that parses
+     * wins). The fractional-seconds format is tried first so DATETIME(n) values — which
+     * MySQL returns as `…:56.000000` — round-trip instead of failing; precision-0 values
+     * fall through to the plain format.
+     *
+     * @param non-empty-list<string> $formats
+     */
+    private static function tryParseDateTime(string $raw, array $formats): ?\DateTimeImmutable
     {
-        $dt = \DateTimeImmutable::createFromFormat($format, $raw);
+        foreach ($formats as $format) {
+            $dt = \DateTimeImmutable::createFromFormat($format, $raw);
+            if (false !== $dt) {
+                return $dt;
+            }
+        }
 
-        return false !== $dt ? $dt : null;
+        return null;
     }
 
     /**

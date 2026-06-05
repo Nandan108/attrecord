@@ -33,6 +33,31 @@ final class ColumnSerializerTest extends TestCase
     }
 
     // -----------------------------------------------------------------
+    // DateTime fromDb() — fractional-seconds (DATETIME(n)) round-trip
+    // -----------------------------------------------------------------
+
+    public function testFromDbParsesFractionalSecondsDateTime(): void
+    {
+        // MySQL returns DATETIME(6) values with a fractional part (e.g. `…:56.000000`);
+        // the plain 'Y-m-d H:i:s' format alone fails to parse it, nulling the column.
+        $dt = ColumnSerializer::fromDb('2026-06-05 12:34:56.789012', $this->col(ColumnType::DateTime));
+        self::assertInstanceOf(\DateTimeImmutable::class, $dt);
+        self::assertSame('2026-06-05 12:34:56.789012', $dt->format('Y-m-d H:i:s.u'));
+    }
+
+    public function testFromDbParsesSecondPrecisionDateTime(): void
+    {
+        $dt = ColumnSerializer::fromDb('2026-06-05 12:34:56', $this->col(ColumnType::DateTime));
+        self::assertInstanceOf(\DateTimeImmutable::class, $dt);
+        self::assertSame('2026-06-05 12:34:56', $dt->format('Y-m-d H:i:s'));
+    }
+
+    public function testFromDbReturnsNullForNullDateTime(): void
+    {
+        self::assertNull(ColumnSerializer::fromDb(null, $this->col(ColumnType::DateTime)));
+    }
+
+    // -----------------------------------------------------------------
     // trimOnSave — toParam()
     // -----------------------------------------------------------------
 
