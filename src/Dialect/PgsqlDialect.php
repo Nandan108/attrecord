@@ -55,7 +55,7 @@ final class PgsqlDialect implements SqlDialect
 
         if ($col->isDateTime) {
             $formatted = $value instanceof \DateTimeImmutable
-                ? $value->format('Y-m-d H:i:s')
+                ? $value->format('Y-m-d H:i:s'.(($col->precision ?? 0) ? '.u' : ''))
                 : (string) $value;
 
             return "'".$this->escapeString($formatted)."'";

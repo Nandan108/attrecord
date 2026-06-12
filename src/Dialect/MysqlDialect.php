@@ -61,11 +61,15 @@ final class MysqlDialect implements SqlDialect
         }
 
         if ($col->isDateTime) {
+            // Honor fractional-seconds precision when the column declares one — without
+            // this, microsecond-precision sentinel values like '9999-12-31 23:59:59.999999'
+            // round-trip as '...:59.000000' and identifier-window lookups (which compare
+            // the sentinel literally) silently miss rows written through this path.
             $formatted = $value instanceof \DateTimeImmutable
-                ? $value->format('Y-m-d H:i:s')
+                ? $value->format('Y-m-d H:i:s'.(($col->precision ?? 0) ? '.u' : ''))
                 : (string) $value;
 
-            return "'".$this->escapeString($formatted)."'";
+            return $this->escapeStringLiteral($formatted);
         }
 
         if ($col->isDate) {
@@ -73,11 +77,11 @@ final class MysqlDialect implements SqlDialect
                 ? $value->format('Y-m-d')
                 : (string) $value;
 
-            return "'".$this->escapeString($formatted)."'";
+            return $this->escapeStringLiteral($formatted);
         }
 
         // VarChar, Text, Json, Enum, etc.
-        return "'".$this->escapeString((string) $value)."'";
+        return $this->escapeStringLiteral((string) $value);
     }
 
     #[\Override]
@@ -243,7 +247,7 @@ final class MysqlDialect implements SqlDialect
         $sql .= ' COLLATE='.($opts?->collation ?? self::DEFAULT_COLLATION);
 
         if (null !== $schema->comment) {
-            $sql .= " COMMENT='".$this->escapeString($schema->comment)."'";
+            $sql .= ' COMMENT='.$this->escapeStringLiteral($schema->comment);
         }
 
         return $sql;
@@ -284,7 +288,7 @@ final class MysqlDialect implements SqlDialect
         }
 
         if (null !== $col->comment) {
-            $parts[] = "COMMENT '".$this->escapeString($col->comment)."'";
+            $parts[] = 'COMMENT '.$this->escapeStringLiteral($col->comment);
         }
 
         return \implode(' ', $parts);
@@ -293,6 +297,7 @@ final class MysqlDialect implements SqlDialect
     private function renderColumnType(ColumnDefinition $col): string
     {
         $type = $col->type;
+        $precision = $col->precision ?? 0;
 
         return match (true) {
             ColumnType::Bool === $type      => 'TINYINT(1)',
@@ -301,9 +306,9 @@ final class MysqlDialect implements SqlDialect
             ColumnType::VarBinary === $type => 'VARBINARY('.((int) $col->length).')',
             ColumnType::Binary === $type    => 'BINARY('.((int) $col->length).')',
             ColumnType::Bit === $type       => null !== $col->length ? 'BIT('.$col->length.')' : 'BIT',
-            ColumnType::Decimal === $type   => 'DECIMAL('.((int) $col->precision).', '.((int) $col->scale).')',
-            ColumnType::DateTime === $type  => null !== $col->precision ? 'DATETIME('.$col->precision.')' : 'DATETIME',
-            ColumnType::Timestamp === $type => null !== $col->precision ? 'TIMESTAMP('.$col->precision.')' : 'TIMESTAMP',
+            ColumnType::Decimal === $type   => 'DECIMAL('.$precision.', '.((int) $col->scale).')',
+            ColumnType::DateTime === $type  => $precision ? 'DATETIME('.$precision.')' : 'DATETIME',
+            ColumnType::Timestamp === $type => $precision ? 'TIMESTAMP('.$precision.')' : 'TIMESTAMP',
             ColumnType::Enum === $type      => 'ENUM('.$this->renderEnumValues($col).')',
             ColumnType::Set === $type       => 'SET('.$this->renderEnumValues($col).')',
             default                         => \strtoupper($type->value),
@@ -316,7 +321,7 @@ final class MysqlDialect implements SqlDialect
         $values = $col->enumValues ?? [];
 
         return \implode(', ', \array_map(
-            fn (string $v): string => "'".$this->escapeString($v)."'",
+            $this->escapeStringLiteral(...),
             $values,
         ));
     }
@@ -334,15 +339,16 @@ final class MysqlDialect implements SqlDialect
     }
 
     /**
-     * Pure-PHP MySQL string escaping (no connection required).
-     * Safe for all string values; binary data uses X'hex' via toLiteral() instead.
+     * Pure-PHP MySQL string-literal builder (no connection required): escapes the value
+     * and wraps it in single quotes — ready to splice into a SQL statement. Safe for all
+     * string values; binary data uses X'hex' via toLiteral() instead.
      */
-    private function escapeString(string $value): string
+    private function escapeStringLiteral(string $value): string
     {
-        return \str_replace(
+        return "'".\str_replace(
             ['\\',  "\0",  "\n",  "\r",  "'",   '"',   "\x1a"],
             ['\\\\', '\\0', '\\n', '\\r', "\\'", '\\"', '\\Z'],
             $value,
-        );
+        )."'";
     }
 }

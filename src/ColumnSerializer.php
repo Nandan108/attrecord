@@ -99,8 +99,11 @@ final class ColumnSerializer
             // String-typed money/decimal binds as its exact string (the driver handles DECIMAL),
             // avoiding a float round-trip that could drop precision on wider scales.
             $col->isFloat    => 'string' === $col->phpType ? (string) $value : (float) $value,
+            // Honor declared fractional-seconds precision — see MysqlDialect for the
+            // matching rationale (literal path). Without this, bound-param writes drop
+            // microseconds from sentinels like '9999-12-31 23:59:59.999999'.
             $col->isDateTime => $value instanceof \DateTimeImmutable
-                ? $value->format('Y-m-d H:i:s')
+                ? $value->format('Y-m-d H:i:s'.(($col->precision ?? 0) ? '.u' : ''))
                 : (string) $value,
             $col->isDate => $value instanceof \DateTimeImmutable
                 ? $value->format('Y-m-d')
