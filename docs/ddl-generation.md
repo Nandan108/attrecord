@@ -133,6 +133,35 @@ Defaults live in `MysqlDialect::DEFAULT_ENGINE` / `DEFAULT_CHARSET` /
 Future `#[PgsqlTableOptions(tablespace, unlogged, ...)]` will follow the same
 pattern; not defined speculatively.
 
+### `MysqlDialect` constructor — instance-level table-option defaults
+
+`new MysqlDialect()` falls back to the `DEFAULT_*` constants for any table that
+omits `#[MysqlTableOptions]`. A consumer can override those library defaults per
+dialect instance:
+
+```php
+$collation = $hostDb->defaultCollation();         // e.g. live DEFAULT_COLLATION_NAME
+$charset   = explode('_', $collation, 2)[0];       // charset = collation-name prefix
+
+$dialect = new MysqlDialect(
+    defaultCharset: $charset,
+    defaultCollation: $collation,
+);
+```
+
+Each constructor argument is nullable; a null field falls back to the matching
+`DEFAULT_*` constant. **Resolution precedence per field** is:
+
+1. per-table `#[MysqlTableOptions]`,
+2. the dialect instance default (constructor argument),
+3. the `DEFAULT_*` constant.
+
+This lets all generated DDL align with the host database's charset/collation
+without annotating every Record — e.g. an adapter creating tables alongside an
+existing schema passes that schema's collation, so cross-table string JOINs do
+not hit "illegal mix of collations". Deriving the charset from the collation
+name (its prefix) keeps the `CHARSET`/`COLLATE` pair valid on any host.
+
 ### `#[Relation]` — new fields
 
 | Field      | Default                       | Purpose                                       |

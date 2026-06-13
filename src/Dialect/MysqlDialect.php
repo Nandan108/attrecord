@@ -31,6 +31,28 @@ final class MysqlDialect implements SqlDialect
     /** Default collation used when a Record does not declare #[MysqlTableOptions]. */
     public const DEFAULT_COLLATION = 'utf8mb4_unicode_ci';
 
+    /**
+     * Instance-level table-option defaults, applied to generated `CREATE TABLE`
+     * DDL when a Record carries no `#[MysqlTableOptions]`. Each is nullable; a
+     * null field falls back to the corresponding `DEFAULT_*` constant.
+     *
+     * Resolution precedence per field: per-table `#[MysqlTableOptions]` → this
+     * instance default → the `DEFAULT_*` constant. The instance default lets a
+     * consumer align all generated DDL with the host database (e.g. pass the
+     * live `DEFAULT_COLLATION_NAME`) instead of the library constant, without
+     * annotating every Record.
+     *
+     * @param string|null $defaultEngine    Storage engine; null → {@see self::DEFAULT_ENGINE}
+     * @param string|null $defaultCharset   Table charset; null → {@see self::DEFAULT_CHARSET}
+     * @param string|null $defaultCollation Table collation; null → {@see self::DEFAULT_COLLATION}
+     */
+    public function __construct(
+        private readonly ?string $defaultEngine = null,
+        private readonly ?string $defaultCharset = null,
+        private readonly ?string $defaultCollation = null,
+    ) {
+    }
+
     #[\Override]
     public function quoteIdentifier(string $name): string
     {
@@ -242,9 +264,9 @@ final class MysqlDialect implements SqlDialect
         $sql = "{$createKeyword} {$qt} (\n".\implode(",\n", $lines)."\n)";
 
         $opts = $schema->mysqlOptions;
-        $sql .= ' ENGINE='.($opts?->engine ?? self::DEFAULT_ENGINE);
-        $sql .= ' DEFAULT CHARSET='.($opts?->charset ?? self::DEFAULT_CHARSET);
-        $sql .= ' COLLATE='.($opts?->collation ?? self::DEFAULT_COLLATION);
+        $sql .= ' ENGINE='.($opts?->engine ?? $this->defaultEngine ?? self::DEFAULT_ENGINE);
+        $sql .= ' DEFAULT CHARSET='.($opts?->charset ?? $this->defaultCharset ?? self::DEFAULT_CHARSET);
+        $sql .= ' COLLATE='.($opts?->collation ?? $this->defaultCollation ?? self::DEFAULT_COLLATION);
 
         if (null !== $schema->comment) {
             $sql .= ' COMMENT='.$this->escapeStringLiteral($schema->comment);

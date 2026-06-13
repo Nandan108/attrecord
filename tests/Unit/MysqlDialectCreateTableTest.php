@@ -72,6 +72,46 @@ final class MysqlDialectCreateTableTest extends TestCase
         $this->assertStringContainsString('COLLATE=utf8mb4_unicode_ci', $sql);
     }
 
+    public function testConstructorDefaultsOverrideTheConstantsWhenAttributeAbsent(): void
+    {
+        // DdlOrderRecord has no #[MysqlTableOptions]; the instance defaults apply
+        // in place of the DEFAULT_* constants — lets a consumer align DDL with the
+        // host database's collation.
+        $dialect = new MysqlDialect(
+            defaultEngine: 'MyISAM',
+            defaultCharset: 'utf8mb3',
+            defaultCollation: 'utf8mb3_general_ci',
+        );
+
+        $sql = $dialect->buildCreateTable(TableSchema::fromClass(DdlOrderRecord::class));
+
+        $this->assertStringContainsString(') ENGINE=MyISAM', $sql);
+        $this->assertStringContainsString('DEFAULT CHARSET=utf8mb3', $sql);
+        $this->assertStringContainsString('COLLATE=utf8mb3_general_ci', $sql);
+    }
+
+    public function testMysqlTableOptionsAttributeStillWinsOverConstructorDefaults(): void
+    {
+        // Precedence: per-table #[MysqlTableOptions] > instance default > constant.
+        $dialect = new MysqlDialect(defaultCollation: 'utf8mb4_0900_ai_ci');
+
+        $sql = $dialect->buildCreateTable(TableSchema::fromClass(DdlMysqlOptionsRecord::class));
+
+        $this->assertStringContainsString('COLLATE=latin1_swedish_ci', $sql);
+    }
+
+    public function testNullConstructorDefaultsFallBackToTheConstants(): void
+    {
+        // Explicitly-null fields must behave identically to the no-arg constructor.
+        $dialect = new MysqlDialect(defaultCollation: null);
+
+        $sql = $dialect->buildCreateTable(TableSchema::fromClass(DdlOrderRecord::class));
+
+        $this->assertStringContainsString(') ENGINE=InnoDB', $sql);
+        $this->assertStringContainsString('DEFAULT CHARSET=utf8mb4', $sql);
+        $this->assertStringContainsString('COLLATE=utf8mb4_unicode_ci', $sql);
+    }
+
     public function testIfNotExistsFlagEmitsConditionalCreate(): void
     {
         $schema = TableSchema::fromClass(DdlOrderRecord::class);
