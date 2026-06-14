@@ -182,6 +182,45 @@ FK constraint names follow the convention `fk_{tableName}_{foreignKeyColumn}`.
 If two FKs would collide (same FK column on the same table — should never happen),
 schema build throws.
 
+### `#[ForeignKey]` — constraint-only foreign keys (class-level, repeatable)
+
+Emits a FOREIGN KEY constraint with **no relation property**. The attribute goes on the
+*referencing* table (a normal Record, whose own DDL is generated as usual); its `references`
+parameter names the **target**, which may be either:
+
+- a **table name** — for a target attrecord doesn't model (hand-written raw-SQL DDL, or an
+  externally owned table); `referencesColumn` names the target column (default `id`); or
+- a **Record class-string** — the target table name *and* its primary key are derived from
+  that Record (rename-safe), with no relation to hydrate.
+
+Use `#[Relation]` when you also want object hydration of the target; `#[ForeignKey]` is the
+constraint-only form — the only option when the target has no Record, and a clean
+relation-free way to declare *every* FK on a **DDL-only Record** (one whose rows are
+read/written by raw SQL, so it has no relations to hydrate) using the class-string form for
+Record-backed targets and the table-name form for the rest.
+
+```php
+#[Table(name: 'invflux_inventory_ledger')]
+#[ForeignKey(column: 'subject_id', references: Subject::class, onDelete: ForeignKeyAction::Restrict)]
+#[ForeignKey(column: 'from_slot_id', references: 'invflux_slotspace', onDelete: ForeignKeyAction::SetNull)]
+final class InventoryLedger extends Record { /* … */ }
+```
+
+| Field              | Default                      | Purpose                                                                          |
+| ------------------ | ---------------------------- | -------------------------------------------------------------------------------- |
+| `column`           | —                            | Local FK column (must be a declared `#[Column]`).                                |
+| `references`       | —                            | Target **table base name** (un-prefixed) **or** a target **Record class-string**. |
+| `referencesColumn` | `'id'`                       | Target column — used with the table-name form; ignored for a class (its PK is used). |
+| `onDelete`         | `ForeignKeyAction::Restrict` | `REFERENCES … ON DELETE` action.                                                 |
+| `onUpdate`         | `ForeignKeyAction::Restrict` | `REFERENCES … ON UPDATE` action.                                                 |
+
+The target is resolved lazily at DDL-build time via `ForeignKey::references()` /
+`ForeignKey::referencesColumn()`: a class form resolves to the target Record's table + PK; a
+table-name form has the active prefix (`Record::tablePrefix()`) applied — so either resolves
+correctly under a prefix. Constraint naming and the duplicate-FK-column guard are shared with
+`#[Relation]` FKs (a column used by both a `#[Relation]` and a `#[ForeignKey]`, or a
+`#[ForeignKey]` on an undeclared column, throws at schema build).
+
 ### `#[UniqueKey]` and `#[Index]` — class-level form
 
 Both attributes are now usable at **either** property or class level. Single-column
@@ -233,7 +272,7 @@ Rules enforced at schema build:
 - `$columns` — `array<string, ColumnDefinition>` keyed by **column name**.
 - `$reflProperties` — `array<string, \ReflectionProperty>` keyed by **column name** (paired with `$columns`).
 - `$uniqueKeys`, `$indexes` — `array<string, list<string>>` mapping key name → ordered column names.
-- `$foreignKeys` — `list<ForeignKeyDefinition>` collected from owning-side relations (`ManyToOne`, `OneToOne`) with `emitFk: true`.
+- `$foreignKeys` — `list<ForeignKeyDefinition>` collected from owning-side relations (`ManyToOne`, `OneToOne`) with `emitFk: true`, plus any class-level `#[ForeignKey]` (Record-less FKs). A `ForeignKeyDefinition` resolves its target through `targetTableName()` / `targetColumnName()` — lazily from the target Record for the relation form, or from the explicit (prefix-applied) table + column for the `#[ForeignKey]` form.
 - `$comment` — from `#[Table]`.
 - `$mysqlOptions` — `?MysqlTableOptions` from the optional `#[MysqlTableOptions]` class-level attribute. Null when the attribute is absent; `MysqlDialect` resolves field-by-field against its own defaults.
 - `propFor(string $columnName): string` — resolves a column name to its corresponding property name (used by relation loaders that translate `#[Relation]` column refs to PHP property accessors).

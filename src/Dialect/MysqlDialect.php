@@ -350,12 +350,10 @@ final class MysqlDialect implements SqlDialect
 
     private function buildForeignKeyLine(ForeignKeyDefinition $fk): string
     {
-        $targetSchema = TableSchema::fromClass($fk->targetClass);
-
         return 'CONSTRAINT '.$this->quoteIdentifier($fk->constraintName)
             .' FOREIGN KEY ('.$this->quoteIdentifier($fk->localColumn).')'
-            .' REFERENCES '.$this->quoteIdentifier($targetSchema->tableName)
-            .' ('.$this->quoteIdentifier($targetSchema->pk).')'
+            .' REFERENCES '.$this->quoteIdentifier($fk->targetTableName())
+            .' ('.$this->quoteIdentifier($fk->targetColumnName()).')'
             .' ON DELETE '.$fk->onDelete->value
             .' ON UPDATE '.$fk->onUpdate->value;
     }

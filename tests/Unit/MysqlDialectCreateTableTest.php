@@ -13,7 +13,10 @@ use Nandan108\Attrecord\Enum\ColumnType;
 use Nandan108\Attrecord\Exception\SchemaException;
 use Nandan108\Attrecord\Record;
 use Nandan108\Attrecord\Schema\TableSchema;
+use Nandan108\Attrecord\Tests\Fixtures\DdlBadForeignKeyRecord;
+use Nandan108\Attrecord\Tests\Fixtures\DdlForeignKeyRecord;
 use Nandan108\Attrecord\Tests\Fixtures\DdlGeneratedColumnRecord;
+use Nandan108\Attrecord\Tests\Fixtures\DdlNonRecordForeignKeyRecord;
 use Nandan108\Attrecord\Tests\Fixtures\DdlOrderRecord;
 use Nandan108\Attrecord\Tests\Fixtures\UserRecord;
 use PHPUnit\Framework\TestCase;
@@ -130,6 +133,95 @@ final class MysqlDialectCreateTableTest extends TestCase
 
         $this->assertStringContainsString('`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT', $sql);
         $this->assertStringContainsString('PRIMARY KEY (`id`)', $sql);
+    }
+
+    // -----------------------------------------------------------------
+    // #[ForeignKey] — Record-less foreign keys
+    // -----------------------------------------------------------------
+
+    public function testForeignKeyAttributeEmitsConstraintToRecordlessTable(): void
+    {
+        $sql = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlForeignKeyRecord::class));
+
+        // Default target column is `id`; constraint name follows the fk_<table>_<col>
+        // convention (the leading "attrecord_" segment is stripped to stay compact).
+        $this->assertStringContainsString(
+            'CONSTRAINT `fk_ledger_slot_id` FOREIGN KEY (`slot_id`) REFERENCES `attrecord_slots` (`id`) ON DELETE SET NULL ON UPDATE RESTRICT',
+            $sql,
+        );
+    }
+
+    public function testForeignKeyHonoursReferencesColumnOverride(): void
+    {
+        $sql = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlForeignKeyRecord::class));
+
+        $this->assertStringContainsString(
+            'CONSTRAINT `fk_ledger_owner_id` FOREIGN KEY (`owner_id`) REFERENCES `attrecord_owners` (`owner_pk`) ON DELETE CASCADE ON UPDATE RESTRICT',
+            $sql,
+        );
+    }
+
+    public function testForeignKeyAppliesTablePrefixToTarget(): void
+    {
+        Record::setTablePrefix('wp_');
+        try {
+            $sql = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlForeignKeyRecord::class));
+        } finally {
+            Record::setTablePrefix('');
+        }
+
+        // The active prefix is applied to the Record-less FK target exactly as it is to
+        // Record-backed targets, so the constraint resolves under a prefix.
+        $this->assertStringContainsString('REFERENCES `wp_attrecord_slots` (`id`)', $sql);
+        $this->assertStringContainsString('CREATE TABLE `wp_attrecord_ledger`', $sql);
+    }
+
+    public function testForeignKeyResolvesRecordClassTarget(): void
+    {
+        // references: UserRecord::class — table name and PK derived from the Record
+        // (rename-safe), constraint emitted with no relation property.
+        $sql = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlForeignKeyRecord::class));
+
+        $this->assertStringContainsString(
+            'CONSTRAINT `fk_ledger_user_id` FOREIGN KEY (`user_id`) REFERENCES `attrecord_users` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT',
+            $sql,
+        );
+    }
+
+    public function testForeignKeyClassTargetTracksPrefixAcrossChanges(): void
+    {
+        // Regression: a class-form target must reflect the CURRENT prefix on every resolution.
+        // Only the class/table classification is memoised; the prefixed name is read fresh, so
+        // resolving under one prefix must not leave a stale name for the next.
+        try {
+            Record::setTablePrefix('wp_');
+            $prefixed = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlForeignKeyRecord::class));
+            $this->assertStringContainsString('REFERENCES `wp_attrecord_users` (`id`)', $prefixed);
+
+            Record::setTablePrefix('');
+            $plain = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlForeignKeyRecord::class));
+            $this->assertStringContainsString('REFERENCES `attrecord_users` (`id`)', $plain);
+            $this->assertStringNotContainsString('wp_attrecord_users', $plain);
+        } finally {
+            Record::setTablePrefix('');
+        }
+    }
+
+    public function testForeignKeyOnUndeclaredColumnThrows(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessage('#[ForeignKey] column "nonexistent" is not a declared #[Column]');
+
+        TableSchema::fromClass(DdlBadForeignKeyRecord::class);
+    }
+
+    public function testForeignKeyToNonRecordClassThrows(): void
+    {
+        // `references: \stdClass::class` is a class but not a Record — a mistake, not a table name.
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessage('is a class but not a');
+
+        $this->dialect->buildCreateTable(TableSchema::fromClass(DdlNonRecordForeignKeyRecord::class));
     }
 
     public function testEmitsVarcharWithLengthAndLiteralDefault(): void

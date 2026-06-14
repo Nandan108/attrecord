@@ -6,6 +6,7 @@ namespace Nandan108\Attrecord\Schema;
 
 use Nandan108\Attrecord\Attribute\Cast;
 use Nandan108\Attrecord\Attribute\Column;
+use Nandan108\Attrecord\Attribute\ForeignKey;
 use Nandan108\Attrecord\Attribute\Index;
 use Nandan108\Attrecord\Attribute\LockTier;
 use Nandan108\Attrecord\Attribute\MysqlTableOptions;
@@ -569,9 +570,43 @@ final class TableSchema
             $fks[] = new ForeignKeyDefinition(
                 constraintName: $constraintName,
                 localColumn: $fkColumn,
-                targetClass: $targetClass,
                 onDelete: $relAttr->onDelete,
                 onUpdate: $relAttr->onUpdate,
+                targetClass: $targetClass,
+            );
+        }
+
+        // Record-less foreign keys declared via class-level #[ForeignKey] — for FK targets
+        // that have no Record class (raw-SQL-owned or external tables).
+        foreach ($reflClass->getAttributes(ForeignKey::class) as $fkAttrRefl) {
+            $fkAttr = $fkAttrRefl->newInstance();
+            $fkColumn = $fkAttr->column;
+
+            if (!isset($columns[$fkColumn])) {
+                throw new SchemaException(sprintf(
+                    '%s: #[ForeignKey] column "%s" is not a declared #[Column].',
+                    $class,
+                    $fkColumn,
+                ));
+            }
+            if (isset($seenColumns[$fkColumn])) {
+                throw new SchemaException(sprintf(
+                    '%s: foreign-key column "%s" is declared by more than one #[Relation]/#[ForeignKey].',
+                    $class,
+                    $fkColumn,
+                ));
+            }
+            $seenColumns[$fkColumn] = true;
+
+            $shortened = (string) preg_replace('/^[a-z0-9]+_/', '', $tableName);
+            $constraintName = 'fk_'.('' !== $shortened ? $shortened : $tableName).'_'.$fkColumn;
+
+            $fks[] = new ForeignKeyDefinition(
+                constraintName: $constraintName,
+                localColumn: $fkColumn,
+                onDelete: $fkAttr->onDelete,
+                onUpdate: $fkAttr->onUpdate,
+                source: $fkAttr,
             );
         }
 
