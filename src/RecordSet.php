@@ -283,6 +283,15 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
         $dirtyRecords = array_values($dirtyRecords);
 
+        // New (auto-increment) records in the exact order buildPlan() will INSERT them, so
+        // the DB-generated ids can be written back onto the right objects afterwards.
+        $pkProp = $schema->pkProp;
+        /** @var list<Record> $insertedRecords */
+        $insertedRecords = array_values(array_filter(
+            $dirtyRecords,
+            static fn (Record $r): bool => null === $r->{$pkProp},
+        ));
+
         $plan = $this->buildPlan($dirtyRecords, $schema, $conn->dialect);
 
         if (null === $plan['insert'] && null === $plan['upsert']) {
@@ -342,12 +351,24 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             throw new RecordSaveException($e->getMessage(), $e);
         }
 
+        /** @var list<int|string> $insertedIds */
+        $insertedIds = $counts['insertedIds'];
+
+        // Back-fill DB-generated auto-increment ids onto the new records (mirrors save()),
+        // in INSERT order, BEFORE markClean() so the refreshed snapshot includes the id.
+        // Application-minted PKs (e.g. BINARY(16) UUIDs) yield no insertedIds, so this is a
+        // no-op for them — the caller already set those PKs.
+        if ($pkAutoIncrement) {
+            foreach ($insertedRecords as $index => $record) {
+                if (array_key_exists($index, $insertedIds)) {
+                    $record->{$pkProp} = $insertedIds[$index];
+                }
+            }
+        }
+
         foreach ($dirtyRecords as $record) {
             $record->markClean();
         }
-
-        /** @var list<int|string> $insertedIds */
-        $insertedIds = $counts['insertedIds'];
 
         return new SaveResult($counts['inserted'], $counts['updated'], $insertedIds);
     }
@@ -440,10 +461,16 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
         // Deadlock-safe 3-step upsert for records with a known PK
         if (!empty($keyedRecords)) {
-            // Always include PK; include other columns present in at least one record
+            // Always include PK; include other columns present in at least one record.
+            // Generated columns are DB-computed and not application-writable — including one
+            // in the INSERT/UPDATE makes MySQL reject the statement (error 1906), so skip
+            // them here exactly as the plain-INSERT branch above and save() do.
             $presentCols = [$pk => true];
             foreach ($keyedRecords as $record) {
                 foreach ($schema->columns as $colName => $col) {
+                    if ($col->isGenerated) {
+                        continue;
+                    }
                     if (($record->{$col->propertyName} ?? null) !== null) {
                         $presentCols[$colName] = true;
                     }

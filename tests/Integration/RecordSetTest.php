@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord\Tests\Integration;
 
 use Nandan108\Attrecord\RecordSet;
+use Nandan108\Attrecord\Tests\Fixtures\DdlGeneratedColumnRecord;
 use Nandan108\Attrecord\Tests\Fixtures\PostRecord;
 use Nandan108\Attrecord\Tests\Fixtures\UserRecord;
 use Nandan108\Attrecord\Tests\Support\IntegrationTestCase;
@@ -35,12 +36,24 @@ final class RecordSetTest extends IntegrationTestCase
                     FOREIGN KEY (`user_id`) REFERENCES `attrecord_users` (`id`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             SQL);
+
+        static::$pdo->exec(<<<SQL
+            CREATE TABLE IF NOT EXISTS `attrecord_gen_col` (
+                `id`        bigint unsigned NOT NULL AUTO_INCREMENT,
+                `scope_id`  int unsigned    DEFAULT NULL,
+                `scope_key` int unsigned    AS (IFNULL(`scope_id`, 0)) STORED,
+                `value`     varchar(64)     NOT NULL,
+                PRIMARY KEY (`id`),
+                UNIQUE KEY `uq_scope_value` (`scope_key`, `value`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            SQL);
     }
 
     protected static function truncateTables(): void
     {
         static::$pdo->exec('TRUNCATE TABLE `attrecord_posts`');
         static::$pdo->exec('TRUNCATE TABLE `attrecord_users`');
+        static::$pdo->exec('TRUNCATE TABLE `attrecord_gen_col`');
     }
 
     // -----------------------------------------------------------------
@@ -88,6 +101,45 @@ final class RecordSetTest extends IntegrationTestCase
         $this->assertSame(3, UserRecord::countWhere('`id` > 0'));
         $this->assertCount(3, $result->insertedIds);
         $this->assertSame([1, 2, 3], $result->insertedIds);
+
+        // saveAll() back-fills the generated auto-increment ids onto the records (like
+        // save() does), in insertion order, and leaves them clean.
+        $this->assertSame(1, $u1->id);
+        $this->assertSame(2, $u2->id);
+        $this->assertSame(3, $u3->id);
+        $this->assertFalse($u1->isDirty());
+        $this->assertFalse($u2->isDirty());
+        $this->assertFalse($u3->isDirty());
+    }
+
+    public function testSaveAllUpsertSkipsGeneratedColumns(): void
+    {
+        // Regression: a keyed (existing) record carries its DB-generated column hydrated
+        // from a prior load. The bulk upsert must NOT write that column back — MySQL rejects
+        // a value for a generated column (error 1906). The plain-INSERT branch already
+        // skipped generated columns; this guards the upsert (known-PK) branch too.
+        $rec = new DdlGeneratedColumnRecord();
+        $rec->scope_id = 7;
+        $rec->value = 'before';
+        $rec->save();
+        $id = (int) $rec->id;
+
+        // Reload so scope_key (STORED, = IFNULL(scope_id, 0)) is hydrated as a non-null
+        // value — the state that previously leaked into the upsert column list.
+        $loaded = DdlGeneratedColumnRecord::where('id', $id)->first();
+        $this->assertNotNull($loaded);
+        $this->assertSame(7, $loaded->scope_key);
+
+        // Bulk upsert of the keyed record after touching a writable column must succeed.
+        $loaded->value = 'after';
+        $result = (new RecordSet([$loaded]))->saveAll();
+        $this->assertNotNull($result);
+        $this->assertSame(1, $result->updated);
+
+        $reloaded = DdlGeneratedColumnRecord::where('id', $id)->first();
+        $this->assertNotNull($reloaded);
+        $this->assertSame('after', $reloaded->value);
+        $this->assertSame(7, $reloaded->scope_key, 'generated column still reflects its expression');
     }
 
     public function testSaveAllMarksRecordsClean(): void
