@@ -673,7 +673,7 @@ abstract class Record
      * @throws AttrecordException  when $conflictKey is not declared on this Record
      * @throws RecordSaveException on DB error
      */
-    public function upsertByUniqueKey(string $conflictKey, array $updateColumns): void
+    public function upsertByUniqueKey(string $conflictKey, array $updateColumns, bool $preserveAutoIncrement = false): void
     {
         $schema = static::schema();
         $conn = static::connection();
@@ -684,6 +684,12 @@ abstract class Record
             ?? throw new AttrecordException(
                 sprintf('upsertByUniqueKey: unknown unique key "%s" on %s.', $conflictKey, static::class),
             );
+
+        if ($preserveAutoIncrement) {
+            $this->upsertByUniqueKeyPreservingAutoIncrement($schema, $conflictCols, $updateColumns);
+
+            return;
+        }
 
         $columnNames = [];
         $params = [];
@@ -701,6 +707,90 @@ abstract class Record
         try {
             /** @psalm-suppress MixedArgumentTypeCoercion */
             $session->exec($sql, $params);
+        } catch (\Throwable $e) {
+            throw new RecordSaveException($e->getMessage(), $e);
+        }
+
+        $this->_isNew = false;
+        $this->refreshSnapshot($schema);
+    }
+
+    /**
+     * Burn-free variant of {@see upsertByUniqueKey()}: SELECT the row by the conflict key,
+     * then UPDATE it in place (no auto-increment allocation) or INSERT a brand-new one.
+     *
+     * `INSERT … ON DUPLICATE KEY UPDATE` allocates (and discards) an auto-increment value on
+     * every conflicting write, inflating the counter on idempotent re-writes. This variant
+     * never INSERTs into an existing row, so the AI counter only advances for genuinely-new
+     * rows. The cost is a second statement (a small SELECT-then-write race window) — fine for
+     * low-concurrency registry/config writes; prefer the atomic default when burn is a non-issue.
+     *
+     * @param list<string> $conflictCols
+     * @param list<string> $updateColumns
+     */
+    private function upsertByUniqueKeyPreservingAutoIncrement(
+        TableSchema $schema,
+        array $conflictCols,
+        array $updateColumns,
+    ): void {
+        $conn = static::connection();
+        $dialect = $conn->dialect;
+        $session = $conn->session;
+        $pk = $schema->pk;
+        $qt = $dialect->quoteIdentifier($schema->tableName);
+        $qpk = $dialect->quoteIdentifier($pk);
+
+        $whereParts = [];
+        $whereParams = [];
+        foreach ($conflictCols as $colName) {
+            $col = $schema->columns[$colName];
+            $whereParts[] = $dialect->quoteIdentifier($colName).' = ?';
+            $whereParams[] = ColumnSerializer::toParam($this->{$col->propertyName} ?? null, $col);
+        }
+
+        try {
+            /** @psalm-suppress MixedArgumentTypeCoercion */
+            $existing = $session->fetchOne(
+                sprintf('SELECT %s FROM %s WHERE %s LIMIT 1', $qpk, $qt, implode(' AND ', $whereParts)),
+                $whereParams,
+            );
+
+            if (null !== $existing) {
+                $setParts = [];
+                $setParams = [];
+                foreach ($updateColumns as $colName) {
+                    $col = $schema->columns[$colName]
+                        ?? throw new SchemaException(sprintf('upsertByUniqueKey: unknown column "%s" on %s.', $colName, static::class));
+                    $setParts[] = $dialect->quoteIdentifier($colName).' = ?';
+                    $setParams[] = ColumnSerializer::toParam($this->{$col->propertyName} ?? null, $col);
+                }
+                /** @psalm-suppress MixedAssignment */
+                $pkValue = $existing[$pk];
+                if (!empty($setParts)) {
+                    $setParams[] = $pkValue;
+                    /** @psalm-suppress MixedArgumentTypeCoercion */
+                    $session->exec(sprintf('UPDATE %s SET %s WHERE %s = ?', $qt, implode(', ', $setParts), $qpk), $setParams);
+                }
+                $this->{$schema->pkProp} = ColumnSerializer::fromDb($pkValue, $schema->columns[$pk], $existing);
+            } else {
+                $columnNames = [];
+                $params = [];
+                foreach ($schema->columns as $colName => $col) {
+                    if ($col->autoIncrement || $col->isGenerated) {
+                        continue;
+                    }
+                    $columnNames[] = $colName;
+                    /** @psalm-suppress MixedAssignment */
+                    $params[] = ColumnSerializer::toParam($this->{$col->propertyName} ?? null, $col);
+                }
+                $quotedCols = implode(', ', array_map($dialect->quoteIdentifier(...), $columnNames));
+                $placeholders = implode(', ', array_fill(0, count($columnNames), '?'));
+                /** @psalm-suppress MixedArgumentTypeCoercion */
+                $session->exec(sprintf('INSERT INTO %s (%s) VALUES (%s)', $qt, $quotedCols, $placeholders), $params);
+                if ($schema->columns[$pk]->autoIncrement) {
+                    $this->{$schema->pkProp} = $session->lastInsertId();
+                }
+            }
         } catch (\Throwable $e) {
             throw new RecordSaveException($e->getMessage(), $e);
         }

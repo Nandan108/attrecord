@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord;
 
 use Nandan108\Attrecord\Enum\RelationType;
+use Nandan108\Attrecord\Exception\AttrecordException;
 use Nandan108\Attrecord\Exception\RecordSaveException;
 use Nandan108\Attrecord\Schema\RelationDefinition;
 use Nandan108\Attrecord\Schema\TableSchema;
@@ -371,6 +372,129 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         }
 
         return new SaveResult($counts['inserted'], $counts['updated'], $insertedIds);
+    }
+
+    /**
+     * Bulk upsert keyed by a declared #[UniqueKey], **without burning auto-increment ids** on
+     * the rows that already exist.
+     *
+     * One `SELECT … WHERE (conflict cols) IN (…)` resolves the PKs of existing rows; those
+     * records get their PK set so {@see saveAll()} routes them through its keyed-upsert (which
+     * supplies the PK, so MySQL allocates no auto-increment value), while genuinely-new records
+     * (PK still null) go through saveAll's plain bulk INSERT (one AI value each, none wasted).
+     * Net: the loop-free, burn-free counterpart of an `INSERT … ON DUPLICATE KEY UPDATE` batch.
+     *
+     * Records that already carry a PK are left untouched (already keyed). The SELECT-then-write
+     * is not atomic — a concurrent insert of the same conflict tuple would fall back to
+     * saveAll's INSERT-IGNORE path (one burned id) — acceptable for the low-concurrency
+     * registry/config writes this targets.
+     *
+     * @param string $conflictKey name of a #[UniqueKey] declared on the record class
+     *
+     * @throws AttrecordException when $conflictKey is not declared on the record class
+     */
+    public function upsertAllByUniqueKey(string $conflictKey): ?SaveResult
+    {
+        if (empty($this->records)) {
+            return null;
+        }
+
+        $first = $this->records[0];
+        $schema = $first::schema();
+
+        $conflictCols = $schema->uniqueKeys[$conflictKey]
+            ?? throw new AttrecordException(
+                sprintf('upsertAllByUniqueKey: unknown unique key "%s" on %s.', $conflictKey, $first::class),
+            );
+
+        $this->resolveExistingPksByUniqueKey($schema, $conflictCols);
+
+        return $this->saveAll();
+    }
+
+    /**
+     * For each PK-less record whose conflict-key columns are all set, look up the existing
+     * row's PK (one batched `IN` query) and assign it, so a subsequent {@see saveAll()} updates
+     * rather than inserts. In-memory pairing; no per-record query.
+     *
+     * @param list<string> $conflictCols
+     */
+    private function resolveExistingPksByUniqueKey(TableSchema $schema, array $conflictCols): void
+    {
+        $first = $this->records[0];
+        $conn = $first::connection();
+        $dialect = $conn->dialect;
+        $pkProp = $schema->pkProp;
+
+        /** @var list<list<scalar|null>> $tuples distinct conflict-value tuples to look up */
+        $tuples = [];
+        /** @var array<string, list<Record>> $recordsByTuple */
+        $recordsByTuple = [];
+
+        foreach ($this->records as $record) {
+            if (null !== $record->{$pkProp}) {
+                continue; // already keyed → saveAll handles it directly
+            }
+            $values = [];
+            $allSet = true;
+            foreach ($conflictCols as $colName) {
+                $col = $schema->columns[$colName];
+                /** @psalm-suppress MixedAssignment */
+                $value = $record->{$col->propertyName} ?? null;
+                if (null === $value) {
+                    $allSet = false;
+                    break;
+                }
+                $values[] = ColumnSerializer::toParam($value, $col);
+            }
+            if (!$allSet) {
+                continue;
+            }
+            $tupleKey = implode("\0", array_map(static fn ($v): string => (string) $v, $values));
+            if (!isset($recordsByTuple[$tupleKey])) {
+                $tuples[] = $values;
+            }
+            $recordsByTuple[$tupleKey][] = $record;
+        }
+
+        if (empty($tuples)) {
+            return;
+        }
+
+        $pk = $schema->pk;
+        $quotedConflict = implode(', ', array_map($dialect->quoteIdentifier(...), $conflictCols));
+        $rowPlaceholder = '('.implode(', ', array_fill(0, count($conflictCols), '?')).')';
+        $inList = implode(', ', array_fill(0, count($tuples), $rowPlaceholder));
+        $params = [];
+        foreach ($tuples as $tuple) {
+            foreach ($tuple as $value) {
+                $params[] = $value;
+            }
+        }
+
+        $sql = sprintf(
+            'SELECT %s, %s FROM %s WHERE (%s) IN (%s)',
+            $dialect->quoteIdentifier($pk),
+            $quotedConflict,
+            $dialect->quoteIdentifier($schema->tableName),
+            $quotedConflict,
+            $inList,
+        );
+
+        /** @psalm-suppress MixedArgumentTypeCoercion */
+        $rows = $conn->session->fetchAll($sql, $params);
+
+        foreach ($rows as $row) {
+            $values = [];
+            foreach ($conflictCols as $colName) {
+                $values[] = (string) ($row[$colName] ?? '');
+            }
+            $tupleKey = implode("\0", $values);
+            $pkValue = $row[$pk] ?? null;
+            foreach ($recordsByTuple[$tupleKey] ?? [] as $record) {
+                $record->{$pkProp} = ColumnSerializer::fromDb($pkValue, $schema->columns[$pk], $row);
+            }
+        }
     }
 
     /**
