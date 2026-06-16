@@ -11,7 +11,8 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
 - Eager relation loading with no N+1 queries (`with()`)
 - Domain invariants enforced at assignment and save time via a `validate()` hook
 - Deadlock-safe locking helpers (`LockTier`, `LockSet`, `Transaction`) + advisory locks
-- Unique-key aware upserts (`upsertByUniqueKey`, `updateByUniqueKey`)
+- Unique-key aware upserts — single (`upsertByUniqueKey`) and bulk (`RecordSet::upsertAllByUniqueKey`), with an optional **auto-increment-burn-free** mode; plus `updateByUniqueKey`
+- Constraint-only foreign keys via `#[ForeignKey]` — declare an FK whose target has no Record (or that you don't want to hydrate)
 - Three included `DbSession` adapters: PDO, mysqli, and WordPress `wpdb`
 - Psalm-clean at level 1
 
@@ -350,6 +351,28 @@ $item->qty = 10;
 $item->upsertByUniqueKey('sku', updateColumns: ['qty']);
 ```
 
+#### Burn-free mode — `preserveAutoIncrement: true`
+
+`INSERT … ON DUPLICATE KEY UPDATE` allocates **and discards** an auto-increment value
+on every conflicting write (MySQL/MariaDB with `innodb_autoinc_lock_mode = 1`), so an
+idempotent re-write of an existing row silently inflates the counter — a problem for
+small id domains re-registered on every request (registries, config rows).
+
+Pass `preserveAutoIncrement: true` to get a SELECT-then-`UPDATE`/`INSERT` instead: the
+row is looked up by the conflict key and updated in place when it exists (no allocation),
+and inserted only when genuinely new. The cost is a second statement and a small
+non-atomic window — fine for low-concurrency registry/config writes; prefer the atomic
+default when burn is a non-issue.
+
+```php
+// Re-registering the same SKU never advances the auto-increment counter
+$item->upsertByUniqueKey('sku', updateColumns: ['qty'], preserveAutoIncrement: true);
+```
+
+A conflict key that includes a **generated column** (e.g. a `STORED`
+`IFNULL(scope_id, 0)`) works too — set the property to the value the DB will compute so
+the lookup matches; the column is still skipped in the INSERT (the DB recomputes it).
+
 ### `updateByUniqueKey($fields = [])`
 
 Direct UPDATE without loading the row first. The WHERE clause is built automatically
@@ -455,6 +478,40 @@ A future `#[PgsqlTableOptions(...)]` will carry Postgres-specific options
 FK constraints are emitted only for owning-side relations (`ManyToOne`,
 `OneToOne`). Polymorphic and inverse-side relations carry no local FK column
 and are always skipped.
+
+#### Constraint-only foreign keys — `#[ForeignKey]`
+
+`#[Relation]` emits an FK *and* gives you object hydration. When you want the FK
+constraint **only** — or the target has no Record at all — use the class-level,
+repeatable `#[ForeignKey]` attribute. The local column is a plain `#[Column]` on this
+Record; the attribute names the target, which may be either a **Record class-string**
+(table + PK derived from it, rename-safe) or a **table name** string (for a hand-written
+or externally owned table attrecord doesn't model):
+
+```php
+use Nandan108\Attrecord\Attribute\{Table, Column, ForeignKey};
+use Nandan108\Attrecord\Enum\ForeignKeyAction;
+
+#[Table(name: 'inventory_ledger')]
+#[ForeignKey(column: 'subject_id', references: Subject::class)]                       // → `subjects`(`id`), derived
+#[ForeignKey(column: 'from_slot_id', references: 'slotspace', referencesColumn: 'id', // → raw table, no Record
+    onDelete: ForeignKeyAction::SetNull)]
+final class InventoryLedger extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned)]
+    public int $subject_id = 0;
+
+    #[Column(ColumnType::BigIntUnsigned, nullable: true)]
+    public ?int $from_slot_id = null;
+    // ...
+}
+```
+
+Parameters: `column` (local FK column), `references` (target Record class **or** table
+name), `referencesColumn` (target column, default `id`), `onDelete` / `onUpdate`
+(default `Restrict`). The active table prefix is applied to a literal table name; the
+target is resolved lazily at DDL-build time. A `references` value that is a class but
+**not** a `Record` subclass throws.
 
 Schema-build time validation surfaces mistakes early: `VarChar`/`Char`/`Decimal`/
 `Enum`/`Set` required arguments, mutually exclusive `default` / `defaultExpr`,
@@ -704,6 +761,25 @@ $deleted = $set->deleteAll();  // DELETE FROM … WHERE id IN (…)
 
 `Record::save()` accepts the same `$force` flag — `$order->save(force: true)` writes every
 column regardless of dirty state.
+
+### `upsertAllByUniqueKey($conflictKey)` — bulk burn-free upsert
+
+The loop-free, auto-increment-burn-free counterpart of an
+`INSERT … ON DUPLICATE KEY UPDATE` batch — the `RecordSet` analogue of
+`Record::upsertByUniqueKey(..., preserveAutoIncrement: true)`.
+
+```php
+// $rows are PK-less Records whose conflict-key column(s) are set
+$result = (new RecordSet($rows))->upsertAllByUniqueKey('uniq_owner_code');
+```
+
+One `SELECT … WHERE (conflict cols) IN (…)` resolves the PKs of rows that already exist
+and assigns them onto the matching records; `saveAll()` then routes those through its
+keyed upsert (PK supplied → no allocation) while genuinely-new records take its plain
+bulk `INSERT` (one id each, none wasted). Returns the same `?SaveResult` as `saveAll()`
+(`null` for an empty set). Records that already carry a PK are left untouched. Same
+non-atomic caveat as the single-record burn-free path. Throws `AttrecordException` if
+`$conflictKey` isn't a declared `#[UniqueKey]`.
 
 ---
 
