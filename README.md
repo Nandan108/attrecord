@@ -1,6 +1,7 @@
 # attrecord
 
 [![CI](https://github.com/Nandan108/attrecord/actions/workflows/ci.yml/badge.svg)](https://github.com/Nandan108/attrecord/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/nandan108/attrecord/branch/main/graph/badge.svg)](https://codecov.io/gh/nandan108/attrecord)
 [![Packagist Version](https://img.shields.io/packagist/v/nandan108/attrecord)](https://packagist.org/packages/nandan108/attrecord)
 [![PHP Version](https://img.shields.io/packagist/php-v/nandan108/attrecord)](https://packagist.org/packages/nandan108/attrecord)
 [![License](https://img.shields.io/packagist/l/nandan108/attrecord)](LICENSE)
