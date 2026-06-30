@@ -1,14 +1,31 @@
 {
     "name": "nandan108/attrecord",
-    "description": "Lightweight PHP 8 attribute-driven active-record layer with dirty tracking, batch relation loading, and deadlock-safe locking.",
+    "description": "Lightweight PHP 8.1+ attribute-driven active-record layer with dirty tracking, batch relation loading, deadlock-safe locking, and MySQL/PostgreSQL CREATE TABLE generation.",
     "type": "library",
     "license": "MIT",
+    "keywords": [
+        "active-record",
+        "attributes",
+        "orm",
+        "database",
+        "mysql",
+        "mariadb",
+        "postgresql",
+        "ddl",
+        "dirty-tracking",
+        "php8"
+    ],
+    "homepage": "https://github.com/Nandan108/attrecord",
     "authors": [
         {
             "name": "Samuel de Rougemont",
             "email": "nandan108@gmail.com"
         }
     ],
+    "support": {
+        "issues": "https://github.com/Nandan108/attrecord/issues",
+        "source": "https://github.com/Nandan108/attrecord"
+    },
     "require": {
         "php": "^8.1"
     },
@@ -30,6 +47,7 @@
     },
     "scripts": {
         "cs-fix": "./vendor/bin/php-cs-fixer fix --allow-risky=yes --diff",
+        "cs-check": "./vendor/bin/php-cs-fixer fix --allow-risky=yes --diff --dry-run",
         "psalm": "./vendor/bin/psalm",
         "test": "./vendor/bin/phpunit -c phpunit.xml.dist",
         "test-cover": "./vendor/bin/phpunit -c phpunit.xml.dist --coverage-text",

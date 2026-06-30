@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests (PHP ${{ matrix.php }} · ${{ matrix.mysql }} · ${{ matrix.pgsql }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # Diagonal matrix: 4 jobs that exercise every PHP version and every DB engine/version
+      # at least once (PHP 8.1-8.4, MySQL 8.0/8.4, MariaDB 10.11/11.4, PostgreSQL 14-17).
+      matrix:
+        include:
+          - { php: '8.1', mysql: 'mysql:8.0',     pgsql: 'postgres:14' }
+          - { php: '8.2', mysql: 'mysql:8.4',     pgsql: 'postgres:15' }
+          - { php: '8.3', mysql: 'mariadb:10.11', pgsql: 'postgres:16' }
+          - { php: '8.4', mysql: 'mariadb:11.4',  pgsql: 'postgres:17' }
+
+    services:
+      # One service definition serves any MySQL/MariaDB image: the MariaDB images accept the
+      # legacy MYSQL_* env vars too, and `mysqladmin ping` exists in both image families.
+      db_mysql:
+        image: ${{ matrix.mysql }}
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: attrecord_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+      db_pgsql:
+        image: ${{ matrix.pgsql }}
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: attrecord_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo, pdo_mysql, pdo_pgsql, mysqli, mbstring
+          coverage: none
+
+      - name: Install dependencies
+        run: composer update --prefer-dist --no-progress --no-interaction
+
+      - name: Run test suite (MySQL + PostgreSQL)
+        run: composer test
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_NAME: attrecord_test
+          DB_USER: root
+          DB_PASS: root
+          PGSQL_HOST: 127.0.0.1
+          PGSQL_PORT: 5432
+          PGSQL_DB: attrecord_test
+          PGSQL_USER: postgres
+          PGSQL_PASS: postgres
+
+  static:
+    name: Static analysis & code style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - name: Install dependencies
+        run: composer update --prefer-dist --no-progress --no-interaction
+
+      - name: Psalm
+        run: composer psalm
+
+      - name: PHP CS Fixer (dry-run)
+        run: composer cs-check

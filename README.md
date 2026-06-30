@@ -1,5 +1,10 @@
 # attrecord
 
+[![CI](https://github.com/Nandan108/attrecord/actions/workflows/ci.yml/badge.svg)](https://github.com/Nandan108/attrecord/actions/workflows/ci.yml)
+[![Packagist Version](https://img.shields.io/packagist/v/nandan108/attrecord)](https://packagist.org/packages/nandan108/attrecord)
+[![PHP Version](https://img.shields.io/packagist/php-v/nandan108/attrecord)](https://packagist.org/packages/nandan108/attrecord)
+[![License](https://img.shields.io/packagist/l/nandan108/attrecord)](LICENSE)
+
 Lightweight PHP 8.1+ attribute-driven active-record layer.
 
 - Declare schema with PHP attributes — no XML, no YAML, no separate migration files
@@ -1286,8 +1291,29 @@ PGSQL_USER=postgres
 PGSQL_PASS=postgres
 ```
 
+### Code style & static analysis
+
+Code style is enforced with [PHP CS Fixer](https://cs.fixer.dev/) (the `@Symfony` ruleset plus
+project overrides in `.php-cs-fixer.php`), and types with [Psalm](https://psalm.dev/) at
+level 1:
+
+```bash
+composer cs-fix     # apply PHP CS Fixer
+composer cs-check   # report style violations without changing files (used in CI)
+composer psalm      # static analysis — must be zero errors
+```
+
+All three (tests, Psalm, PHP CS Fixer) run in CI against PHP 8.1–8.4 with MySQL and PostgreSQL.
+
+---
+
+## Contributing
+
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup
+and the checks to run. Deferred ideas are tracked in [docs/backlog.md](docs/backlog.md).
+
 ---
 
 ## License
 
-MIT
+[MIT](LICENSE) © Samuel de Rougemont

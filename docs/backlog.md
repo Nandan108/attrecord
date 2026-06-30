@@ -3,6 +3,29 @@
 Deferred / potential features. Nothing here is currently needed by a consumer; captured so
 the decisions aren't lost.
 
+## Migration system — *biggest missing feature; deferred by design*
+
+Today the DDL producer emits **fresh-install** `CREATE TABLE` only. There is no schema diffing,
+no `ALTER TABLE` generation, and no migration tracking/versioning. For evolving a live schema,
+a consumer currently hand-writes migrations (or regenerates and diffs manually).
+
+A first-class migration system is the largest feature gap. Rough shape if/when built:
+
+- **Schema diff** — compare the attribute-derived `TableSchema` for a Record against the live
+  table (via `information_schema` introspection) and emit the `ALTER TABLE` delta:
+  add/drop/modify columns, add/drop indexes & unique keys, add/drop FK constraints.
+- **Migration tracking** — a `migrations` ledger table + an ordered, idempotent apply/rollback
+  runner (forward diffs are mechanical; safe down-migrations are the hard part).
+- **Dialect-aware** — both MySQL/MariaDB and PostgreSQL, mirroring the dual-dialect DDL producer.
+
+**Why deferred for 0.1.0:** diffing + reversible migrations is a large, correctness-sensitive
+subsystem (destructive `ALTER`s, data-preserving column changes, online-DDL concerns) that is
+better designed against real evolution needs than speculatively. The fresh-install producer
+already covers install/bootstrap, which is what consumers need first. Likely a separate,
+opt-in companion package rather than core, to keep attrecord dependency-free and small.
+
+- **Status:** acknowledged as the top roadmap item; not yet scheduled.
+
 ## DDL features not yet modelled by the producer
 
 The DDL producer ([ddl-generation.md](ddl-generation.md)) currently emits columns, defaults,
