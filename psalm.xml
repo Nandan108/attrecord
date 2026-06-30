@@ -11,6 +11,10 @@
         <directory name="tests" />
         <ignoreFiles>
             <directory name="vendor" />
+            <!-- Runtime double for the WordPress `wpdb` global; Psalm uses the php-stubs stub. -->
+            <file name="tests/Support/wpdb-double.php" />
+            <!-- Drives the wpdb double via its custom API, which Psalm models as the stub `wpdb`. -->
+            <file name="tests/Unit/WpDbSessionTest.php" />
         </ignoreFiles>
     </projectFiles>
 
