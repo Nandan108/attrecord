@@ -2,36 +2,27 @@
 
 declare(strict_types=1);
 
-namespace Nandan108\Attrecord\Tests\Integration;
+namespace Nandan108\Attrecord\Tests\Integration\Cases;
 
 use Nandan108\Attrecord\RecordSet;
 use Nandan108\Attrecord\Tests\Fixtures\BinaryPkRecord;
-use Nandan108\Attrecord\Tests\Support\IntegrationTestCase;
 
 /**
- * Exercises the BINARY(16) (non-autoincrement) primary key path.
+ * Shared BINARY(16) / BYTEA (non-autoincrement, application-minted) primary-key cases.
  *
- * Mirrors InvFlux's UUIDv7-as-PK use case: the application generates the
- * raw 16-byte binary ID and assigns it before save(); attrecord must
- * persist it as-is and not try to backfill from lastInsertId() (which
- * would either error on the int cast or assign a meaningless value).
+ * Mirrors a UUIDv7-as-PK use case: the application generates the raw 16-byte binary ID and
+ * assigns it before save(); attrecord must persist it as-is and never backfill from
+ * lastInsertId(). On PostgreSQL this exercises the BinaryParam binding path (raw bytes bound
+ * as a bytea LOB) and the bytea read path (stream → raw bytes).
+ *
+ * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
  */
-final class BinaryPkTest extends IntegrationTestCase
+trait BinaryPkCases
 {
-    protected static function createSchema(): void
+    /** @return list<class-string<\Nandan108\Attrecord\Record>> */
+    protected static function recordClasses(): array
     {
-        static::$pdo->exec(<<<SQL
-            CREATE TABLE IF NOT EXISTS `attrecord_binary_pk` (
-                `id`   binary(16)   NOT NULL,
-                `name` varchar(100) NOT NULL,
-                PRIMARY KEY (`id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            SQL);
-    }
-
-    protected static function truncateTables(): void
-    {
-        static::$pdo->exec('TRUNCATE TABLE `attrecord_binary_pk`');
+        return [BinaryPkRecord::class];
     }
 
     public function testSinglePkSaveDoesNotOverwriteApplicationMintedId(): void
@@ -71,8 +62,8 @@ final class BinaryPkTest extends IntegrationTestCase
 
         $set->saveAll();
 
-        // Each record keeps its application-minted ID; nothing is overwritten
-        // by lastInsertId() arithmetic.
+        // Each record keeps its application-minted ID; nothing is overwritten by
+        // lastInsertId() arithmetic.
         foreach ($set as $i => $r) {
             $this->assertSame($uuids[$i], $r->id);
             $this->assertFalse($r->isNew());

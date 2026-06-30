@@ -34,8 +34,9 @@ $sql     = $dialect->buildCreateTable($schema);
 // ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
-The method lives on `SqlDialect`. `MysqlDialect` implements it; `PgsqlDialect`
-throws `\RuntimeException` for now (Phase 2).
+The method lives on `SqlDialect` and both dialects implement it. `PgsqlDialect`
+emits the PostgreSQL equivalent of the same schema — see
+[PostgreSQL output](#postgresql-output) below.
 
 ---
 
@@ -335,6 +336,54 @@ routine `MysqlDialect::toLiteral()` already uses.
 
 ---
 
+## PostgreSQL output
+
+`PgsqlDialect::buildCreateTable()` emits the PostgreSQL equivalent from the **same**
+attributes. Differences from the MySQL output:
+
+| Concern | MySQL | PostgreSQL |
+| --- | --- | --- |
+| Auto-increment PK | `BIGINT UNSIGNED … AUTO_INCREMENT` | `BIGSERIAL` (implies NOT NULL + sequence default) |
+| Unsigned integers | `INT UNSIGNED`, etc. | no unsigned — widened to `SMALLINT`/`INTEGER`/`BIGINT` |
+| `Bool` | `TINYINT(1)` | `BOOLEAN` |
+| `Decimal` | `DECIMAL(p,s)` | `NUMERIC(p,s)` |
+| `Binary`/`VarBinary` | `BINARY(n)`/`VARBINARY(n)` | `BYTEA` |
+| `Json` | `JSON` | `JSONB` |
+| `Enum` | `ENUM('a','b')` | `TEXT` + `CHECK (col IN ('a','b'))` |
+| `Char`/`VarChar`/`Text`* | same | `CHAR(n)`/`VARCHAR(n)`/`TEXT` |
+| Secondary indexes | inline `KEY` | trailing `CREATE INDEX` statements |
+| Table / column comments | inline / `COMMENT=` | trailing `COMMENT ON TABLE` / `COMMENT ON COLUMN` |
+| Table options | `ENGINE`/`CHARSET`/`COLLATE` | omitted (no equivalent) |
+| `ON UPDATE` column clause | emitted | omitted (needs a trigger in PG) |
+| `Set` type | `SET('a','b')` | rejected — `SchemaException` |
+| `VIRTUAL` generated column | `… VIRTUAL` | rejected — `SchemaException` (PG <18 has STORED only) |
+
+Because PG cannot declare indexes/comments inline, `buildCreateTable()` returns a
+**multi-statement** string (statements separated by `;\n`) — the `CREATE TABLE` followed by
+any `CREATE INDEX` / `COMMENT ON` statements. The whole batch is safe to run in a single
+`PDO::exec()`. `ifNotExists: true` additionally emits `CREATE INDEX IF NOT EXISTS`.
+
+```php
+$sql = (new PgsqlDialect())->buildCreateTable(TableSchema::fromClass(OrderRecord::class), ifNotExists: true);
+// CREATE TABLE IF NOT EXISTS "wp_orders" (
+//   "id" BIGSERIAL,
+//   "customer_id" BIGINT NOT NULL,
+//   "status" VARCHAR(20) NOT NULL DEFAULT 'pending',
+//   ...
+//   PRIMARY KEY ("id"),
+//   CONSTRAINT "uk_orders_external" UNIQUE ("external_ref"),
+//   CONSTRAINT "fk_orders_customer_id" FOREIGN KEY ("customer_id")
+//     REFERENCES "wp_customers" ("id") ON DELETE RESTRICT ON UPDATE RESTRICT
+// );
+// CREATE INDEX IF NOT EXISTS "idx_orders_status" ON "wp_orders" ("status", "created_at")
+```
+
+> `generatedAs` expressions are raw SQL and therefore dialect-specific. Prefer portable
+> functions (e.g. `COALESCE` over MySQL's `IFNULL`) when a Record's DDL must build on both
+> engines.
+
+---
+
 ## What's deliberately not in scope
 
 - **`ALTER TABLE` generation** — separate package, see migrations doc.
@@ -352,22 +401,24 @@ routine `MysqlDialect::toLiteral()` already uses.
 
 ## Testing strategy
 
-Unit tests in `tests/Unit/MysqlDialectCreateTableTest.php`:
+Unit tests in `tests/Unit/MysqlDialectCreateTableTest.php` and
+`tests/Unit/PgsqlDialectCreateTableTest.php`:
 
 1. **Per-type snapshots** — one fixture Record per representative column shape;
    assert exact SQL strings. Covers nullable/not-null, defaults, enum values,
-   bool, decimal, binary, datetime + on-update.
+   bool, decimal, binary, datetime + on-update (and their PostgreSQL equivalents).
 2. **Composite keys** — class-level `#[UniqueKey]` / `#[Index]` with explicit
    `columns`, plus property-level repeated form, both produce expected SQL.
 3. **FK constraint emission** — owning-side relations emit constraints;
    inverse-side and morph relations do not.
 4. **Validation errors** — `VarChar` without `length`, `Decimal` without scale,
    `Enum` without values, `default` + `defaultExpr` both set: each throws
-   `SchemaException` with a clear message.
+   `SchemaException` with a clear message (plus PG-only `Set` / `VIRTUAL` rejections).
 
-Integration test (optional, deferred): execute the generated SQL against the
-test MySQL container in `docker-compose.yml`, then re-introspect via
-`information_schema` and round-trip-compare.
+**Integration:** the dual-backend integration suites (`tests/Integration/`) no longer
+hand-write `CREATE TABLE`; each suite's schema is generated from the fixtures' attributes via
+`buildCreateTable()` and executed against the live MySQL and PostgreSQL containers from
+`docker-compose.yml` — so the DDL producer is exercised end-to-end on both engines on every run.
 
 ---
 

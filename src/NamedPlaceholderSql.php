@@ -16,18 +16,18 @@ use Nandan108\Attrecord\Exception\AttrecordException;
 final class NamedPlaceholderSql
 {
     /**
-     * @param array<array-key, scalar|null> $params
+     * @param array<array-key, scalar|BinaryParam|null> $params
      *
-     * @return array{sql: string, params: list<scalar|null>}
+     * @return array{sql: string, params: list<scalar|BinaryParam|null>}
      */
     public static function positional(string $sql, array $params): array
     {
         if (array_is_list($params)) {
-            /** @var list<scalar|null> $params */
+            /** @var list<scalar|BinaryParam|null> $params */
             return ['sql' => $sql, 'params' => $params];
         }
 
-        /** @var list<scalar|null> $ordered */
+        /** @var list<scalar|BinaryParam|null> $ordered */
         $ordered = [];
 
         $normalised = preg_replace_callback(
@@ -40,9 +40,9 @@ final class NamedPlaceholderSql
                     );
                 }
                 $value = $params[$name];
-                if (!is_scalar($value) && null !== $value) {
+                if (!is_scalar($value) && null !== $value && !$value instanceof BinaryParam) {
                     throw new AttrecordException(
-                        sprintf('SQL parameter ":%s" must be scalar or null.', $name),
+                        sprintf('SQL parameter ":%s" must be scalar, BinaryParam or null.', $name),
                     );
                 }
                 $ordered[] = $value;

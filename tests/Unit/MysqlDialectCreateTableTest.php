@@ -243,7 +243,7 @@ final class MysqlDialectCreateTableTest extends TestCase
         // generated columns (MariaDB rejects an explicit NOT NULL here, and
         // the expression already determines nullability).
         $this->assertStringContainsString(
-            '`scope_key` INT UNSIGNED GENERATED ALWAYS AS (IFNULL(scope_id, 0)) STORED',
+            '`scope_key` INT UNSIGNED GENERATED ALWAYS AS (COALESCE(scope_id, 0)) STORED',
             $sql,
         );
         $this->assertStringNotContainsString('STORED NOT NULL', $sql);

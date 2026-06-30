@@ -2,38 +2,29 @@
 
 declare(strict_types=1);
 
-namespace Nandan108\Attrecord\Tests\Integration;
+namespace Nandan108\Attrecord\Tests\Integration\Cases;
 
+use Nandan108\Attrecord\Record;
 use Nandan108\Attrecord\RecordSet;
 use Nandan108\Attrecord\Tests\Fixtures\UpsertByUniqueKeyRecord;
-use Nandan108\Attrecord\Tests\Support\IntegrationTestCase;
 
 /**
- * Covers the burn-free upsert-by-unique-key paths:
+ * Shared burn-free upsert-by-unique-key cases:
  *  - Record::upsertByUniqueKey(..., preserveAutoIncrement: true)
  *  - RecordSet::upsertAllByUniqueKey()
  *
- * "Burn-free" is verified by id contiguity: an INSERT … ON DUPLICATE KEY UPDATE allocates and
- * discards an auto-increment value on each conflicting write, leaving a gap; these paths must not.
+ * "Burn-free" is verified by id contiguity: the atomic upsert (MySQL INSERT … ON DUPLICATE
+ * KEY UPDATE / PostgreSQL INSERT … ON CONFLICT DO UPDATE) allocates and discards an
+ * auto-increment value on each conflicting write, leaving a gap; the burn-free paths must not.
+ *
+ * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
  */
-final class UpsertByUniqueKeyTest extends IntegrationTestCase
+trait UpsertByUniqueKeyCases
 {
-    protected static function createSchema(): void
+    /** @return list<class-string<Record>> */
+    protected static function recordClasses(): array
     {
-        static::$pdo->exec(<<<SQL
-            CREATE TABLE IF NOT EXISTS `attrecord_upsert` (
-                `id`   bigint unsigned NOT NULL AUTO_INCREMENT,
-                `code` varchar(32)     NOT NULL,
-                `name` varchar(100)    NOT NULL,
-                PRIMARY KEY (`id`),
-                UNIQUE KEY `uniq_code` (`code`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            SQL);
-    }
-
-    protected static function truncateTables(): void
-    {
-        static::$pdo->exec('TRUNCATE TABLE `attrecord_upsert`');
+        return [UpsertByUniqueKeyRecord::class];
     }
 
     public function testSingleUpsertInsertsThenUpdatesWithoutBurningAutoIncrement(): void
@@ -51,7 +42,7 @@ final class UpsertByUniqueKeyTest extends IntegrationTestCase
         $b->upsertByUniqueKey('uniq_code', ['name'], preserveAutoIncrement: true);
         $this->assertSame(1, $b->id);
         $this->assertSame(1, UpsertByUniqueKeyRecord::countWhere('1=1'));
-        $this->assertSame('Alpha v2', UpsertByUniqueKeyRecord::findOne('`code` = ?', ['alpha'])?->name);
+        $this->assertSame('Alpha v2', UpsertByUniqueKeyRecord::findOne('code = ?', ['alpha'])?->name);
 
         // A genuinely-new row gets id 2 — contiguous, proving the update above burned nothing.
         $c = new UpsertByUniqueKeyRecord();
@@ -63,7 +54,8 @@ final class UpsertByUniqueKeyTest extends IntegrationTestCase
 
     public function testDefaultUpsertBurnsAutoIncrement(): void
     {
-        // Contrast: the atomic INSERT … ON DUPLICATE KEY UPDATE default DOES burn.
+        // Contrast: the atomic upsert default DOES burn the auto-increment on conflict (true on
+        // both MySQL and PostgreSQL — the sequence advances before the conflict is resolved).
         $a = new UpsertByUniqueKeyRecord();
         $a->code = 'alpha';
         $a->name = 'Alpha';
@@ -81,7 +73,7 @@ final class UpsertByUniqueKeyTest extends IntegrationTestCase
 
         // The default path doesn't back-fill the PK onto the object, so read it from the DB:
         // beta landed on id 3, not 2 — id 2 was burned by the conflicting re-upsert of alpha.
-        $this->assertSame(3, UpsertByUniqueKeyRecord::findOne('`code` = ?', ['beta'])?->id);
+        $this->assertSame(3, UpsertByUniqueKeyRecord::findOne('code = ?', ['beta'])?->id);
     }
 
     public function testBatchUpsertAllByUniqueKeyIsBurnFree(): void
@@ -100,8 +92,8 @@ final class UpsertByUniqueKeyTest extends IntegrationTestCase
         // Existing rows updated in place, PKs back-filled to the existing ids.
         $this->assertSame(1, $alpha->id);
         $this->assertSame(2, $beta->id);
-        $this->assertSame('Alpha v2', UpsertByUniqueKeyRecord::findOne('`code` = ?', ['alpha'])?->name);
-        $this->assertSame('Beta v2', UpsertByUniqueKeyRecord::findOne('`code` = ?', ['beta'])?->name);
+        $this->assertSame('Alpha v2', UpsertByUniqueKeyRecord::findOne('code = ?', ['alpha'])?->name);
+        $this->assertSame('Beta v2', UpsertByUniqueKeyRecord::findOne('code = ?', ['beta'])?->name);
 
         // The new row got id 3 (contiguous) — the two updates burned nothing.
         $this->assertSame(3, $gamma->id);
@@ -111,5 +103,20 @@ final class UpsertByUniqueKeyTest extends IntegrationTestCase
         $delta = (new UpsertByUniqueKeyRecord())->withCode('delta', 'Delta');
         (new RecordSet([$delta]))->upsertAllByUniqueKey('uniq_code');
         $this->assertSame(4, $delta->id);
+    }
+
+    public function testIsDuplicateKeyErrorDetectsUniqueViolation(): void
+    {
+        $session = Record::connection()->session;
+        (new UpsertByUniqueKeyRecord())->withCode('dup', 'First')->save();
+
+        try {
+            // Raw second insert with the same unique `code` → unique-constraint violation
+            // (SQLSTATE 23000 on MySQL/MariaDB, 23505 on PostgreSQL).
+            $session->exec('INSERT INTO attrecord_upsert (code, name) VALUES (?, ?)', ['dup', 'Second']);
+            $this->fail('expected a duplicate-key violation');
+        } catch (\Throwable $e) {
+            $this->assertTrue($session->isDuplicateKeyError($e));
+        }
     }
 }

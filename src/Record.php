@@ -219,8 +219,12 @@ abstract class Record
         ?Transaction $tx = null,
     ): ?static {
         $schema = static::schema();
+        $conn = static::connection();
         $sql = self::buildSelectSql($schema->tableName, $schema->pk, $forUpdate);
-        $row = static::connection()->session->fetchOne($sql, [$id]);
+        // Route the id through the column serializer so a binary PK is wrapped for binding on a
+        // dialect that needs it (PostgreSQL); int/string PKs and MySQL pass through unchanged.
+        $idParam = ColumnSerializer::toParam($id, $schema->columns[$schema->pk], $conn->dialect->bindsBinaryAsLob());
+        $row = $conn->session->fetchOne($sql, [$idParam]);
 
         if (null === $row) {
             return null;
@@ -470,7 +474,7 @@ abstract class Record
                 continue;
             }
             $setParts[] = $dialect->quoteIdentifier($name).' = ?';
-            $setParams[] = ColumnSerializer::toParam($value, $schema->columns[$name]);
+            $setParams[] = ColumnSerializer::toParam($value, $schema->columns[$name], $dialect->bindsBinaryAsLob());
         }
 
         if (empty($setParts)) {
@@ -546,6 +550,7 @@ abstract class Record
         $colNames = [];
         $setParts = [];
         $params = [];
+        $bindBinaryAsLob = $dialect->bindsBinaryAsLob();
 
         foreach ($schema->columns as $colName => $col) {
             // Skip columns that are not application-writable: auto-increment PKs are
@@ -568,7 +573,7 @@ abstract class Record
             $qcol = $dialect->quoteIdentifier($colName);
             $colNames[] = $qcol;
             $setParts[] = "{$qcol} = ?";
-            $params[] = ColumnSerializer::toParam($value, $col);
+            $params[] = ColumnSerializer::toParam($value, $col, $bindBinaryAsLob);
         }
 
         if (empty($colNames)) {
@@ -591,8 +596,13 @@ abstract class Record
                 if ('' !== $suffix) {
                     /** @psalm-suppress MixedArgumentTypeCoercion */
                     $row = $session->fetchOne("{$insertSql} {$suffix}", $params);
-                    $this->{$pkProp} = $row[$pk]
+                    /** @psalm-suppress MixedAssignment, MixedArgument */
+                    $rawPk = $row[$pk]
                         ?? throw new RecordSaveException('INSERT did not return a generated key.');
+                    // Cast the returned key through the serializer: PostgreSQL returns a bigint
+                    // PK as a string and a bytea PK as a stream resource — fromDb() normalises
+                    // both to the property's PHP type (int / raw bytes).
+                    $this->{$pkProp} = ColumnSerializer::fromDb($rawPk, $schema->columns[$pk], $row ?? []);
                 } else {
                     /** @psalm-suppress MixedArgumentTypeCoercion */
                     $session->exec($insertSql, $params);
@@ -606,8 +616,8 @@ abstract class Record
                 }
                 $this->_isNew = false;
             } else {
-                /** @psalm-suppress MixedAssignment */
-                $params[] = $this->{$pkProp};
+                // Route the PK through the serializer so a binary PK is wrapped for binding.
+                $params[] = ColumnSerializer::toParam($this->{$pkProp} ?? null, $schema->columns[$pk], $bindBinaryAsLob);
                 $sql = "UPDATE {$qt} SET ".implode(', ', $setParts)." WHERE {$qpk} = ?";
                 /** @psalm-suppress MixedArgumentTypeCoercion */
                 $session->exec($sql, $params);
@@ -648,7 +658,7 @@ abstract class Record
             $conn->session->exec(
                 'DELETE FROM '.$conn->dialect->quoteIdentifier($schema->tableName)
                     .' WHERE '.$conn->dialect->quoteIdentifier($pk).' = ?',
-                [$pkVal],
+                [ColumnSerializer::toParam($pkVal, $schema->columns[$pk], $conn->dialect->bindsBinaryAsLob())],
             );
         } catch (\Throwable $e) {
             throw new RecordDeleteException($e->getMessage(), $e);
@@ -699,7 +709,7 @@ abstract class Record
             }
             $columnNames[] = $colName;
             /** @psalm-suppress MixedAssignment */
-            $params[] = ColumnSerializer::toParam($this->{$col->propertyName} ?? null, $col);
+            $params[] = ColumnSerializer::toParam($this->{$col->propertyName} ?? null, $col, $dialect->bindsBinaryAsLob());
         }
 
         $sql = $dialect->buildSingleUpsertSql($schema->tableName, $columnNames, $conflictCols, $updateColumns);
@@ -745,7 +755,7 @@ abstract class Record
         foreach ($conflictCols as $colName) {
             $col = $schema->columns[$colName];
             $whereParts[] = $dialect->quoteIdentifier($colName).' = ?';
-            $whereParams[] = ColumnSerializer::toParam($this->{$col->propertyName} ?? null, $col);
+            $whereParams[] = ColumnSerializer::toParam($this->{$col->propertyName} ?? null, $col, $dialect->bindsBinaryAsLob());
         }
 
         try {
@@ -762,7 +772,7 @@ abstract class Record
                     $col = $schema->columns[$colName]
                         ?? throw new SchemaException(sprintf('upsertByUniqueKey: unknown column "%s" on %s.', $colName, static::class));
                     $setParts[] = $dialect->quoteIdentifier($colName).' = ?';
-                    $setParams[] = ColumnSerializer::toParam($this->{$col->propertyName} ?? null, $col);
+                    $setParams[] = ColumnSerializer::toParam($this->{$col->propertyName} ?? null, $col, $dialect->bindsBinaryAsLob());
                 }
                 /** @psalm-suppress MixedAssignment */
                 $pkValue = $existing[$pk];
@@ -781,7 +791,7 @@ abstract class Record
                     }
                     $columnNames[] = $colName;
                     /** @psalm-suppress MixedAssignment */
-                    $params[] = ColumnSerializer::toParam($this->{$col->propertyName} ?? null, $col);
+                    $params[] = ColumnSerializer::toParam($this->{$col->propertyName} ?? null, $col, $dialect->bindsBinaryAsLob());
                 }
                 $quotedCols = implode(', ', array_map($dialect->quoteIdentifier(...), $columnNames));
                 $placeholders = implode(', ', array_fill(0, count($columnNames), '?'));
@@ -834,7 +844,7 @@ abstract class Record
         if (null !== $pkVal) {
             $whereParts[] = $dialect->quoteIdentifier($pk).' = ?';
             /** @psalm-suppress MixedArgumentTypeCoercion */
-            $whereParams[] = ColumnSerializer::toParam($pkVal, $schema->columns[$pk]);
+            $whereParams[] = ColumnSerializer::toParam($pkVal, $schema->columns[$pk], $dialect->bindsBinaryAsLob());
         } else {
             foreach ($schema->uniqueKeys as $keyColumns) {
                 $allSet = true;
@@ -850,7 +860,7 @@ abstract class Record
                         $colDef = $schema->columns[$colName];
                         $whereParts[] = $dialect->quoteIdentifier($colName).' = ?';
                         /** @psalm-suppress MixedAssignment */
-                        $whereParams[] = ColumnSerializer::toParam($this->{$colDef->propertyName} ?? null, $colDef);
+                        $whereParams[] = ColumnSerializer::toParam($this->{$colDef->propertyName} ?? null, $colDef, $dialect->bindsBinaryAsLob());
                     }
                     break;
                 }
@@ -879,7 +889,7 @@ abstract class Record
                 $value = $this->{$col->propertyName} ?? null;
                 if (null !== $value) {
                     $setParts[] = $dialect->quoteIdentifier($colName).' = ?';
-                    $setParams[] = ColumnSerializer::toParam($value, $col);
+                    $setParams[] = ColumnSerializer::toParam($value, $col, $dialect->bindsBinaryAsLob());
                 }
             }
         } else {
@@ -889,7 +899,7 @@ abstract class Record
                 /** @psalm-suppress MixedAssignment */
                 $value = $this->{$col->propertyName} ?? null;
                 $setParts[] = $dialect->quoteIdentifier($colName).' = ?';
-                $setParams[] = ColumnSerializer::toParam($value, $col);
+                $setParams[] = ColumnSerializer::toParam($value, $col, $dialect->bindsBinaryAsLob());
             }
         }
 
@@ -963,7 +973,7 @@ abstract class Record
                 $value = $this->{$col->propertyName} ?? null;
                 if (null !== $value) {
                     $setParts[] = $dialect->quoteIdentifier($colName).' = ?';
-                    $setParams[] = ColumnSerializer::toParam($value, $col);
+                    $setParams[] = ColumnSerializer::toParam($value, $col, $dialect->bindsBinaryAsLob());
                 }
             }
         } else {
@@ -973,7 +983,7 @@ abstract class Record
                 /** @psalm-suppress MixedAssignment */
                 $value = $this->{$col->propertyName} ?? null;
                 $setParts[] = $dialect->quoteIdentifier($colName).' = ?';
-                $setParams[] = ColumnSerializer::toParam($value, $col);
+                $setParams[] = ColumnSerializer::toParam($value, $col, $dialect->bindsBinaryAsLob());
             }
         }
 
@@ -1121,7 +1131,10 @@ abstract class Record
             // raw DB bytes: native JSON storage normalizes (key order / whitespace), so
             // comparing our own encoding on both sides keeps a freshly loaded, untouched
             // record clean instead of falsely dirty.
-            $this->_snapshot[$colName] = null !== $col->caster
+            // Binary columns snapshot from the decoded value too: on PostgreSQL the raw
+            // bytea arrives as a single-read stream that fromDb() has already consumed, so
+            // (string) $raw would be empty/garbage here.
+            $this->_snapshot[$colName] = (null !== $col->caster || $col->isBinary)
                 ? ColumnSerializer::toSnapshotString($value, $col)
                 : (null !== $raw ? (string) $raw : null);
         }
@@ -1181,8 +1194,10 @@ abstract class Record
         $schema = static::schema();
         $out = [];
         foreach ($schema->columns as $colName => $col) {
+            // Default (raw-string) binary binding keeps this export scalar; unwrap defensively.
             /** @psalm-suppress MixedAssignment */
-            $out[$colName] = ColumnSerializer::toParam($this->{$col->propertyName} ?? null, $col);
+            $value = ColumnSerializer::toParam($this->{$col->propertyName} ?? null, $col);
+            $out[$colName] = $value instanceof BinaryParam ? $value->bytes : $value;
         }
 
         return $out;

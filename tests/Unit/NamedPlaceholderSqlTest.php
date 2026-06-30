@@ -68,7 +68,7 @@ final class NamedPlaceholderSqlTest extends TestCase
     public function testNonScalarParamThrows(): void
     {
         $this->expectException(AttrecordException::class);
-        $this->expectExceptionMessage('SQL parameter ":val" must be scalar or null');
+        $this->expectExceptionMessage('SQL parameter ":val" must be scalar, BinaryParam or null');
 
         /** @psalm-suppress InvalidArgument */
         NamedPlaceholderSql::positional(':val', ['val' => ['array']]);

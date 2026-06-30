@@ -18,6 +18,19 @@ use Nandan108\Attrecord\Schema\TableSchema;
 interface SqlDialect
 {
     /**
+     * Whether binary parameter values must be bound as a typed LOB rather than a plain string.
+     *
+     * Return false for MySQL/MariaDB, where raw bytes bind through an ordinary string
+     * parameter. Return true for PostgreSQL, where PDO_pgsql treats a positional parameter as
+     * UTF-8 text and rejects non-UTF-8 bytes — so binary values must be wrapped in a
+     * {@see BinaryParam} (bound as PDO::PARAM_LOB).
+     *
+     * When false, {@see ColumnSerializer::toParam()} leaves binary values as raw byte strings,
+     * so a consumer's custom DbSession that only handles scalars keeps working unchanged.
+     */
+    public function bindsBinaryAsLob(): bool;
+
+    /**
      * Convert a PHP value to a SQL literal for embedding in a bulk statement.
      * Must return a properly quoted/escaped string that is safe to embed verbatim.
      */

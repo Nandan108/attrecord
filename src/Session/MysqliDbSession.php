@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord\Session;
 
+use Nandan108\Attrecord\BinaryParam;
 use Nandan108\Attrecord\DbSession;
 
 /**
@@ -27,7 +28,7 @@ final class MysqliDbSession implements DbSession
     public function exec(string $sql, array $params = []): int
     {
         $stmt = $this->prepare($sql);
-        $stmt->execute(array_values($params));
+        $stmt->execute($this->bindValues($params));
         $affected = (int) $stmt->affected_rows;
         $stmt->close();
 
@@ -38,7 +39,7 @@ final class MysqliDbSession implements DbSession
     public function fetchAll(string $sql, array $params = []): array
     {
         $stmt = $this->prepare($sql);
-        $stmt->execute(array_values($params));
+        $stmt->execute($this->bindValues($params));
         $result = $stmt->get_result();
 
         /** @var list<array<string, scalar|null>> $rows */
@@ -52,7 +53,7 @@ final class MysqliDbSession implements DbSession
     public function fetchOne(string $sql, array $params = []): ?array
     {
         $stmt = $this->prepare($sql);
-        $stmt->execute(array_values($params));
+        $stmt->execute($this->bindValues($params));
         $result = $stmt->get_result();
         $row = false !== $result ? $result->fetch_assoc() : null;
         $stmt->close();
@@ -111,7 +112,7 @@ final class MysqliDbSession implements DbSession
     {
         $acquired = $this->fetchScalar('SELECT GET_LOCK(?, ?)', [$lockName, $timeoutSeconds]);
         if (1 !== (int) $acquired) {
-            throw new \RuntimeException(sprintf('Could not acquire advisory lock "%s" within %d second(s).', $lockName, $timeoutSeconds));
+            throw new \RuntimeException(\sprintf('Could not acquire advisory lock "%s" within %d second(s).', $lockName, $timeoutSeconds));
         }
         try {
             return $callback();
@@ -141,5 +142,21 @@ final class MysqliDbSession implements DbSession
         }
 
         return $stmt;
+    }
+
+    /**
+     * Normalise the bound parameters for mysqli_stmt::execute(): unwrap {@see BinaryParam} to
+     * its raw byte string (MySQL binds binary data through an ordinary string parameter).
+     *
+     * @param array<array-key, scalar|BinaryParam|null> $params
+     *
+     * @return list<scalar|null>
+     */
+    private function bindValues(array $params): array
+    {
+        return \array_map(
+            static fn (mixed $v): mixed => $v instanceof BinaryParam ? $v->bytes : $v,
+            \array_values($params),
+        );
     }
 }

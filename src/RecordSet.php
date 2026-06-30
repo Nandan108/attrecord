@@ -303,22 +303,25 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $qpk = $conn->dialect->quoteIdentifier($pk);
         $returningSuffix = $conn->dialect->insertReturningSuffix($qpk);
 
-        $pkAutoIncrement = $schema->columns[$pk]->autoIncrement;
+        $pkColumn = $schema->columns[$pk];
+        $pkAutoIncrement = $pkColumn->autoIncrement;
 
         try {
             $counts = $session->transactional(
-                function () use ($session, $plan, $pk, $returningSuffix, $pkAutoIncrement): array {
+                function () use ($session, $plan, $pk, $pkColumn, $returningSuffix, $pkAutoIncrement): array {
                     $inserted = 0;
                     $updated = 0;
                     $insertedIds = [];
 
                     if (null !== $plan['insert']) {
                         if ('' !== $returningSuffix) {
-                            // PostgreSQL: RETURNING gives back the generated PKs directly
+                            // PostgreSQL: RETURNING gives back the generated PKs directly. Cast
+                            // each through fromDb (PG returns bigint as a string) so insertedIds
+                            // and the back-filled record PKs are ints, matching the MySQL path.
                             $rows = $session->fetchAll($plan['insert']."\n".$returningSuffix);
                             foreach ($rows as $row) {
-                                /** @psalm-suppress MixedAssignment */
-                                $insertedIds[] = $row[$pk];
+                                /** @psalm-suppress MixedAssignment, MixedArgument */
+                                $insertedIds[] = ColumnSerializer::fromDb($row[$pk], $pkColumn, $row);
                             }
                             $inserted += \count($rows);
                         } else {
@@ -445,7 +448,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                     $allSet = false;
                     break;
                 }
-                $values[] = ColumnSerializer::toParam($value, $col);
+                $values[] = ColumnSerializer::toParam($value, $col, $dialect->bindsBinaryAsLob());
             }
             if (!$allSet) {
                 continue;

@@ -2,63 +2,26 @@
 
 declare(strict_types=1);
 
-namespace Nandan108\Attrecord\Tests\Integration;
+namespace Nandan108\Attrecord\Tests\Integration\Cases;
 
 use Nandan108\Attrecord\RecordSet;
 use Nandan108\Attrecord\Tests\Fixtures\DdlGeneratedColumnRecord;
 use Nandan108\Attrecord\Tests\Fixtures\PostRecord;
 use Nandan108\Attrecord\Tests\Fixtures\UserRecord;
-use Nandan108\Attrecord\Tests\Support\IntegrationTestCase;
 
-final class RecordSetTest extends IntegrationTestCase
+/**
+ * Shared RecordSet cases (saveAll batch insert/upsert, deleteAll, with() eager loading,
+ * ArrayAccess/Iterator/Countable), run against both MySQL and PostgreSQL.
+ *
+ * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
+ */
+trait RecordSetCases
 {
-    protected static function createSchema(): void
+    /** @return list<class-string<\Nandan108\Attrecord\Record>> */
+    protected static function recordClasses(): array
     {
-        static::$pdo->exec(<<<SQL
-            CREATE TABLE IF NOT EXISTS `attrecord_users` (
-                `id`     bigint unsigned NOT NULL AUTO_INCREMENT,
-                `name`   varchar(100)    NOT NULL,
-                `email`  varchar(200)    DEFAULT NULL,
-                `active` tinyint(1)      DEFAULT NULL,
-                PRIMARY KEY (`id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            SQL);
-
-        static::$pdo->exec(<<<SQL
-            CREATE TABLE IF NOT EXISTS `attrecord_posts` (
-                `id`      bigint unsigned NOT NULL AUTO_INCREMENT,
-                `user_id` bigint unsigned NOT NULL,
-                `title`   varchar(200)    NOT NULL,
-                `body`    text            DEFAULT NULL,
-                PRIMARY KEY (`id`),
-                KEY `user_id` (`user_id`),
-                CONSTRAINT `fk_posts_user_id`
-                    FOREIGN KEY (`user_id`) REFERENCES `attrecord_users` (`id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            SQL);
-
-        static::$pdo->exec(<<<SQL
-            CREATE TABLE IF NOT EXISTS `attrecord_gen_col` (
-                `id`        bigint unsigned NOT NULL AUTO_INCREMENT,
-                `scope_id`  int unsigned    DEFAULT NULL,
-                `scope_key` int unsigned    AS (IFNULL(`scope_id`, 0)) STORED,
-                `value`     varchar(64)     NOT NULL,
-                PRIMARY KEY (`id`),
-                UNIQUE KEY `uq_scope_value` (`scope_key`, `value`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            SQL);
+        return [UserRecord::class, PostRecord::class, DdlGeneratedColumnRecord::class];
     }
-
-    protected static function truncateTables(): void
-    {
-        static::$pdo->exec('TRUNCATE TABLE `attrecord_posts`');
-        static::$pdo->exec('TRUNCATE TABLE `attrecord_users`');
-        static::$pdo->exec('TRUNCATE TABLE `attrecord_gen_col`');
-    }
-
-    // -----------------------------------------------------------------
-    // Helpers
-    // -----------------------------------------------------------------
 
     private function makeUser(string $name): UserRecord
     {
@@ -98,12 +61,12 @@ final class RecordSetTest extends IntegrationTestCase
         $this->assertNotNull($result);
         $this->assertSame(3, $result->inserted);
         $this->assertSame(0, $result->updated);
-        $this->assertSame(3, UserRecord::countWhere('`id` > 0'));
+        $this->assertSame(3, UserRecord::countWhere('id > 0'));
         $this->assertCount(3, $result->insertedIds);
         $this->assertSame([1, 2, 3], $result->insertedIds);
 
         // saveAll() back-fills the generated auto-increment ids onto the records (like
-        // save() does), in insertion order, and leaves them clean.
+        // save() does), in insertion order, as ints, and leaves them clean.
         $this->assertSame(1, $u1->id);
         $this->assertSame(2, $u2->id);
         $this->assertSame(3, $u3->id);
@@ -114,18 +77,18 @@ final class RecordSetTest extends IntegrationTestCase
 
     public function testSaveAllUpsertSkipsGeneratedColumns(): void
     {
-        // Regression: a keyed (existing) record carries its DB-generated column hydrated
-        // from a prior load. The bulk upsert must NOT write that column back — MySQL rejects
-        // a value for a generated column (error 1906). The plain-INSERT branch already
-        // skipped generated columns; this guards the upsert (known-PK) branch too.
+        // Regression: a keyed (existing) record carries its DB-generated column hydrated from a
+        // prior load. The bulk upsert must NOT write that column back — both MySQL (error 1906)
+        // and PostgreSQL reject a value for a GENERATED ALWAYS column. The plain-INSERT branch
+        // already skipped generated columns; this guards the upsert (known-PK) branch too.
         $rec = new DdlGeneratedColumnRecord();
         $rec->scope_id = 7;
         $rec->value = 'before';
         $rec->save();
         $id = (int) $rec->id;
 
-        // Reload so scope_key (STORED, = IFNULL(scope_id, 0)) is hydrated as a non-null
-        // value — the state that previously leaked into the upsert column list.
+        // Reload so scope_key (STORED, = COALESCE(scope_id, 0)) is hydrated as a non-null value
+        // — the state that previously leaked into the upsert column list.
         $loaded = DdlGeneratedColumnRecord::where('id', $id)->first();
         $this->assertNotNull($loaded);
         $this->assertSame(7, $loaded->scope_key);
@@ -170,12 +133,31 @@ final class RecordSetTest extends IntegrationTestCase
         $u2 = new UserRecord();
         $u2->name = 'Bob';
 
-        // Only u2 is dirty; u1 is persisted and clean
+        // Only u2 is dirty; u1 is persisted and clean.
         $set = new RecordSet([$u1, $u2]);
         $set->saveAll();
 
-        // Total: Alice (from makeUser) + Bob (from saveAll) = 2
-        $this->assertSame(2, UserRecord::countWhere('`id` > 0'));
+        // Total: Alice (from makeUser) + Bob (from saveAll) = 2.
+        $this->assertSame(2, UserRecord::countWhere('id > 0'));
+    }
+
+    public function testSaveAllUpsertsKeyedRecords(): void
+    {
+        $alice = $this->makeUser('Alice');
+        $bob = $this->makeUser('Bob');
+
+        $alice->name = 'Alice Updated';
+        $bob->name = 'Bob Updated';
+
+        $set = new RecordSet([$alice, $bob]);
+        $result = $set->saveAll();
+
+        $this->assertNotNull($result);
+        $this->assertSame(0, $result->inserted); // rows already existed — INSERT IGNORE skipped them
+        $this->assertSame(2, $result->updated);  // both updated by the CASE UPDATE
+
+        $this->assertSame('Alice Updated', UserRecord::getOne((int) $alice->id)?->name);
+        $this->assertSame('Bob Updated', UserRecord::getOne((int) $bob->id)?->name);
     }
 
     public function testSaveAllEmptySetReturnsNull(): void
@@ -197,7 +179,7 @@ final class RecordSetTest extends IntegrationTestCase
         $deleted = $set->deleteAll();
 
         $this->assertSame(2, $deleted);
-        $this->assertSame(0, UserRecord::countWhere('`id` > 0'));
+        $this->assertSame(0, UserRecord::countWhere('id > 0'));
     }
 
     public function testDeleteAllEmptySetReturnsZero(): void
@@ -207,7 +189,7 @@ final class RecordSetTest extends IntegrationTestCase
     }
 
     // -----------------------------------------------------------------
-    // with() — OneToMany
+    // with() — OneToMany / ManyToOne / chained
     // -----------------------------------------------------------------
 
     public function testWithOneToMany(): void
@@ -243,10 +225,6 @@ final class RecordSetTest extends IntegrationTestCase
         $this->assertCount(0, $alice->posts);
     }
 
-    // -----------------------------------------------------------------
-    // with() — ManyToOne
-    // -----------------------------------------------------------------
-
     public function testWithManyToOne(): void
     {
         $alice = $this->makeUser('Alice');
@@ -262,16 +240,12 @@ final class RecordSetTest extends IntegrationTestCase
         }
     }
 
-    // -----------------------------------------------------------------
-    // with() — dot-notation chain
-    // -----------------------------------------------------------------
-
     public function testWithChainedRelation(): void
     {
         $alice = $this->makeUser('Alice');
         $this->makePost((int) $alice->id, 'Post A');
 
-        // users → posts → user (roundtrip through both relations)
+        // users → posts → user (roundtrip through both relations).
         $users = UserRecord::find()->with('posts.user');
 
         $first = $users->first();

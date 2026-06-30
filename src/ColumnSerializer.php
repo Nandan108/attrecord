@@ -25,11 +25,17 @@ final class ColumnSerializer
      * full row, for discriminator-aware casters) is handed to it and native type
      * handling is skipped. Casters are never invoked for a null raw value.
      *
-     * @param scalar|null                $raw
+     * @param scalar|resource|null       $raw a scalar, or a stream resource for a PostgreSQL bytea column
      * @param array<string, scalar|null> $row full raw row being hydrated (for casters that read sibling columns)
      */
     public static function fromDb(mixed $raw, ColumnDefinition $col, array $row = []): mixed
     {
+        if (\is_resource($raw)) {
+            // PostgreSQL (PDO_pgsql) returns a bytea column as a stream resource; read it once
+            // into the raw bytes so the arms below (and any caster) see a plain string.
+            $raw = (string) \stream_get_contents($raw);
+        }
+
         return match (true) {
             null === $raw         => null,
             null !== $col->caster => $col->caster->fromDb($raw, $row, $col),
@@ -41,7 +47,7 @@ final class ColumnSerializer
             $col->isFloat    => 'string' === $col->phpType ? (string) $raw : (float) $raw,
             $col->isDateTime => self::tryParseDateTime((string) $raw, ['Y-m-d H:i:s.u', 'Y-m-d H:i:s']),
             $col->isDate     => self::tryParseDateTime((string) $raw, ['Y-m-d']),
-            default          => (string) $raw, // String and Binary — return as-is (binary is raw bytes from DB)
+            default          => (string) $raw, // String and Binary — return as-is (raw bytes for binary)
         };
     }
 
@@ -83,13 +89,24 @@ final class ColumnSerializer
      *
      * A column caster, when set, is authoritative: its output is the bound scalar and the
      * native type handling below is bypassed (so e.g. an EpochCaster on an integer column
-     * is not re-coerced by the integer arm). Binary columns without a caster are passed as
-     * raw byte strings — DbSession implementations must handle them.
+     * is not re-coerced by the integer arm).
+     *
+     * Binary columns without a caster are returned as raw byte strings by default. When
+     * $bindBinaryAsLob is true (the active dialect requires it — PostgreSQL), they are instead
+     * wrapped in a {@see BinaryParam} so the session can bind them as a LOB rather than text.
+     * Leaving it false keeps the bound value a plain scalar, so a MySQL consumer's custom
+     * DbSession that only accepts scalars is unaffected. The flag comes from
+     * {@see SqlDialect::bindsBinaryAsLob()} and is passed by the binding call sites only — the
+     * snapshot/export paths keep the default (raw string).
      */
-    public static function toParam(mixed $value, ColumnDefinition $col): int | float | string | null
+    public static function toParam(mixed $value, ColumnDefinition $col, bool $bindBinaryAsLob = false): int | float | string | BinaryParam | null
     {
         if (null !== $value && null !== $col->caster) {
             return $col->caster->toDb($value, $col);
+        }
+
+        if (null !== $value && $bindBinaryAsLob && $col->isBinary) {
+            return new BinaryParam($col->trimOnSave ? trim((string) $value) : (string) $value);
         }
 
         return match (true) {
@@ -108,7 +125,7 @@ final class ColumnSerializer
             $col->isDate => $value instanceof \DateTimeImmutable
                 ? $value->format('Y-m-d')
                 : (string) $value,
-            default => $col->trimOnSave // String and Binary
+            default => $col->trimOnSave // String
                 ? trim((string) $value)
                 : (string) $value
         };

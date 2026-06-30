@@ -2,63 +2,26 @@
 
 declare(strict_types=1);
 
-namespace Nandan108\Attrecord\Tests\Integration;
+namespace Nandan108\Attrecord\Tests\Integration\Cases;
 
 use Nandan108\Attrecord\RecordSet;
 use Nandan108\Attrecord\Tests\Fixtures\PostRecord;
 use Nandan108\Attrecord\Tests\Fixtures\TagRecord;
 use Nandan108\Attrecord\Tests\Fixtures\UserRecord;
-use Nandan108\Attrecord\Tests\Support\IntegrationTestCase;
 
-final class PolymorphicRelationTest extends IntegrationTestCase
+/**
+ * Shared polymorphic-relation cases (MorphMany / MorphOne / MorphTo + dot-notation chains),
+ * run against both MySQL and PostgreSQL.
+ *
+ * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
+ */
+trait PolymorphicRelationCases
 {
-    protected static function createSchema(): void
+    /** @return list<class-string<\Nandan108\Attrecord\Record>> */
+    protected static function recordClasses(): array
     {
-        static::$pdo->exec(<<<SQL
-            CREATE TABLE IF NOT EXISTS `attrecord_users` (
-                `id`     bigint unsigned NOT NULL AUTO_INCREMENT,
-                `name`   varchar(100)    NOT NULL,
-                `email`  varchar(200)    DEFAULT NULL,
-                `active` tinyint(1)      DEFAULT NULL,
-                PRIMARY KEY (`id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            SQL);
-
-        static::$pdo->exec(<<<SQL
-            CREATE TABLE IF NOT EXISTS `attrecord_posts` (
-                `id`      bigint unsigned NOT NULL AUTO_INCREMENT,
-                `user_id` bigint unsigned NOT NULL,
-                `title`   varchar(200)    NOT NULL,
-                `body`    text            DEFAULT NULL,
-                PRIMARY KEY (`id`),
-                KEY `user_id` (`user_id`),
-                CONSTRAINT `fk_posts_user_id`
-                    FOREIGN KEY (`user_id`) REFERENCES `attrecord_users` (`id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            SQL);
-
-        static::$pdo->exec(<<<SQL
-            CREATE TABLE IF NOT EXISTS `attrecord_tags` (
-                `id`           bigint unsigned NOT NULL AUTO_INCREMENT,
-                `tagable_type` varchar(50)     NOT NULL,
-                `tagable_id`   bigint unsigned NOT NULL,
-                `name`         varchar(100)    NOT NULL,
-                PRIMARY KEY (`id`),
-                KEY `tagable` (`tagable_type`, `tagable_id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            SQL);
+        return [UserRecord::class, PostRecord::class, TagRecord::class];
     }
-
-    protected static function truncateTables(): void
-    {
-        static::$pdo->exec('TRUNCATE TABLE `attrecord_tags`');
-        static::$pdo->exec('TRUNCATE TABLE `attrecord_posts`');
-        static::$pdo->exec('TRUNCATE TABLE `attrecord_users`');
-    }
-
-    // -----------------------------------------------------------------
-    // Helpers
-    // -----------------------------------------------------------------
 
     private function makeUser(string $name): UserRecord
     {
@@ -137,7 +100,7 @@ final class PolymorphicRelationTest extends IntegrationTestCase
         $alice = $users->first();
         $this->assertNotNull($alice);
 
-        // Alice's tags must not include the post tag
+        // Alice's tags must not include the post tag.
         $this->assertInstanceOf(RecordSet::class, $alice->tags);
         $this->assertCount(1, $alice->tags);
         $this->assertSame('user-tag', $alice->tags->first()?->name);
@@ -168,7 +131,7 @@ final class PolymorphicRelationTest extends IntegrationTestCase
         $alice = $users->first();
         $this->assertNotNull($alice);
         $this->assertInstanceOf(TagRecord::class, $alice->firstTag);
-        // Only one record assigned (the first match)
+        // Only one record assigned (the first match).
         $this->assertSame('alpha', $alice->firstTag->name);
     }
 
@@ -232,9 +195,10 @@ final class PolymorphicRelationTest extends IntegrationTestCase
 
     public function testMorphToUnknownTypeStaysNull(): void
     {
-        // Insert a tag with an unregistered type directly
+        // Insert a tag with an unregistered type directly (unquoted identifiers parse on both
+        // MySQL and PostgreSQL).
         static::$pdo->exec(
-            "INSERT INTO `attrecord_tags` (`tagable_type`, `tagable_id`, `name`) VALUES ('unknown', 1, 'orphan')",
+            "INSERT INTO attrecord_tags (tagable_type, tagable_id, name) VALUES ('unknown', 1, 'orphan')",
         );
 
         $tags = TagRecord::find()->with('tagable');
@@ -253,7 +217,7 @@ final class PolymorphicRelationTest extends IntegrationTestCase
         $alice = $this->makeUser('Alice');
         $this->tagUser($alice, 'vip');
 
-        // Load users → tags → tagable (roundtrip back to User)
+        // Load users → tags → tagable (roundtrip back to User).
         $users = UserRecord::find()->with('tags.tagable');
 
         $user = $users->first();

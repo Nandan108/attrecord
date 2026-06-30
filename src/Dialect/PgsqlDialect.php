@@ -4,7 +4,11 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord\Dialect;
 
+use Nandan108\Attrecord\Enum\ColumnType;
+use Nandan108\Attrecord\Enum\GeneratedColumnMode;
+use Nandan108\Attrecord\Exception\SchemaException;
 use Nandan108\Attrecord\Schema\ColumnDefinition;
+use Nandan108\Attrecord\Schema\ForeignKeyDefinition;
 use Nandan108\Attrecord\Schema\TableSchema;
 use Nandan108\Attrecord\SqlDialect;
 use Nandan108\Attrecord\UpsertSql;
@@ -23,6 +27,13 @@ use Nandan108\Attrecord\UpsertSql;
  */
 final class PgsqlDialect implements SqlDialect
 {
+    #[\Override]
+    public function bindsBinaryAsLob(): bool
+    {
+        // PDO_pgsql rejects raw bytes bound as a text parameter; binary must bind as a LOB.
+        return true;
+    }
+
     #[\Override]
     public function quoteIdentifier(string $name): string
     {
@@ -199,14 +210,163 @@ final class PgsqlDialect implements SqlDialect
         return new UpsertSql($create, $lock, $update);
     }
 
+    /**
+     * Emit one or more semicolon-separated DDL statements for the table.
+     *
+     * Unlike MySQL, PostgreSQL cannot declare secondary indexes or column/table comments
+     * inline in CREATE TABLE, so those are appended as separate `CREATE INDEX` / `COMMENT ON`
+     * statements. The whole batch is safe to run in one PDO::exec() call.
+     *
+     * MySQL-specific declarations have no column-clause equivalent in PostgreSQL and are
+     * intentionally not emitted: an `ON UPDATE` expression (requires a trigger) and the
+     * engine/charset/collation table options. A VIRTUAL generated column and the SET type
+     * are rejected with a {@see SchemaException}.
+     */
     #[\Override]
     public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string
     {
-        throw new \RuntimeException(
-            'PgsqlDialect::buildCreateTable() is not yet implemented. '
-            .'DDL generation currently targets MySQL/MariaDB only; '
-            .'see attrecord/docs/ddl-generation.md (Phase 2).',
-        );
+        $qt = $this->quoteIdentifier($schema->tableName);
+        $createKeyword = $ifNotExists ? 'CREATE TABLE IF NOT EXISTS' : 'CREATE TABLE';
+
+        $lines = [];
+        foreach ($schema->columns as $col) {
+            $lines[] = '  '.$this->buildColumnLine($col);
+        }
+        $lines[] = '  PRIMARY KEY ('.$this->quoteIdentifier($schema->pk).')';
+
+        foreach ($schema->uniqueKeys as $keyName => $colNames) {
+            $quotedCols = \implode(', ', \array_map($this->quoteIdentifier(...), $colNames));
+            $lines[] = '  CONSTRAINT '.$this->quoteIdentifier($keyName).' UNIQUE ('.$quotedCols.')';
+        }
+
+        foreach ($schema->foreignKeys as $fk) {
+            $lines[] = '  '.$this->buildForeignKeyLine($fk);
+        }
+
+        $statements = ["{$createKeyword} {$qt} (\n".\implode(",\n", $lines)."\n)"];
+
+        // Secondary indexes — PostgreSQL declares these outside CREATE TABLE.
+        $indexKeyword = $ifNotExists ? 'CREATE INDEX IF NOT EXISTS' : 'CREATE INDEX';
+        foreach ($schema->indexes as $ixName => $colNames) {
+            $quotedCols = \implode(', ', \array_map($this->quoteIdentifier(...), $colNames));
+            $statements[] = "{$indexKeyword} ".$this->quoteIdentifier($ixName)." ON {$qt} ({$quotedCols})";
+        }
+
+        // Table + column comments — PostgreSQL has no inline COMMENT clause.
+        if (null !== $schema->comment) {
+            $statements[] = "COMMENT ON TABLE {$qt} IS ".$this->escapeStringLiteral($schema->comment);
+        }
+        foreach ($schema->columns as $col) {
+            if (null !== $col->comment) {
+                $statements[] = "COMMENT ON COLUMN {$qt}.".$this->quoteIdentifier($col->name)
+                    .' IS '.$this->escapeStringLiteral($col->comment);
+            }
+        }
+
+        return \implode(";\n", $statements);
+    }
+
+    private function buildColumnLine(ColumnDefinition $col): string
+    {
+        $parts = [$this->quoteIdentifier($col->name), $this->renderColumnType($col)];
+
+        if ($col->isGenerated) {
+            if (GeneratedColumnMode::Virtual === $col->generatedMode) {
+                throw new SchemaException(\sprintf(
+                    'PostgreSQL does not support VIRTUAL generated columns (column "%s"); use GeneratedColumnMode::Stored.',
+                    $col->name,
+                ));
+            }
+            $parts[] = 'GENERATED ALWAYS AS ('.((string) $col->generatedAs).') STORED';
+        } elseif (!$col->autoIncrement) {
+            // SERIAL pseudo-types imply NOT NULL and a sequence default; emit neither for them.
+            if (!$col->nullable) {
+                $parts[] = 'NOT NULL';
+            }
+
+            if (null !== $col->defaultExpr) {
+                $parts[] = 'DEFAULT '.$col->defaultExpr;
+            } elseif (null !== $col->default) {
+                $parts[] = 'DEFAULT '.$this->toLiteral($col->default, $col);
+            }
+            // $col->onUpdate (MySQL ON UPDATE CURRENT_TIMESTAMP) has no PostgreSQL column
+            // clause — it requires a trigger — and is intentionally omitted.
+        }
+
+        // Enum is stored as TEXT plus a CHECK constraint listing the allowed values.
+        if (ColumnType::Enum === $col->type) {
+            $parts[] = 'CHECK ('.$this->quoteIdentifier($col->name).' IN ('.$this->renderEnumValues($col).'))';
+        }
+
+        return \implode(' ', $parts);
+    }
+
+    private function renderColumnType(ColumnDefinition $col): string
+    {
+        // Auto-increment columns use the SERIAL pseudo-types (sequence-backed).
+        if ($col->autoIncrement) {
+            return match ($col->type) {
+                ColumnType::BigInt, ColumnType::BigIntUnsigned => 'BIGSERIAL',
+                ColumnType::TinyInt, ColumnType::TinyIntUnsigned,
+                ColumnType::SmallInt, ColumnType::SmallIntUnsigned => 'SMALLSERIAL',
+                default                                            => 'SERIAL',
+            };
+        }
+
+        $type = $col->type;
+        $precision = $col->precision ?? 0;
+
+        return match (true) {
+            ColumnType::Bool === $type => 'BOOLEAN',
+            // PostgreSQL has no unsigned integers; map to the smallest type that fits.
+            ColumnType::TinyInt === $type, ColumnType::TinyIntUnsigned === $type,
+            ColumnType::SmallInt === $type, ColumnType::SmallIntUnsigned === $type,
+            ColumnType::Year === $type                                          => 'SMALLINT',
+            ColumnType::MediumInt === $type, ColumnType::MediumIntUnsigned === $type,
+            ColumnType::Int === $type, ColumnType::IntUnsigned === $type         => 'INTEGER',
+            ColumnType::BigInt === $type, ColumnType::BigIntUnsigned === $type   => 'BIGINT',
+            ColumnType::Bit === $type                                            => null !== $col->length ? 'BIT('.$col->length.')' : 'BIT',
+            ColumnType::Float === $type                                          => 'REAL',
+            ColumnType::Double === $type                                         => 'DOUBLE PRECISION',
+            ColumnType::Decimal === $type                                        => 'NUMERIC('.$precision.', '.((int) $col->scale).')',
+            ColumnType::Char === $type                                           => 'CHAR('.((int) $col->length).')',
+            ColumnType::VarChar === $type                                        => 'VARCHAR('.((int) $col->length).')',
+            ColumnType::Json === $type                                           => 'JSONB',
+            ColumnType::Enum === $type                                           => 'TEXT', // CHECK constraint added in buildColumnLine()
+            ColumnType::Set === $type                                            => throw new SchemaException(\sprintf(
+                'PostgreSQL has no SET type (column "%s"); model it as a join table or a text array.',
+                $col->name,
+            )),
+            $col->isBinary                                                  => 'BYTEA',
+            ColumnType::Date === $type                                      => 'DATE',
+            ColumnType::DateTime === $type, ColumnType::Timestamp === $type => $precision ? 'TIMESTAMP('.$precision.')' : 'TIMESTAMP',
+            // tinytext / text / mediumtext / longtext all collapse to TEXT.
+            default => 'TEXT',
+        };
+    }
+
+    private function renderEnumValues(ColumnDefinition $col): string
+    {
+        // enumValues non-emptiness is enforced at schema-build time for Enum/Set.
+        $values = $col->enumValues ?? [];
+
+        return \implode(', ', \array_map($this->escapeStringLiteral(...), $values));
+    }
+
+    private function buildForeignKeyLine(ForeignKeyDefinition $fk): string
+    {
+        return 'CONSTRAINT '.$this->quoteIdentifier($fk->constraintName)
+            .' FOREIGN KEY ('.$this->quoteIdentifier($fk->localColumn).')'
+            .' REFERENCES '.$this->quoteIdentifier($fk->targetTableName())
+            .' ('.$this->quoteIdentifier($fk->targetColumnName()).')'
+            .' ON DELETE '.$fk->onDelete->value
+            .' ON UPDATE '.$fk->onUpdate->value;
+    }
+
+    /** Wrap a string in single quotes for embedding as a SQL literal (comments, enum values). */
+    private function escapeStringLiteral(string $value): string
+    {
+        return "'".$this->escapeString($value)."'";
     }
 
     /**

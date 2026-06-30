@@ -11,6 +11,16 @@ use Nandan108\Attrecord\Schema\TableSchema;
 use Nandan108\Attrecord\Session\PdoDbSession;
 use PHPUnit\Framework\TestCase;
 
+/**
+ * MySQL/MariaDB backend base for the dual-backend integration suites.
+ *
+ * A suite supplies its fixture Record classes via {@see recordClasses()} (in FK-dependency
+ * order); the schema is then generated from those classes' attributes through the dialect's
+ * DDL producer — the same code path a consumer's install routine uses — so the integration
+ * tests dogfood {@see MysqlDialect::buildCreateTable()}. The companion PostgreSQL base
+ * ({@see PgsqlIntegrationTestCase}) reuses the same {@see recordClasses()} against the PG
+ * dialect, so one body of test cases runs identically on both engines.
+ */
 abstract class IntegrationTestCase extends TestCase
 {
     protected static \PDO $pdo;
@@ -52,11 +62,26 @@ abstract class IntegrationTestCase extends TestCase
         static::$pdo->exec('SET FOREIGN_KEY_CHECKS=1');
     }
 
+    /**
+     * Fixture Record classes for this suite, in FK-dependency order (referenced tables first).
+     *
+     * @return list<class-string<Record>>
+     */
+    abstract protected static function recordClasses(): array;
+
     protected static function createSchema(): void
     {
+        $dialect = Record::connection()->dialect;
+        foreach (static::recordClasses() as $class) {
+            static::$pdo->exec($dialect->buildCreateTable(TableSchema::fromClass($class), ifNotExists: true));
+        }
     }
 
     protected static function truncateTables(): void
     {
+        foreach (static::recordClasses() as $class) {
+            $table = TableSchema::fromClass($class)->tableName;
+            static::$pdo->exec('TRUNCATE TABLE `'.$table.'`');
+        }
     }
 }

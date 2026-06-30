@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord\Test;
 
+use Nandan108\Attrecord\BinaryParam;
 use Nandan108\Attrecord\DbSession;
 
 /**
@@ -145,9 +146,14 @@ final class CapturingDbSession implements DbSession
 
     // -----------------------------------------------------------------
 
-    /** @param array<array-key, scalar|null> $params */
+    /** @param array<array-key, scalar|BinaryParam|null> $params */
     private function record(string $sql, array $params): void
     {
-        $this->log[] = ['sql' => $sql, 'params' => array_values($params)];
+        // Unwrap binary parameters to their raw byte string so assertions compare bytes.
+        $values = array_map(
+            static fn (mixed $v): mixed => $v instanceof BinaryParam ? $v->bytes : $v,
+            array_values($params),
+        );
+        $this->log[] = ['sql' => $sql, 'params' => $values];
     }
 }

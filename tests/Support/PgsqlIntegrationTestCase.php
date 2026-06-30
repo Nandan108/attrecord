@@ -11,6 +11,14 @@ use Nandan108\Attrecord\Schema\TableSchema;
 use Nandan108\Attrecord\Session\PdoDbSession;
 use PHPUnit\Framework\TestCase;
 
+/**
+ * PostgreSQL backend base for the dual-backend integration suites.
+ *
+ * Mirrors {@see IntegrationTestCase}: a suite supplies its fixture Record classes via
+ * {@see recordClasses()} (in FK-dependency order) and the schema is generated from those
+ * classes' attributes through {@see PgsqlDialect::buildCreateTable()}. The shared per-suite
+ * case traits run unchanged against this base, so the same assertions execute on PostgreSQL.
+ */
 abstract class PgsqlIntegrationTestCase extends TestCase
 {
     protected static \PDO $pdo;
@@ -50,11 +58,31 @@ abstract class PgsqlIntegrationTestCase extends TestCase
         static::truncateTables();
     }
 
+    /**
+     * Fixture Record classes for this suite, in FK-dependency order (referenced tables first).
+     *
+     * @return list<class-string<Record>>
+     */
+    abstract protected static function recordClasses(): array;
+
     protected static function createSchema(): void
     {
+        $dialect = Record::connection()->dialect;
+        foreach (static::recordClasses() as $class) {
+            static::$pdo->exec($dialect->buildCreateTable(TableSchema::fromClass($class), ifNotExists: true));
+        }
     }
 
     protected static function truncateTables(): void
     {
+        $tables = array_map(
+            static fn (string $class): string => '"'.TableSchema::fromClass($class)->tableName.'"',
+            static::recordClasses(),
+        );
+        if ([] !== $tables) {
+            // CASCADE resolves FK order; RESTART IDENTITY rewinds the sequences so BIGSERIAL
+            // ids restart at 1 per test (matching MySQL's TRUNCATE auto-increment reset).
+            static::$pdo->exec('TRUNCATE TABLE '.implode(', ', $tables).' RESTART IDENTITY CASCADE');
+        }
     }
 }

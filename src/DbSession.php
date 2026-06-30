@@ -17,14 +17,14 @@ interface DbSession
     /**
      * Execute a write statement (INSERT / UPDATE / DELETE).
      *
-     * @param array<array-key, scalar|null> $params
+     * @param array<array-key, scalar|BinaryParam|null> $params
      */
     public function exec(string $sql, array $params = []): int;
 
     /**
      * Fetch all rows for a read query.
      *
-     * @param array<array-key, scalar|null> $params
+     * @param array<array-key, scalar|BinaryParam|null> $params
      *
      * @return list<array<string, scalar|null>>
      */
@@ -33,7 +33,7 @@ interface DbSession
     /**
      * Fetch the first row for a read query, or null when no row matches.
      *
-     * @param array<array-key, scalar|null> $params
+     * @param array<array-key, scalar|BinaryParam|null> $params
      *
      * @return array<string, scalar|null>|null
      */
@@ -42,7 +42,7 @@ interface DbSession
     /**
      * Fetch the first column of the first row, or null when no row matches.
      *
-     * @param array<array-key, scalar|null> $params
+     * @param array<array-key, scalar|BinaryParam|null> $params
      */
     public function fetchScalar(string $sql, array $params = []): string | int | float | null;
 
@@ -64,8 +64,10 @@ interface DbSession
     /**
      * Acquire a named advisory lock, execute a callback, then release the lock.
      *
-     * Uses MySQL GET_LOCK / RELEASE_LOCK. Advisory locks are connection-scoped and do not
-     * interact with table or row locks. Safe to nest inside a transaction.
+     * Backed by MySQL GET_LOCK / RELEASE_LOCK or, on a PostgreSQL PDO connection, by
+     * pg_advisory_lock keyed on a hash of $lockName (see PdoDbSession). Advisory locks are
+     * connection-scoped and do not interact with table or row locks. Safe to nest inside a
+     * transaction.
      *
      * $timeoutSeconds controls the wait: 0 = fail immediately if unavailable,
      * positive = wait up to N seconds, -1 = wait indefinitely.

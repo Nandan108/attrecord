@@ -3,7 +3,8 @@
 Lightweight PHP 8.1+ attribute-driven active-record layer.
 
 - Declare schema with PHP attributes — no XML, no YAML, no separate migration files
-- **Emit `CREATE TABLE` directly from the attributes** — single source of truth for column type, defaults, unique keys, indexes, and FK constraints
+- **Emit `CREATE TABLE` directly from the attributes** — single source of truth for column type, defaults, unique keys, indexes, and FK constraints; MySQL/MariaDB **and** PostgreSQL
+- **Dialect-portable** — MySQL/MariaDB and PostgreSQL share one code path for CRUD, batch upserts, eager loading, DDL, and advisory locks; binary columns bind correctly on both (PG `bytea` included)
 - **camelCase PHP / snake_case SQL** via per-column `name:` override (no auto-conversion — [decision documented](docs/design-note-no-name-auto-conversion.md))
 - Dirty-tracking — `save()` only writes changed columns
 - Column casting — map columns to value objects / JSON / custom types via `#[Cast]` attributes ([docs](docs/column-casting.md))
@@ -25,6 +26,20 @@ composer require nandan108/attrecord
 ```
 
 Requires PHP 8.1+. No runtime dependencies.
+
+---
+
+## Documentation
+
+This README is the narrative guide. Deeper references live in [`docs/`](docs/):
+
+- [llm-reference.md](docs/llm-reference.md) — exhaustive, AI-ingestion-oriented reference
+  (every attribute, method signature, enum, dialect difference, and invariant in one place)
+- [ddl-generation.md](docs/ddl-generation.md) — `CREATE TABLE` emission (MySQL + PostgreSQL)
+- [column-casting.md](docs/column-casting.md) — the `#[Cast]` family and `JsonCastable`
+- [where-clause.md](docs/where-clause.md) — the `WhereClause` builder grammar
+- [polymorphic-relations.md](docs/polymorphic-relations.md) — morph relations
+- [design-note-no-name-auto-conversion.md](docs/design-note-no-name-auto-conversion.md) — why no auto snake/camel conversion
 
 ---
 
@@ -426,8 +441,32 @@ $sql = (new MysqlDialect())->buildCreateTable(
 // ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
-Currently MySQL/MariaDB only — `PgsqlDialect::buildCreateTable()` throws; Postgres
-support is Phase 2.
+Both dialects implement it. `PgsqlDialect::buildCreateTable()` emits the PostgreSQL
+equivalent from the same attributes — `BIGSERIAL` for an auto-increment PK, no `UNSIGNED`,
+`BYTEA` for binary, `NUMERIC` for decimal, `BOOLEAN`, `JSONB`, an `Enum` column as `TEXT`
+plus a `CHECK (... IN (...))` constraint, and FK constraints. Because PostgreSQL cannot
+declare secondary indexes or comments inline, those are emitted as trailing `CREATE INDEX`
+and `COMMENT ON` statements in the same (semicolon-separated) batch — safe to run in one
+`PDO::exec()`. Engine/charset/collation table options and a column `ON UPDATE` clause are
+MySQL-isms with no PostgreSQL column-clause equivalent and are not emitted; a `VIRTUAL`
+generated column and the `Set` type are rejected with a `SchemaException`.
+
+```php
+use Nandan108\Attrecord\Dialect\PgsqlDialect;
+
+$sql = (new PgsqlDialect())->buildCreateTable(TableSchema::fromClass(Order::class));
+// CREATE TABLE "orders" (
+//   "id" BIGSERIAL,
+//   "customer_id" BIGINT NOT NULL,
+//   "status" VARCHAR(20) NOT NULL DEFAULT 'pending',
+//   ...
+//   PRIMARY KEY ("id"),
+//   CONSTRAINT "uk_external" UNIQUE ("external_ref"),
+//   CONSTRAINT "fk_orders_customer_id" FOREIGN KEY ("customer_id")
+//     REFERENCES "customers" ("id") ON DELETE CASCADE ON UPDATE RESTRICT
+// );
+// CREATE INDEX "idx_status_date" ON "orders" ("status", "created_at")
+```
 
 ### Attribute fields used in DDL emission
 
@@ -975,9 +1014,11 @@ Throws `MissingLockTierException` if any target class lacks `#[LockTier]`, and
 
 ### Advisory locks
 
-`DbSession::withAdvisoryLock()` wraps `GET_LOCK` / `RELEASE_LOCK` (MySQL/MariaDB) for
-named application-level mutexes. Advisory locks are connection-scoped and do not
-interact with row or table locks — safe to nest inside a transaction.
+`DbSession::withAdvisoryLock()` provides named application-level mutexes — backed by
+`GET_LOCK` / `RELEASE_LOCK` on MySQL/MariaDB, and by `pg_advisory_lock` (keyed on a crc32
+hash of the lock name) on a PostgreSQL PDO connection, where the wait timeout is emulated by
+polling `pg_try_advisory_lock`. Advisory locks are connection-scoped and do not interact
+with row or table locks — safe to nest inside a transaction.
 
 ```php
 $conn = Record::connection();
@@ -1131,6 +1172,35 @@ that has to be remembered everywhere.
 )]
 ```
 
+### Binary columns
+
+`Binary` / `VarBinary` columns hold raw bytes (e.g. an application-minted `BINARY(16)` /
+`BYTEA` UUID primary key). Reads and writes through the normal `save()` / `getOne()` /
+`find()` / `saveAll()` paths handle binary transparently on both MySQL and PostgreSQL.
+
+The handling is **dialect-gated**, so it's invisible to MySQL consumers: on MySQL/MariaDB,
+binary values bind as ordinary byte strings exactly as any other string (so a custom
+`DbSession` that only accepts scalars keeps working). Only when the active dialect reports
+`bindsBinaryAsLob() === true` (PostgreSQL) does `toParam()` wrap binary values in a
+`BinaryParam` so the session can bind them as a `bytea` LOB; reads decode the `bytea` wire
+stream back to raw bytes. Net effect: a non-UTF-8 byte string round-trips correctly on both
+engines, and nothing changes for a MySQL-only deployment.
+
+The one case that needs help is an **ad-hoc `WhereClause` predicate on a binary column**,
+where attrecord has no column metadata to drive the binding. On PostgreSQL, wrap the value in
+`Nandan108\Attrecord\BinaryParam` so the session binds it as binary rather than text (on MySQL
+a plain byte string works, but wrapping is harmless):
+
+```php
+use Nandan108\Attrecord\BinaryParam;
+use Nandan108\Attrecord\WhereClause;
+
+Subject::find(WhereClause::where('uuid', new BinaryParam($rawBytes)));
+```
+
+Binary lookups by **primary key** (`getOne($rawBytes)`, `delete()`) need no wrapping — the PK
+column type is known and the wrapping is applied for you.
+
 ---
 
 ## Relation types
@@ -1186,7 +1256,17 @@ composer test -- --testsuite integration
 
 # All tests
 composer test
+
+# One backend only (the integration suites are tagged by @group)
+composer test -- --testsuite integration --group mysql
+composer test -- --testsuite integration --group pgsql
 ```
+
+Each integration suite is a shared body of test cases (a `…Cases` trait under
+`tests/Integration/Cases/`) bound to two thin concrete classes — one per backend — so the
+**same assertions run against MySQL and PostgreSQL**. Each suite's schema is generated from
+its fixtures' attributes via `buildCreateTable()`, so the DDL producer is exercised on both
+engines on every run. PostgreSQL tests skip (rather than fail) when the container is absent.
 
 Environment variables for integration tests (defaults shown):
 

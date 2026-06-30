@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord\Session;
 
+use Nandan108\Attrecord\BinaryParam;
 use Nandan108\Attrecord\DbSession;
 
 /**
@@ -110,7 +111,7 @@ final class WpDbSession implements DbSession
     {
         $acquired = $this->fetchScalar('SELECT GET_LOCK(?, ?)', [$lockName, $timeoutSeconds]);
         if (1 !== (int) $acquired) {
-            throw new \RuntimeException(sprintf('Could not acquire advisory lock "%s" within %d second(s).', $lockName, $timeoutSeconds));
+            throw new \RuntimeException(\sprintf('Could not acquire advisory lock "%s" within %d second(s).', $lockName, $timeoutSeconds));
         }
         try {
             return $callback();
@@ -152,8 +153,10 @@ final class WpDbSession implements DbSession
             if (null === $param) {
                 return 'NULL';
             }
+            // Unwrap a binary parameter to its raw byte string — MySQL binds binary data
+            // through an ordinary string (%s) parameter.
             /** @psalm-suppress MixedAssignment */
-            $nonNullParams[] = $param;
+            $nonNullParams[] = $param instanceof BinaryParam ? $param->bytes : $param;
 
             return '?';
         }, $sql);

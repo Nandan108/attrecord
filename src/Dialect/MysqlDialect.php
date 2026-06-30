@@ -54,6 +54,13 @@ final class MysqlDialect implements SqlDialect
     }
 
     #[\Override]
+    public function bindsBinaryAsLob(): bool
+    {
+        // MySQL/MariaDB bind raw bytes through an ordinary string parameter.
+        return false;
+    }
+
+    #[\Override]
     public function quoteIdentifier(string $name): string
     {
         return '`'.\str_replace('`', '``', $name).'`';

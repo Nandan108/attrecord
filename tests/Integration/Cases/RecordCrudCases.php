@@ -2,31 +2,27 @@
 
 declare(strict_types=1);
 
-namespace Nandan108\Attrecord\Tests\Integration;
+namespace Nandan108\Attrecord\Tests\Integration\Cases;
 
 use Nandan108\Attrecord\Exception\RecordNotFoundException;
 use Nandan108\Attrecord\Tests\Fixtures\UserRecord;
-use Nandan108\Attrecord\Tests\Support\IntegrationTestCase;
 use Nandan108\Attrecord\WhereClause;
 
-final class RecordCrudTest extends IntegrationTestCase
+/**
+ * Shared CRUD / finder / transaction cases, run against both MySQL and PostgreSQL.
+ *
+ * Raw-SQL fragments use unquoted lowercase identifiers (e.g. `name = ?`, `id > 0`) so they
+ * parse identically on MySQL (backtick) and PostgreSQL (double-quote) without per-backend
+ * quoting. WhereClause-based finders are quoted by the dialect and need no special care.
+ *
+ * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
+ */
+trait RecordCrudCases
 {
-    protected static function createSchema(): void
+    /** @return list<class-string<\Nandan108\Attrecord\Record>> */
+    protected static function recordClasses(): array
     {
-        static::$pdo->exec(<<<SQL
-            CREATE TABLE IF NOT EXISTS `attrecord_users` (
-                `id`     bigint unsigned NOT NULL AUTO_INCREMENT,
-                `name`   varchar(100)    NOT NULL,
-                `email`  varchar(200)    DEFAULT NULL,
-                `active` tinyint(1)      DEFAULT NULL,
-                PRIMARY KEY (`id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            SQL);
-    }
-
-    protected static function truncateTables(): void
-    {
-        static::$pdo->exec('TRUNCATE TABLE `attrecord_users`');
+        return [UserRecord::class];
     }
 
     // -----------------------------------------------------------------
@@ -114,8 +110,8 @@ final class RecordCrudTest extends IntegrationTestCase
         $user->name = 'Alice';
         $user->save();
 
-        // Simulate an external update then verify reload picks it up
-        static::$pdo->exec("UPDATE `attrecord_users` SET `name`='Updated' WHERE `id`={$user->id}");
+        // Simulate an external update then verify reload picks it up.
+        static::$pdo->exec("UPDATE attrecord_users SET name='Updated' WHERE id={$user->id}");
         $user->reload();
 
         $fresh = UserRecord::getOne((int) $user->id);
@@ -156,7 +152,7 @@ final class RecordCrudTest extends IntegrationTestCase
         $all = UserRecord::find();
         $this->assertCount(3, $all);
 
-        $filtered = UserRecord::find('`name` = ?', ['Bob']);
+        $filtered = UserRecord::find('name = ?', ['Bob']);
         $this->assertCount(1, $filtered);
         $this->assertSame('Bob', $filtered->first()?->name);
     }
@@ -167,7 +163,7 @@ final class RecordCrudTest extends IntegrationTestCase
         $u->name = 'Alice';
         $u->save();
 
-        $found = UserRecord::find('`name` = :name', ['name' => 'Alice']);
+        $found = UserRecord::find('name = :name', ['name' => 'Alice']);
         $this->assertCount(1, $found);
     }
 
@@ -177,11 +173,11 @@ final class RecordCrudTest extends IntegrationTestCase
         $u->name = 'Alice';
         $u->save();
 
-        $found = UserRecord::findOne('`name` = ?', ['Alice']);
+        $found = UserRecord::findOne('name = ?', ['Alice']);
         $this->assertNotNull($found);
         $this->assertSame('Alice', $found->name);
 
-        $this->assertNull(UserRecord::findOne('`name` = ?', ['Nobody']));
+        $this->assertNull(UserRecord::findOne('name = ?', ['Nobody']));
     }
 
     public function testCountWhere(): void
@@ -192,8 +188,8 @@ final class RecordCrudTest extends IntegrationTestCase
             $u->save();
         }
 
-        $this->assertSame(2, UserRecord::countWhere('`id` > 0'));
-        $this->assertSame(1, UserRecord::countWhere('`name` = ?', ['Alice']));
+        $this->assertSame(2, UserRecord::countWhere('id > 0'));
+        $this->assertSame(1, UserRecord::countWhere('name = ?', ['Alice']));
     }
 
     public function testDeleteWhere(): void
@@ -204,9 +200,9 @@ final class RecordCrudTest extends IntegrationTestCase
             $u->save();
         }
 
-        $deleted = UserRecord::deleteWhere('`name` != ?', ['Alice']);
+        $deleted = UserRecord::deleteWhere('name != ?', ['Alice']);
         $this->assertSame(2, $deleted);
-        $this->assertSame(1, UserRecord::countWhere('`id` > 0'));
+        $this->assertSame(1, UserRecord::countWhere('id > 0'));
     }
 
     // -----------------------------------------------------------------
@@ -239,7 +235,7 @@ final class RecordCrudTest extends IntegrationTestCase
         } catch (\RuntimeException) {
         }
 
-        $this->assertSame(0, UserRecord::countWhere('`id` > 0'));
+        $this->assertSame(0, UserRecord::countWhere('id > 0'));
     }
 
     // -----------------------------------------------------------------
