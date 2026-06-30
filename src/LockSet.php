@@ -64,12 +64,25 @@ final class LockSet
                 continue;
             }
 
-            $placeholders = implode(', ', array_fill(0, count($ids), '?'));
+            // Quote identifiers via the target class's own dialect so the FOR UPDATE read is
+            // portable (backticks on MySQL/MariaDB, double quotes on PostgreSQL).
+            $dialect = $class::connection()->dialect;
             $pk = $schema->pk;
-            $table = $schema->tableName;
-            $sql = "SELECT * FROM `{$table}` WHERE `{$pk}` IN ({$placeholders}) ORDER BY `{$pk}` ASC FOR UPDATE";
+            $qt = $dialect->quoteIdentifier($schema->tableName);
+            $qpk = $dialect->quoteIdentifier($pk);
+            $placeholders = implode(', ', array_fill(0, count($ids), '?'));
+            $sql = "SELECT * FROM {$qt} WHERE {$qpk} IN ({$placeholders}) ORDER BY {$qpk} ASC FOR UPDATE";
 
-            $rows = $session->fetchAll($sql, $ids);
+            // Bind the ids through the serializer so a binary PK is wrapped for the dialects
+            // that need it (PostgreSQL bytea); int/string PKs and MySQL pass through unchanged.
+            $pkColumn = $schema->columns[$pk];
+            $bindBinaryAsLob = $dialect->bindsBinaryAsLob();
+            $boundIds = array_map(
+                static fn (int | string $id): mixed => ColumnSerializer::toParam($id, $pkColumn, $bindBinaryAsLob),
+                $ids,
+            );
+
+            $rows = $session->fetchAll($sql, $boundIds);
 
             $records = [];
             foreach ($rows as $row) {
