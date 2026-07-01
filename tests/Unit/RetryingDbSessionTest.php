@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord\Tests\Unit;
 
 use Nandan108\Attrecord\DbSession;
-use Nandan108\Attrecord\RetryableErrorClassifier;
 use Nandan108\Attrecord\Session\RetryingDbSession;
 use PHPUnit\Framework\TestCase;
 
@@ -95,7 +94,7 @@ final class RetryingDbSessionTest extends TestCase
 }
 
 /** @internal Controllable DbSession that fails transactional() a configurable number of times. */
-final class FlakyDbSession implements DbSession, RetryableErrorClassifier
+final class FlakyDbSession implements DbSession
 {
     public int $attempts = 0;
     public int $execCalls = 0;

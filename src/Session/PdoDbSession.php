@@ -6,7 +6,6 @@ namespace Nandan108\Attrecord\Session;
 
 use Nandan108\Attrecord\BinaryParam;
 use Nandan108\Attrecord\DbSession;
-use Nandan108\Attrecord\RetryableErrorClassifier;
 
 /**
  * DbSession implementation backed by a PHP PDO connection.
@@ -16,7 +15,7 @@ use Nandan108\Attrecord\RetryableErrorClassifier;
  *
  * @api
  */
-final class PdoDbSession implements DbSession, RetryableErrorClassifier
+final class PdoDbSession implements DbSession
 {
     private readonly string $driver;
 

@@ -6,7 +6,6 @@ namespace Nandan108\Attrecord\Session;
 
 use Nandan108\Attrecord\BinaryParam;
 use Nandan108\Attrecord\DbSession;
-use Nandan108\Attrecord\RetryableErrorClassifier;
 
 /**
  * A {@see DbSession} decorator that retries the **outer** transaction on transient conflicts
@@ -28,8 +27,7 @@ use Nandan108\Attrecord\RetryableErrorClassifier;
  * re-run (pure-SQL, or side-effect-free outside the DB).
  *
  * Which errors count as retryable comes from `$retryable` if given, else from the wrapped
- * session when it implements {@see RetryableErrorClassifier} (attrecord's sessions do). If
- * neither applies, nothing is retried.
+ * session's {@see DbSession::isRetryableTransactionError()}.
  *
  * @api
  */
@@ -84,12 +82,9 @@ final class RetryingDbSession implements DbSession
 
     private function isRetryable(\Throwable $throwable): bool
     {
-        if (null !== $this->retryable) {
-            return ($this->retryable)($throwable);
-        }
-
-        return $this->inner instanceof RetryableErrorClassifier
-            && $this->inner->isRetryableTransactionError($throwable);
+        return null !== $this->retryable
+            ? ($this->retryable)($throwable)
+            : $this->inner->isRetryableTransactionError($throwable);
     }
 
     /** Exponential backoff (capped) with up-to-50% jitter. */
@@ -160,5 +155,11 @@ final class RetryingDbSession implements DbSession
     public function isDuplicateKeyError(\Throwable $throwable): bool
     {
         return $this->inner->isDuplicateKeyError($throwable);
+    }
+
+    #[\Override]
+    public function isRetryableTransactionError(\Throwable $throwable): bool
+    {
+        return $this->inner->isRetryableTransactionError($throwable);
     }
 }

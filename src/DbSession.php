@@ -87,4 +87,16 @@ interface DbSession
 
     /** Return whether the given throwable represents a duplicate-key violation. */
     public function isDuplicateKeyError(\Throwable $throwable): bool;
+
+    /**
+     * Return whether the given throwable is a transient transaction conflict that is safe to
+     * retry by re-running the transaction — a deadlock, serialization failure, lock-wait
+     * timeout, `SQLITE_BUSY`, etc. (as opposed to a permanent failure like a constraint
+     * violation or a syntax error).
+     *
+     * The default classification should **include deadlocks** — most applications want them
+     * retried. Used by {@see Session\RetryingDbSession}; a consumer with strict lock-order
+     * discipline that would rather surface a deadlock can pass an override predicate there.
+     */
+    public function isRetryableTransactionError(\Throwable $throwable): bool;
 }

@@ -6,7 +6,6 @@ namespace Nandan108\Attrecord\Session;
 
 use Nandan108\Attrecord\BinaryParam;
 use Nandan108\Attrecord\DbSession;
-use Nandan108\Attrecord\RetryableErrorClassifier;
 
 /**
  * DbSession implementation backed by a PHP mysqli connection.
@@ -17,7 +16,7 @@ use Nandan108\Attrecord\RetryableErrorClassifier;
  *
  * @api
  */
-final class MysqliDbSession implements DbSession, RetryableErrorClassifier
+final class MysqliDbSession implements DbSession
 {
     private int $txDepth = 0;
 

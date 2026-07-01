@@ -6,7 +6,6 @@ namespace Nandan108\Attrecord\Session;
 
 use Nandan108\Attrecord\BinaryParam;
 use Nandan108\Attrecord\DbSession;
-use Nandan108\Attrecord\RetryableErrorClassifier;
 
 /**
  * DbSession implementation backed by the WordPress \wpdb global.
@@ -20,7 +19,7 @@ use Nandan108\Attrecord\RetryableErrorClassifier;
  *
  * @api
  */
-final class WpDbSession implements DbSession, RetryableErrorClassifier
+final class WpDbSession implements DbSession
 {
     private int $txDepth = 0;
 

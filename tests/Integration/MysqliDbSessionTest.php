@@ -132,7 +132,6 @@ final class MysqliDbSessionTest extends TestCase
     public function testIsRetryableTransactionError(): void
     {
         $session = Record::connection()->session;
-        $this->assertInstanceOf(\Nandan108\Attrecord\RetryableErrorClassifier::class, $session);
 
         // A mysqli_sql_exception carries the errno via getCode() — 1213/1205/1020 are retryable.
         $this->assertTrue($session->isRetryableTransactionError(new \mysqli_sql_exception('Deadlock found', 1213)));
