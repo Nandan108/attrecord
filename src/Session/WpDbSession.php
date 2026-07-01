@@ -6,6 +6,7 @@ namespace Nandan108\Attrecord\Session;
 
 use Nandan108\Attrecord\BinaryParam;
 use Nandan108\Attrecord\DbSession;
+use Nandan108\Attrecord\RetryableErrorClassifier;
 
 /**
  * DbSession implementation backed by the WordPress \wpdb global.
@@ -19,7 +20,7 @@ use Nandan108\Attrecord\DbSession;
  *
  * @api
  */
-final class WpDbSession implements DbSession
+final class WpDbSession implements DbSession, RetryableErrorClassifier
 {
     private int $txDepth = 0;
 
@@ -131,6 +132,18 @@ final class WpDbSession implements DbSession
     {
         return str_contains($throwable->getMessage(), '1062 Duplicate entry')
             || str_contains($this->wpdb->last_error, '1062 Duplicate entry');
+    }
+
+    #[\Override]
+    public function isRetryableTransactionError(\Throwable $throwable): bool
+    {
+        // wpdb surfaces the raw MySQL error text; match the transient-conflict phrases (deadlock,
+        // lock-wait timeout, MariaDB MVCC re-read) in the throwable or wpdb's last_error.
+        $haystack = $throwable->getMessage().' '.$this->wpdb->last_error;
+
+        return str_contains($haystack, 'Deadlock found')
+            || str_contains($haystack, 'Lock wait timeout exceeded')
+            || str_contains($haystack, 'Record has changed since last read');
     }
 
     // -----------------------------------------------------------------

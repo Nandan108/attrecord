@@ -6,6 +6,7 @@ namespace Nandan108\Attrecord\Session;
 
 use Nandan108\Attrecord\BinaryParam;
 use Nandan108\Attrecord\DbSession;
+use Nandan108\Attrecord\RetryableErrorClassifier;
 
 /**
  * DbSession implementation backed by a PHP PDO connection.
@@ -15,7 +16,7 @@ use Nandan108\Attrecord\DbSession;
  *
  * @api
  */
-final class PdoDbSession implements DbSession
+final class PdoDbSession implements DbSession, RetryableErrorClassifier
 {
     private readonly string $driver;
 
@@ -200,5 +201,27 @@ final class PdoDbSession implements DbSession
         // MySQL/MariaDB report the generic integrity-violation SQLSTATE 23000 for a duplicate
         // key; PostgreSQL reports the specific unique_violation code 23505.
         return '23000' === $code || '23505' === $code;
+    }
+
+    #[\Override]
+    public function isRetryableTransactionError(\Throwable $throwable): bool
+    {
+        if (!$throwable instanceof \PDOException) {
+            return false;
+        }
+
+        $sqlState = (string) $throwable->getCode();
+        /** @var array{0?: string, 1?: int|string, 2?: string}|null $info */
+        $info = $throwable->errorInfo;
+        $driverCode = \is_array($info) && isset($info[1]) ? (int) $info[1] : null;
+
+        return match ($this->driver) {
+            // 40001 serialization_failure, 40P01 deadlock_detected.
+            'pgsql' => \in_array($sqlState, ['40001', '40P01'], true),
+            // SQLITE_BUSY (5) / SQLITE_LOCKED (6); message is the reliable cross-version signal.
+            'sqlite' => \in_array($driverCode, [5, 6], true) || \str_contains($throwable->getMessage(), 'locked'),
+            // MySQL/MariaDB: 1213 deadlock, 1205 lock-wait timeout, 1020 MariaDB MVCC re-read.
+            default => \in_array($driverCode, [1213, 1205, 1020], true),
+        };
     }
 }

@@ -128,4 +128,15 @@ final class MysqliDbSessionTest extends TestCase
             $this->assertTrue($session->isDuplicateKeyError($e));
         }
     }
+
+    public function testIsRetryableTransactionError(): void
+    {
+        $session = Record::connection()->session;
+        $this->assertInstanceOf(\Nandan108\Attrecord\RetryableErrorClassifier::class, $session);
+
+        // A mysqli_sql_exception carries the errno via getCode() — 1213/1205/1020 are retryable.
+        $this->assertTrue($session->isRetryableTransactionError(new \mysqli_sql_exception('Deadlock found', 1213)));
+        $this->assertTrue($session->isRetryableTransactionError(new \mysqli_sql_exception('Lock wait timeout exceeded', 1205)));
+        $this->assertFalse($session->isRetryableTransactionError(new \mysqli_sql_exception('Duplicate entry', 1062)));
+    }
 }

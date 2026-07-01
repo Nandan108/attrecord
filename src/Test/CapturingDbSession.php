@@ -6,6 +6,7 @@ namespace Nandan108\Attrecord\Test;
 
 use Nandan108\Attrecord\BinaryParam;
 use Nandan108\Attrecord\DbSession;
+use Nandan108\Attrecord\RetryableErrorClassifier;
 
 /**
  * DbSession implementation that captures SQL statements without touching a real database.
@@ -26,7 +27,7 @@ use Nandan108\Attrecord\DbSession;
  *
  * @internal  test utility — do not use in production code
  */
-final class CapturingDbSession implements DbSession
+final class CapturingDbSession implements DbSession, RetryableErrorClassifier
 {
     /** @var list<array{sql: string, params: list<scalar|null>}> */
     private array $log = [];
@@ -140,6 +141,12 @@ final class CapturingDbSession implements DbSession
 
     #[\Override]
     public function isDuplicateKeyError(\Throwable $throwable): bool
+    {
+        return false;
+    }
+
+    #[\Override]
+    public function isRetryableTransactionError(\Throwable $throwable): bool
     {
         return false;
     }

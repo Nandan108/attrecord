@@ -6,6 +6,7 @@ namespace Nandan108\Attrecord\Session;
 
 use Nandan108\Attrecord\BinaryParam;
 use Nandan108\Attrecord\DbSession;
+use Nandan108\Attrecord\RetryableErrorClassifier;
 
 /**
  * DbSession implementation backed by a PHP mysqli connection.
@@ -16,7 +17,7 @@ use Nandan108\Attrecord\DbSession;
  *
  * @api
  */
-final class MysqliDbSession implements DbSession
+final class MysqliDbSession implements DbSession, RetryableErrorClassifier
 {
     private int $txDepth = 0;
 
@@ -137,6 +138,15 @@ final class MysqliDbSession implements DbSession
         return 1062 === $throwable->getCode()
             || 1062 === $this->conn->errno
             || str_contains($throwable->getMessage(), 'Duplicate entry');
+    }
+
+    #[\Override]
+    public function isRetryableTransactionError(\Throwable $throwable): bool
+    {
+        // mysqli_sql_exception carries the MySQL errno via getCode(): 1213 deadlock, 1205
+        // lock-wait timeout, 1020 MariaDB "record has changed since last read".
+        return \in_array($throwable->getCode(), [1213, 1205, 1020], true)
+            || \in_array($this->conn->errno, [1213, 1205, 1020], true);
     }
 
     private function prepare(string $sql): \mysqli_stmt

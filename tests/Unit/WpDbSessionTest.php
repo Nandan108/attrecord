@@ -130,4 +130,19 @@ final class WpDbSessionTest extends TestCase
         $this->expectExceptionMessage('wpdb: table missing');
         $this->session->exec('SELECT 1');
     }
+
+    public function testIsRetryableTransactionError(): void
+    {
+        // From the throwable message …
+        $this->assertTrue($this->session->isRetryableTransactionError(
+            new \RuntimeException('wpdb: Deadlock found when trying to get lock; try restarting transaction'),
+        ));
+
+        // … or from wpdb::$last_error.
+        $this->wpdb->last_error = 'Lock wait timeout exceeded; try restarting transaction';
+        $this->assertTrue($this->session->isRetryableTransactionError(new \RuntimeException('generic')));
+
+        $this->wpdb->last_error = '';
+        $this->assertFalse($this->session->isRetryableTransactionError(new \RuntimeException('some other error')));
+    }
 }
