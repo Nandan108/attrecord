@@ -3,6 +3,15 @@
 Deferred / potential features. Nothing here is currently needed by a consumer; captured so
 the decisions aren't lost.
 
+## Planned: concurrency & SQLite (0.2.0)
+
+A concurrency-themed release is designed in [arch-concurrency.md](arch-concurrency.md): a SQLite
+dialect, per-backend connection hardening (WAL + `busy_timeout`), a `RetryingDbSession` decorator
++ `isRetryableTransactionError()` for transient-conflict retry (deadlock / serialization-failure /
+lock-wait / `SQLITE_BUSY`), and `FOR UPDATE` dialect-gating. Positioned as "production locking
+reality from SQLite to MySQL to PG, as opt-in/prunable composition." See that note for the pinned
+decisions.
+
 ## Migration system — *biggest missing feature; deferred by design*
 
 Today the DDL producer emits **fresh-install** `CREATE TABLE` only. There is no schema diffing,
