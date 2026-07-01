@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-01
+
+### Fixed
+
+- `MysqliDbSession::isDuplicateKeyError()` now detects duplicate-key violations via the thrown
+  `mysqli_sql_exception`'s error code (`getCode()`), not `$conn->errno` — the latter is not
+  reliably populated after a prepared-statement failure across MySQL/MariaDB versions, causing
+  false negatives on some servers.
+
 ## [0.1.0] - 2026-06-30
 
 Initial public release.
@@ -33,5 +42,6 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Nandan108/attrecord/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Nandan108/attrecord/releases/tag/v0.1.0
