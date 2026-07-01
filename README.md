@@ -20,7 +20,7 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
 - Deadlock-safe locking helpers (`LockTier`, `LockSet`, `Transaction`) + advisory locks
 - Unique-key aware upserts — single (`upsertByUniqueKey`) and bulk (`RecordSet::upsertAllByUniqueKey`), with an optional **auto-increment-burn-free** mode; plus `updateByUniqueKey`
 - Constraint-only foreign keys via `#[ForeignKey]` — declare an FK whose target has no Record (or that you don't want to hydrate)
-- Three included `DbSession` adapters: PDO, mysqli, and WordPress `wpdb`
+- Three included `DbSession` adapters: **PDO** (works with MySQL, MariaDB, and PostgreSQL), plus MySQL/MariaDB-only **mysqli** and WordPress **`wpdb`**
 - Psalm-clean at level 1
 
 ---
@@ -1042,18 +1042,39 @@ $conn->session->withAdvisoryLock(
 
 ## DB session adapters
 
-All three implement `DbSession` and can be swapped without changing application code.
+All three implement `DbSession` and can be swapped without changing application code. Which
+database you talk to is determined by the **session** (the connection) and the **dialect** you
+pair it with — not by three different "MySQL adapters":
 
-### PDO (recommended for new projects)
+- **`PdoDbSession` is the cross-database adapter.** PDO is driver-agnostic, so this is how you
+  connect to **PostgreSQL** as well as MySQL/MariaDB — pair it with the matching `SqlDialect`.
+  It even adapts internally per driver (e.g. `pg_advisory_lock` vs `GET_LOCK`, `bytea`
+  binding). The whole PostgreSQL test suite runs through it.
+- **`MysqliDbSession` and `WpDbSession` are MySQL/MariaDB only** — the `mysqli` and WordPress
+  `wpdb` extensions speak only MySQL, so there is no PostgreSQL equivalent to add (that's what
+  `PdoDbSession` is for).
+
+> End-to-end support is bounded by the shipped **dialects** — MySQL/MariaDB and PostgreSQL.
+> `PdoDbSession` can open a connection to any PDO driver (SQLite, SQL Server, …), but using one
+> as a full attrecord backend requires a matching `SqlDialect` implementation, which is not
+> included for anything beyond MySQL/MariaDB and PostgreSQL.
+
+### PDO — recommended (MySQL, MariaDB, PostgreSQL)
 
 ```php
 use Nandan108\Attrecord\Session\PdoDbSession;
+use Nandan108\Attrecord\Dialect\{MysqlDialect, PgsqlDialect};
 
+// MySQL / MariaDB
 $pdo  = new PDO('mysql:host=127.0.0.1;dbname=shop', 'user', 'pass');
 $conn = new Connection(new PdoDbSession($pdo), new MysqlDialect());
+
+// PostgreSQL — same adapter, paired with PgsqlDialect
+$pdo  = new PDO('pgsql:host=127.0.0.1;dbname=shop', 'user', 'pass');
+$conn = new Connection(new PdoDbSession($pdo), new PgsqlDialect());
 ```
 
-### mysqli
+### mysqli (MySQL/MariaDB)
 
 ```php
 use Nandan108\Attrecord\Session\MysqliDbSession;
@@ -1062,7 +1083,7 @@ $mysqli = new mysqli('127.0.0.1', 'user', 'pass', 'shop');
 $conn   = new Connection(new MysqliDbSession($mysqli), new MysqlDialect());
 ```
 
-### WordPress wpdb
+### WordPress wpdb (MySQL/MariaDB)
 
 ```php
 use Nandan108\Attrecord\Session\WpDbSession;
