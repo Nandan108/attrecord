@@ -13,11 +13,12 @@ use Nandan108\Attrecord\Tests\Fixtures\UpsertByUniqueKeyRecord;
  *  - Record::upsertByUniqueKey(..., preserveAutoIncrement: true)
  *  - RecordSet::upsertAllByUniqueKey()
  *
- * "Burn-free" is verified by id contiguity: the atomic upsert (MySQL INSERT … ON DUPLICATE
- * KEY UPDATE / PostgreSQL INSERT … ON CONFLICT DO UPDATE) allocates and discards an
- * auto-increment value on each conflicting write, leaving a gap; the burn-free paths must not.
+ * "Burn-free" is verified by id contiguity: the atomic upsert (MySQL ON DUPLICATE KEY UPDATE,
+ * PostgreSQL and SQLite ON CONFLICT DO UPDATE) allocates and discards an auto-increment value on
+ * each conflicting write, leaving a gap — the burn-free paths must not. Runs on all three
+ * backends.
  *
- * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
+ * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase|\Nandan108\Attrecord\Tests\Support\SqliteIntegrationTestCase
  */
 trait UpsertByUniqueKeyCases
 {
@@ -54,8 +55,9 @@ trait UpsertByUniqueKeyCases
 
     public function testDefaultUpsertBurnsAutoIncrement(): void
     {
-        // Contrast: the atomic upsert default DOES burn the auto-increment on conflict (true on
-        // both MySQL and PostgreSQL — the sequence advances before the conflict is resolved).
+        // Contrast: the atomic upsert default DOES burn the auto-increment on conflict — the
+        // insert attempt advances the counter before the conflict is resolved to an UPDATE. True
+        // on MySQL/MariaDB, PostgreSQL, and SQLite (with AUTOINCREMENT) alike.
         $a = new UpsertByUniqueKeyRecord();
         $a->code = 'alpha';
         $a->name = 'Alpha';

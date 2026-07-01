@@ -22,8 +22,9 @@ use Nandan108\Attrecord\UpsertSql;
  * `X'hex'`; booleans are `1`/`0`; `INSERT … ON CONFLICT DO UPDATE` handles upserts.
  *
  * On connection open it applies WAL journal mode, a busy timeout, and foreign-key enforcement
- * (all configurable) — see {@see connectionInitStatements()}. `lastInsertId()` is reliable, so
- * no RETURNING suffix is needed.
+ * (all configurable) — see {@see connectionInitStatements()}. Generated PKs are read back via
+ * RETURNING (SQLite 3.35+), since lastInsertId() reports only the last rowid of a multi-row
+ * INSERT.
  *
  * @api
  */
@@ -100,7 +101,10 @@ final class SqliteDialect implements SqlDialect
     #[\Override]
     public function insertReturningSuffix(string $quotedPkColumn): string
     {
-        return '';
+        // Use RETURNING (SQLite 3.35+) rather than lastInsertId(): for a multi-row INSERT SQLite
+        // returns the *last* rowid, which would break RecordSet::saveAll()'s first-id-based range
+        // back-fill. RETURNING yields every generated id directly.
+        return "RETURNING {$quotedPkColumn}";
     }
 
     #[\Override]

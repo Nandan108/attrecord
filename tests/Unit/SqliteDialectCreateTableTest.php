@@ -194,7 +194,7 @@ final class SqliteDialectCreateTableTest extends TestCase
     {
         $this->assertSame('', $this->dialect->forUpdateClause());
         $this->assertTrue($this->dialect->bindsBinaryAsLob());
-        $this->assertSame('', $this->dialect->insertReturningSuffix('"id"'));
+        $this->assertSame('RETURNING "id"', $this->dialect->insertReturningSuffix('"id"'));
     }
 }
 
