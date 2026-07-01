@@ -28,8 +28,10 @@ jobs:
           - { php: '8.4', mysql: 'mariadb:11.4',  pgsql: 'postgres:17' }
 
     services:
-      # One service definition serves any MySQL/MariaDB image: the MariaDB images accept the
-      # legacy MYSQL_* env vars too, and `mysqladmin ping` exists in both image families.
+      # No container health checks: there is no single client-binary health command that works
+      # across mysql:8.x AND mariadb 10.11/11.4 (the mysql* client symlinks are being phased out
+      # in MariaDB 11.x). Readiness is polled from the job via PDO instead — see "Wait for
+      # databases". The MariaDB images accept the legacy MYSQL_* env vars, so one block serves all.
       db_mysql:
         image: ${{ matrix.mysql }}
         env:
@@ -37,11 +39,6 @@ jobs:
           MYSQL_DATABASE: attrecord_test
         ports:
           - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
-          --health-interval=5s
-          --health-timeout=5s
-          --health-retries=30
       db_pgsql:
         image: ${{ matrix.pgsql }}
         env:
@@ -49,11 +46,6 @@ jobs:
           POSTGRES_DB: attrecord_test
         ports:
           - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U postgres"
-          --health-interval=5s
-          --health-timeout=5s
-          --health-retries=30
 
     steps:
       - uses: actions/checkout@v4
@@ -67,6 +59,23 @@ jobs:
 
       - name: Install dependencies
         run: composer update --prefer-dist --no-progress --no-interaction
+
+      - name: Wait for databases
+        run: |
+          php -r '
+            $deadline = time() + 90;
+            $wait = function (string $dsn, string $user, string $pass, string $label) use ($deadline): void {
+              while (true) {
+                try { new PDO($dsn, $user, $pass); echo "$label ready\n"; return; }
+                catch (\Throwable $e) {
+                  if (time() >= $deadline) { fwrite(STDERR, "$label not ready: {$e->getMessage()}\n"); exit(1); }
+                  usleep(500000);
+                }
+              }
+            };
+            $wait("mysql:host=127.0.0.1;port=3306", "root", "root", "MySQL");
+            $wait("pgsql:host=127.0.0.1;port=5432;dbname=attrecord_test", "postgres", "postgres", "PostgreSQL");
+          '
 
       - name: Run test suite (MySQL + PostgreSQL)
         run: composer test
@@ -115,11 +124,6 @@ jobs:
           MYSQL_DATABASE: attrecord_test
         ports:
           - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
-          --health-interval=5s
-          --health-timeout=5s
-          --health-retries=30
       db_pgsql:
         image: postgres:16
         env:
@@ -127,11 +131,6 @@ jobs:
           POSTGRES_DB: attrecord_test
         ports:
           - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U postgres"
-          --health-interval=5s
-          --health-timeout=5s
-          --health-retries=30
 
     steps:
       - uses: actions/checkout@v4
@@ -145,6 +144,23 @@ jobs:
 
       - name: Install dependencies
         run: composer update --prefer-dist --no-progress --no-interaction
+
+      - name: Wait for databases
+        run: |
+          php -r '
+            $deadline = time() + 90;
+            $wait = function (string $dsn, string $user, string $pass, string $label) use ($deadline): void {
+              while (true) {
+                try { new PDO($dsn, $user, $pass); echo "$label ready\n"; return; }
+                catch (\Throwable $e) {
+                  if (time() >= $deadline) { fwrite(STDERR, "$label not ready: {$e->getMessage()}\n"); exit(1); }
+                  usleep(500000);
+                }
+              }
+            };
+            $wait("mysql:host=127.0.0.1;port=3306", "root", "root", "MySQL");
+            $wait("pgsql:host=127.0.0.1;port=5432;dbname=attrecord_test", "postgres", "postgres", "PostgreSQL");
+          '
 
       - name: Run tests with coverage
         run: ./vendor/bin/phpunit -c phpunit.xml.dist --coverage-clover coverage/clover.xml

@@ -78,7 +78,11 @@ final class TransactionTest extends TestCase
     #[RunInSeparateProcess]
     public function testAssertLockedEnforcedWhenEnabled(): void
     {
-        define('ATTRECORD_LOCK_ASSERTIONS', true);
+        // Define via a dynamic name so Psalm (allConstantsGlobal=true) does not fold the value
+        // into its global view — otherwise `!ATTRECORD_LOCK_ASSERTIONS` in Transaction.php gets
+        // flagged as "always false". Runtime behaviour is identical.
+        $constant = 'ATTRECORD_LOCK_ASSERTIONS';
+        \define($constant, true);
 
         Record::setConnection(new Connection(new CapturingDbSession(), new MysqlDialect()));
         TableSchema::clearCache();
