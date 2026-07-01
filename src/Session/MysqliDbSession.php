@@ -130,8 +130,13 @@ final class MysqliDbSession implements DbSession
     #[\Override]
     public function isDuplicateKeyError(\Throwable $throwable): bool
     {
-        return 1062 === $this->conn->errno
-            || str_contains($throwable->getMessage(), '1062 Duplicate entry');
+        // Prefer the thrown exception's code: a mysqli_sql_exception from a *prepared-statement*
+        // failure carries errno 1062, whereas $this->conn->errno is not reliably populated for
+        // statement-level errors across MySQL/MariaDB versions. The message is "Duplicate entry
+        // '…' for key '…'" (no numeric prefix), so match on that phrase, not "1062 …".
+        return 1062 === $throwable->getCode()
+            || 1062 === $this->conn->errno
+            || str_contains($throwable->getMessage(), 'Duplicate entry');
     }
 
     private function prepare(string $sql): \mysqli_stmt
