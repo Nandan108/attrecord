@@ -120,6 +120,12 @@ final class MysqlDialect implements SqlDialect
     }
 
     #[\Override]
+    public function forUpdateClause(): string
+    {
+        return 'FOR UPDATE';
+    }
+
+    #[\Override]
     public function escapeLikeWildcards(string $literal): string
     {
         return \str_replace(['\\', '%', '_'], ['\\\\', '\%', '\_'], $literal);

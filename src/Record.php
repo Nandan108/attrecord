@@ -307,9 +307,11 @@ abstract class Record
 
         $qt = static::qi($schema->tableName);
         if ($forUpdate) {
-            // Deadlock prevention: always lock in ascending PK order
+            // Deadlock prevention: always lock in ascending PK order. The row-locking clause is
+            // dialect-provided ('FOR UPDATE' on MySQL/PG; '' where the engine has no such clause).
             $qpk = static::qi($schema->pk);
-            $sql = "SELECT * FROM {$qt} {$whereClause} ORDER BY {$qpk} ASC FOR UPDATE";
+            $forUpdateClause = static::connection()->dialect->forUpdateClause();
+            $sql = trim("SELECT * FROM {$qt} {$whereClause} ORDER BY {$qpk} ASC {$forUpdateClause}");
         } else {
             $sql = "SELECT * FROM {$qt} {$whereClause} {$orderByLimit}";
         }
@@ -1216,9 +1218,9 @@ abstract class Record
         $qt = $dialect->quoteIdentifier($table);
         $qpk = $dialect->quoteIdentifier($pk);
         $orderPart = $forUpdate ? "ORDER BY {$qpk} ASC " : '';
-        $forUpdatePart = $forUpdate ? 'FOR UPDATE' : '';
+        $forUpdatePart = $forUpdate ? $dialect->forUpdateClause() : '';
 
-        return "SELECT * FROM {$qt} WHERE {$qpk} = ? {$orderPart}{$forUpdatePart}";
+        return rtrim("SELECT * FROM {$qt} WHERE {$qpk} = ? {$orderPart}{$forUpdatePart}");
     }
 
     private function refreshSnapshot(TableSchema $schema): void

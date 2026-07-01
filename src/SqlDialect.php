@@ -78,6 +78,16 @@ interface SqlDialect
     public function insertReturningSuffix(string $quotedPkColumn): string;
 
     /**
+     * The row-locking clause for a `SELECT … FOR UPDATE` read.
+     *
+     * Return `'FOR UPDATE'` for engines with row-level pessimistic locking (MySQL/MariaDB,
+     * PostgreSQL). Return `''` for engines that have no such clause (SQLite serializes writers
+     * at the database level, so there is nothing to acquire per-row) — callers append this to
+     * the ORDER BY, so an empty string simply yields a plain ordered SELECT.
+     */
+    public function forUpdateClause(): string;
+
+    /**
      * Build a plain bulk INSERT for new records (no known PK).
      *
      * @param string             $tableName   Unquoted table name

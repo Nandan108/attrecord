@@ -71,7 +71,8 @@ final class LockSet
             $qt = $dialect->quoteIdentifier($schema->tableName);
             $qpk = $dialect->quoteIdentifier($pk);
             $placeholders = implode(', ', array_fill(0, count($ids), '?'));
-            $sql = "SELECT * FROM {$qt} WHERE {$qpk} IN ({$placeholders}) ORDER BY {$qpk} ASC FOR UPDATE";
+            $forUpdateClause = $dialect->forUpdateClause();
+            $sql = trim("SELECT * FROM {$qt} WHERE {$qpk} IN ({$placeholders}) ORDER BY {$qpk} ASC {$forUpdateClause}");
 
             // Bind the ids through the serializer so a binary PK is wrapped for the dialects
             // that need it (PostgreSQL bytea); int/string PKs and MySQL pass through unchanged.
