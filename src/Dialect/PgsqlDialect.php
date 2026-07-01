@@ -102,6 +102,13 @@ final class PgsqlDialect implements SqlDialect
         return 'FOR UPDATE';
     }
 
+    /** @return list<string> */
+    #[\Override]
+    public function connectionInitStatements(): array
+    {
+        return [];
+    }
+
     #[\Override]
     public function escapeLikeWildcards(string $literal): string
     {

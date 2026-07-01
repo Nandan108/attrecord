@@ -88,6 +88,19 @@ interface SqlDialect
     public function forUpdateClause(): string;
 
     /**
+     * Statements to run once when a connection is opened, to bring it to a sane baseline for
+     * this engine (e.g. SQLite `PRAGMA journal_mode=WAL`, `PRAGMA busy_timeout=…`,
+     * `PRAGMA foreign_keys=ON`). {@see Connection} executes these on construction.
+     *
+     * This is *declared* here (as data) rather than executed by the dialect, so the dialect
+     * stays a pure SQL-string strategy with no connection/I-O of its own. Return an empty list
+     * when the engine needs no such setup (MySQL/MariaDB and PostgreSQL, by default).
+     *
+     * @return list<string>
+     */
+    public function connectionInitStatements(): array;
+
+    /**
      * Build a plain bulk INSERT for new records (no known PK).
      *
      * @param string             $tableName   Unquoted table name

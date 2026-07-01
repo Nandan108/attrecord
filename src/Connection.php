@@ -17,5 +17,11 @@ final class Connection
         public readonly DbSession $session,
         public readonly SqlDialect $dialect,
     ) {
+        // Bring the freshly-opened connection to the dialect's baseline (e.g. SQLite
+        // WAL / busy_timeout / foreign_keys). Empty for MySQL/MariaDB and PostgreSQL, so this
+        // is a no-op there.
+        foreach ($dialect->connectionInitStatements() as $statement) {
+            $session->exec($statement);
+        }
     }
 }
