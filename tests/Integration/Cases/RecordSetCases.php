@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord\Tests\Integration\Cases;
 
+use Nandan108\Attrecord\Exception\AttrecordException;
 use Nandan108\Attrecord\RecordSet;
 use Nandan108\Attrecord\Tests\Fixtures\DdlGeneratedColumnRecord;
 use Nandan108\Attrecord\Tests\Fixtures\PostRecord;
@@ -173,6 +174,105 @@ trait RecordSetCases
         $this->assertTrue($ra->active, 'A.active must survive — A never sent it');
         $this->assertSame('bob@example.com', $rb->email, 'B.email must survive — B never sent it, though A did');
         $this->assertFalse($rb->active, 'B.active must survive — B never sent it');
+    }
+
+    public function testSaveAllChunkedInsertsUpdatesAndBackfillsAcrossChunks(): void
+    {
+        // Seed two rows to update later.
+        $a = new UserRecord();
+        $a->name = 'Alice';
+        $a->email = 'alice@example.com';
+        $a->active = true;
+        $a->save();
+        $b = new UserRecord();
+        $b->name = 'Bob';
+        $b->email = 'bob@example.com';
+        $b->active = false;
+        $b->save();
+
+        // Chunked batch: 3 brand-new inserts + 2 partial keyed updates, chunkSize 2 → several chunks
+        // (new-record chunks first, then keyed chunks). Exercises per-chunk commit, id back-fill per
+        // chunk, and per-row dirty scoping across chunk boundaries.
+        $new = [];
+        foreach (['Carol', 'Dave', 'Erin'] as $name) {
+            $u = new UserRecord();
+            $u->name = $name;
+            $new[] = $u;
+        }
+        $pa = new UserRecord();
+        $pa->id = $a->id;
+        $pa->name = 'Alice2';
+        $pa->email = 'alice2@example.com';  // A changes name + email (not active)
+        $pb = new UserRecord();
+        $pb->id = $b->id;
+        $pb->name = 'Bob2';                 // B changes name only
+
+        $result = (new RecordSet([...$new, $pa, $pb]))->saveAll(chunkSize: 2);
+
+        $this->assertNotNull($result);
+        $this->assertSame(3, $result->inserted);
+        $this->assertSame(2, $result->updated);
+
+        // Every new record got its generated id back and is clean.
+        foreach ($new as $u) {
+            $this->assertNotNull($u->id, 'new record gets its id back-filled per chunk');
+            $this->assertFalse($u->isDirty());
+        }
+
+        // Keyed updates applied; columns a record never sent survive even across chunk boundaries.
+        $ra = UserRecord::getOne((int) $a->id);
+        $rb = UserRecord::getOne((int) $b->id);
+        $this->assertNotNull($ra);
+        $this->assertNotNull($rb);
+        $this->assertSame('Alice2', $ra->name);
+        $this->assertSame('alice2@example.com', $ra->email);
+        $this->assertTrue($ra->active, 'A.active survives — never sent');
+        $this->assertSame('Bob2', $rb->name);
+        $this->assertSame('bob@example.com', $rb->email, 'B.email survives — never sent');
+        $this->assertFalse($rb->active);
+
+        $this->assertSame(5, UserRecord::countWhere('id > 0'));
+    }
+
+    public function testSaveAllChunkedInsideOpenTransactionThrows(): void
+    {
+        // Per-chunk commit can't bound the footprint inside an outer transaction, so it's rejected
+        // rather than silently degrading to atomic (which would defeat the reason chunkSize was passed).
+        $u = new UserRecord();
+        $u->name = 'Nested';
+
+        $this->expectException(AttrecordException::class);
+        UserRecord::transactional(static function () use ($u): void {
+            (new RecordSet([$u]))->saveAll(chunkSize: 1);
+        });
+    }
+
+    public function testSaveAllChunkedInsideTransactionWithFlagIsAtomic(): void
+    {
+        // With allowInTransactionChunking, the chunks run as separate statements inline in the outer
+        // transaction — bounded statement size, still atomic. A committed outer txn persists all…
+        $c1 = new UserRecord();
+        $c1->name = 'C1';
+        $c2 = new UserRecord();
+        $c2->name = 'C2';
+        UserRecord::transactional(static function () use ($c1, $c2): void {
+            (new RecordSet([$c1, $c2]))->saveAll(chunkSize: 1, allowInTransactionChunking: true);
+        });
+        $this->assertSame(2, UserRecord::countWhere('id > 0'), 'committed outer txn persists every chunk');
+
+        // …and a rolled-back outer txn undoes every chunk (atomicity — not per-chunk-committed).
+        try {
+            UserRecord::transactional(static function (): void {
+                $r1 = new UserRecord();
+                $r1->name = 'R1';
+                $r2 = new UserRecord();
+                $r2->name = 'R2';
+                (new RecordSet([$r1, $r2]))->saveAll(chunkSize: 1, allowInTransactionChunking: true);
+                throw new \RuntimeException('force rollback');
+            });
+        } catch (\RuntimeException) {
+        }
+        $this->assertSame(2, UserRecord::countWhere('id > 0'), 'rolled-back outer txn persists nothing');
     }
 
     public function testSaveAllMarksRecordsClean(): void

@@ -7,6 +7,7 @@ namespace Nandan108\Attrecord;
 use Nandan108\Attrecord\Enum\RelationType;
 use Nandan108\Attrecord\Exception\AttrecordException;
 use Nandan108\Attrecord\Exception\RecordSaveException;
+use Nandan108\Attrecord\Schema\ColumnDefinition;
 use Nandan108\Attrecord\Schema\RelationDefinition;
 use Nandan108\Attrecord\Schema\TableSchema;
 
@@ -258,7 +259,25 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      *
      * @throws RecordSaveException on DB error
      */
-    public function saveAll(bool $force = false): ?SaveResult
+    /**
+     * Bulk insert/upsert every record in the set (deadlock-safe 3-step upsert for keyed rows).
+     *
+     * @param bool     $force                      save even records that dirty-tracking reports as clean
+     * @param int|null $chunkSize                  when non-null, split the write into $chunkSize-row transactions that
+     *                                             **commit independently** — bounds the lock/undo footprint for very
+     *                                             large batches, at the cost of whole-set atomicity (a mid-run failure
+     *                                             leaves earlier chunks committed, so the operation must be resumable).
+     *                                             When null (default) the whole set runs in ONE transaction, all-or-nothing.
+     * @param bool     $allowInTransactionChunking when a chunked write is issued *inside* an open
+     *                                             transaction, per-chunk commit is impossible (the outer transaction
+     *                                             holds every lock until it commits) and would silently leave the
+     *                                             footprint unbounded, so it is rejected by default. Pass true to chunk
+     *                                             anyway: the chunks run as separate, smaller statements within the
+     *                                             outer transaction — bounding statement size while staying **atomic**
+     *                                             (the outer transaction's contract), with the lock/undo footprint left
+     *                                             unbounded. No effect outside a transaction.
+     */
+    public function saveAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false): ?SaveResult
     {
         if (empty($this->records)) {
             return null;
@@ -267,7 +286,13 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $first = $this->records[0];
         $schema = $first::schema();
         $conn = $first::connection();
+        $dialect = $conn->dialect;
+        $session = $conn->session;
         $pk = $schema->pk;
+        $pkProp = $schema->pkProp;
+        $pkColumn = $schema->columns[$pk];
+        $pkAutoIncrement = $pkColumn->autoIncrement;
+        $returningSuffix = $dialect->insertReturningSuffix($dialect->quoteIdentifier($pk));
 
         $dirtyRecords = $force
             ? $this->records
@@ -284,84 +309,55 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
         $dirtyRecords = array_values($dirtyRecords);
 
-        // New (auto-increment) records in the exact order buildPlan() will INSERT them, so
-        // the DB-generated ids can be written back onto the right objects afterwards.
-        $pkProp = $schema->pkProp;
+        // Opt-in chunked path: many independent transactions, bounded footprint, not atomic.
+        if (null !== $chunkSize) {
+            if ($session->inTransaction() && !$allowInTransactionChunking) {
+                // Per-chunk commit — the whole point of chunkSize — is impossible inside an open
+                // transaction: the outer transaction holds every lock until it commits, so the
+                // footprint stays unbounded. Fail loud rather than silently degrade to atomic;
+                // $allowInTransactionChunking is the explicit acknowledgement to chunk anyway.
+                throw new AttrecordException(
+                    'saveAll(chunkSize:) commits each chunk independently to bound the lock/undo '
+                    .'footprint, which cannot happen inside an open transaction. Pass '
+                    .'allowInTransactionChunking: true to chunk statements within the outer '
+                    .'transaction anyway (atomic, but the footprint stays unbounded), call saveAll() '
+                    .'without chunkSize for a single atomic statement, or run the chunked write '
+                    .'outside the transaction.',
+                );
+            }
+
+            // When nested (with the flag), each chunk's transactional() runs inline in the outer
+            // transaction — chunked statements, still atomic, footprint unbounded.
+            return $this->saveAllChunked($dirtyRecords, $chunkSize, $session, $schema, $dialect, $pk, $pkProp, $pkColumn, $returningSuffix, $pkAutoIncrement);
+        }
+
+        // Default: the whole set in ONE transaction — all-or-nothing.
+        // New (auto-increment) records in the exact order buildPlan() will INSERT them, so the
+        // DB-generated ids can be written back onto the right objects afterwards.
         /** @var list<Record> $insertedRecords */
         $insertedRecords = array_values(array_filter(
             $dirtyRecords,
             static fn (Record $r): bool => null === $r->{$pkProp},
         ));
 
-        $plan = $this->buildPlan($dirtyRecords, $schema, $conn->dialect);
-
+        $plan = $this->buildPlan($dirtyRecords, $schema, $dialect);
         if (null === $plan['insert'] && null === $plan['upsert']) {
             return null;
         }
 
-        $session = $conn->session;
-        $qpk = $conn->dialect->quoteIdentifier($pk);
-        $returningSuffix = $conn->dialect->insertReturningSuffix($qpk);
-
-        $pkColumn = $schema->columns[$pk];
-        $pkAutoIncrement = $pkColumn->autoIncrement;
-
         try {
             $counts = $session->transactional(
-                function () use ($session, $plan, $pk, $pkColumn, $returningSuffix, $pkAutoIncrement): array {
-                    $inserted = 0;
-                    $updated = 0;
-                    $insertedIds = [];
-
-                    if (null !== $plan['insert']) {
-                        if ('' !== $returningSuffix) {
-                            // PostgreSQL: RETURNING gives back the generated PKs directly. Cast
-                            // each through fromDb (PG returns bigint as a string) so insertedIds
-                            // and the back-filled record PKs are ints, matching the MySQL path.
-                            $rows = $session->fetchAll($plan['insert']."\n".$returningSuffix);
-                            foreach ($rows as $row) {
-                                /** @psalm-suppress MixedAssignment, MixedArgument */
-                                $insertedIds[] = ColumnSerializer::fromDb($row[$pk], $pkColumn, $row);
-                            }
-                            $inserted += \count($rows);
-                        } else {
-                            // MySQL/MariaDB: lastInsertId() is the first ID; range is sequential.
-                            // Only meaningful for auto-increment PKs — for application-minted
-                            // PKs (e.g. BINARY(16) UUIDs) the caller already knows the IDs,
-                            // so leave $insertedIds empty.
-                            $n = $session->exec($plan['insert']);
-                            if ($n > 0 && $pkAutoIncrement) {
-                                $firstId = (int) $session->lastInsertId();
-                                for ($i = 0; $i < $n; ++$i) {
-                                    $insertedIds[] = $firstId + $i;
-                                }
-                            }
-                            $inserted += $n;
-                        }
-                    }
-
-                    if (null !== $plan['upsert']) {
-                        $inserted += $session->exec($plan['upsert']->create);
-                        $session->exec($plan['upsert']->lock);
-                        if (null !== $plan['upsert']->update) {
-                            $updated += $session->exec($plan['upsert']->update);
-                        }
-                    }
-
-                    return ['inserted' => $inserted, 'updated' => $updated, 'insertedIds' => $insertedIds];
-                },
+                fn (): array => $this->runPlan($session, $plan, $pk, $pkColumn, $returningSuffix, $pkAutoIncrement),
             );
         } catch (\Throwable $e) {
             throw new RecordSaveException($e->getMessage(), $e);
         }
 
-        /** @var list<int|string> $insertedIds */
         $insertedIds = $counts['insertedIds'];
 
-        // Back-fill DB-generated auto-increment ids onto the new records (mirrors save()),
-        // in INSERT order, BEFORE markClean() so the refreshed snapshot includes the id.
-        // Application-minted PKs (e.g. BINARY(16) UUIDs) yield no insertedIds, so this is a
-        // no-op for them — the caller already set those PKs.
+        // Back-fill DB-generated auto-increment ids onto the new records (mirrors save()), in INSERT
+        // order, BEFORE markClean() so the refreshed snapshot includes the id. Application-minted PKs
+        // (e.g. BINARY(16) UUIDs) yield no insertedIds, so this is a no-op for them.
         if ($pkAutoIncrement) {
             foreach ($insertedRecords as $index => $record) {
                 if (array_key_exists($index, $insertedIds)) {
@@ -375,6 +371,150 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         }
 
         return new SaveResult($counts['inserted'], $counts['updated'], $insertedIds);
+    }
+
+    /**
+     * Execute one built plan (bulk INSERT + the deadlock-safe 3-step upsert) inside the caller's
+     * transaction and report the row counts + any DB-generated insert ids. Shared by the atomic
+     * (whole-set) and chunked paths.
+     *
+     * @param array{insert: string|null, upsert: UpsertSql|null} $plan
+     *
+     * @return array{inserted: int, updated: int, insertedIds: list<int|string>}
+     */
+    private function runPlan(DbSession $session, array $plan, string $pk, ColumnDefinition $pkColumn, string $returningSuffix, bool $pkAutoIncrement): array
+    {
+        $inserted = 0;
+        $updated = 0;
+        /** @var list<int|string> $insertedIds */
+        $insertedIds = [];
+
+        if (null !== $plan['insert']) {
+            if ('' !== $returningSuffix) {
+                // PostgreSQL: RETURNING gives back the generated PKs directly. Cast each through
+                // fromDb (PG returns bigint as a string) so insertedIds and the back-filled record
+                // PKs are ints, matching the MySQL path.
+                $rows = $session->fetchAll($plan['insert']."\n".$returningSuffix);
+                foreach ($rows as $row) {
+                    /**
+                     * @psalm-suppress MixedArgument
+                     *
+                     * @var int|string $id
+                     */
+                    $id = ColumnSerializer::fromDb($row[$pk], $pkColumn, $row);
+                    $insertedIds[] = $id;
+                }
+                $inserted += \count($rows);
+            } else {
+                // MySQL/MariaDB: lastInsertId() is the first ID; the range is sequential. Only
+                // meaningful for auto-increment PKs — for application-minted PKs (e.g. BINARY(16)
+                // UUIDs) the caller already knows the IDs, so leave $insertedIds empty.
+                $n = $session->exec($plan['insert']);
+                if ($n > 0 && $pkAutoIncrement) {
+                    $firstId = (int) $session->lastInsertId();
+                    for ($i = 0; $i < $n; ++$i) {
+                        $insertedIds[] = $firstId + $i;
+                    }
+                }
+                $inserted += $n;
+            }
+        }
+
+        if (null !== $plan['upsert']) {
+            $inserted += $session->exec($plan['upsert']->create);
+            $session->exec($plan['upsert']->lock);
+            if (null !== $plan['upsert']->update) {
+                $updated += $session->exec($plan['upsert']->update);
+            }
+        }
+
+        return ['inserted' => $inserted, 'updated' => $updated, 'insertedIds' => $insertedIds];
+    }
+
+    /**
+     * Chunked upsert with per-chunk commit (opt-in via {@see saveAll()}'s `$chunkSize`). Bounds the
+     * lock/undo footprint at `$chunkSize` rows per transaction; **not** all-or-nothing — a failure
+     * part-way leaves already-committed chunks in place, so the operation must be safe to resume.
+     *
+     * New (PK-null) records are chunked for INSERT; keyed records are **sorted by PK ascending**
+     * before chunking so each chunk's step-2 `FOR UPDATE` locks a contiguous ascending range and
+     * chunks proceed low→high — preserving the global ascending-PK lock-order invariant (see
+     * docs/arch-concurrency.md). Assumes the PK's PHP sort order matches the database's `ORDER BY`
+     * (true for integer and binary PKs).
+     *
+     * @param list<Record> $dirtyRecords already beforeSave()'d and validate()'d
+     */
+    private function saveAllChunked(array $dirtyRecords, int $chunkSize, DbSession $session, TableSchema $schema, SqlDialect $dialect, string $pk, string $pkProp, ColumnDefinition $pkColumn, string $returningSuffix, bool $pkAutoIncrement): SaveResult
+    {
+        if ($chunkSize < 1) {
+            $chunkSize = \count($dirtyRecords);
+        }
+
+        $newRecords = [];
+        $keyedRecords = [];
+        foreach ($dirtyRecords as $r) {
+            if (null === $r->{$pkProp}) {
+                $newRecords[] = $r;
+            } else {
+                $keyedRecords[] = $r;
+            }
+        }
+        // Ascending-PK order so chunk boundaries are contiguous ranges and locks are taken low→high.
+        /** @psalm-suppress MixedArgument */
+        usort($keyedRecords, static fn (Record $a, Record $b): int => $a->{$pkProp} <=> $b->{$pkProp});
+
+        // New-record chunks (INSERT) first, then keyed chunks (upsert); each homogeneous so id
+        // back-fill maps 1:1 to a chunk's records and insert-before-upsert ordering is preserved.
+        /** @var list<list<Record>> $chunks */
+        $chunks = [
+            ...array_chunk($newRecords, $chunkSize),
+            ...array_chunk($keyedRecords, $chunkSize),
+        ];
+
+        $totalInserted = 0;
+        $totalUpdated = 0;
+        /** @var list<int|string> $allInsertedIds */
+        $allInsertedIds = [];
+
+        foreach ($chunks as $chunk) {
+            $plan = $this->buildPlan($chunk, $schema, $dialect);
+            if (null === $plan['insert'] && null === $plan['upsert']) {
+                continue;
+            }
+
+            try {
+                $counts = $session->transactional(
+                    fn (): array => $this->runPlan($session, $plan, $pk, $pkColumn, $returningSuffix, $pkAutoIncrement),
+                );
+            } catch (\Throwable $e) {
+                throw new RecordSaveException($e->getMessage(), $e);
+            }
+
+            $insertedIds = $counts['insertedIds'];
+
+            // Back-fill this chunk's new records (still PK-null until now), in INSERT order.
+            if ($pkAutoIncrement && [] !== $insertedIds) {
+                $newInChunk = array_values(array_filter(
+                    $chunk,
+                    static fn (Record $r): bool => null === $r->{$pkProp},
+                ));
+                foreach ($newInChunk as $index => $record) {
+                    if (array_key_exists($index, $insertedIds)) {
+                        $record->{$pkProp} = $insertedIds[$index];
+                    }
+                }
+            }
+
+            foreach ($chunk as $record) {
+                $record->markClean();
+            }
+
+            $totalInserted += $counts['inserted'];
+            $totalUpdated += $counts['updated'];
+            $allInsertedIds = [...$allInsertedIds, ...$insertedIds];
+        }
+
+        return new SaveResult($totalInserted, $totalUpdated, $allInsertedIds);
     }
 
     /**

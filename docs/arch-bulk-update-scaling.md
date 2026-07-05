@@ -43,21 +43,41 @@ before chunking** — otherwise chunk A could lock pk 5 while chunk B (another t
 pk 3 then 5, re-introducing lock-order inversion across chunks. Sort → chunk → each chunk locks a
 contiguous ascending PK range. Chunk size configurable (default TBD — see §6).
 
-**Transaction scope — a contract decision (⚠ needs sign-off).** `saveAll()` is currently **atomic**:
-the whole set commits or rolls back in one transaction. Chunking forces a choice:
+**Transaction scope — DECIDED.** `saveAll()` is currently **atomic** (whole set in one transaction).
+Chunking to bound the lock/undo footprint (limit 2) *requires* committing per chunk, which drops
+whole-set atomicity — so the two are one decision, controlled by a **single argument**:
 
-- **One transaction around all chunks** — keeps today's all-or-nothing atomicity, but every chunk's
-  locks + undo are held until the final commit, so it does **not** relieve limit 2 (lock/undo
-  footprint); it only shrinks per-statement size (limit 1).
-- **One transaction per chunk** — bounds locks/undo (each chunk commits and releases), delivering the
-  full limit-2 benefit, **but drops whole-set atomicity**: a mid-run failure leaves earlier chunks
-  committed. Callers must treat the operation as resumable/idempotent.
+```php
+saveAll(bool $force = false, ?int $chunkSize = null): ?SaveResult
+```
 
-These are genuinely different contracts. Recommendation: keep the **atomic single-transaction default**
-(no silent contract change), and add an explicit opt-in — e.g. `saveAll(chunkCommit: true)` or a
-`BulkOptions` — for callers who want the bounded-footprint, per-chunk-commit behaviour. New records'
-`RETURNING`/`lastInsertId` back-fill must be applied per chunk as each completes (works under either
-scope). **Deferred to the build; flagged here for an explicit call.**
+- **`$chunkSize === null` (default)** — today's behaviour exactly: one atomic transaction, un-chunked,
+  all-or-nothing. Byte-identical to now; zero risk to existing callers.
+- **`$chunkSize` an int** — split into slices of that size and **commit per chunk**: bounded lock/undo
+  footprint, but *not* all-or-nothing — a mid-run failure leaves earlier chunks committed, so the
+  operation is resumable/idempotent. New records' `RETURNING`/`lastInsertId` back-fill and
+  `markClean()` are applied per chunk as each commits.
+  - **Rejected inside an open transaction (throws) — unless explicitly permitted.** Per-chunk commit
+    is physically impossible when an outer `transactional()` is active — the outer transaction holds
+    every lock until *it* commits, so nested chunks would silently accumulate into it and the
+    footprint benefit would vanish. Rather than degrade silently (reproducing the very lock/undo
+    blowup the caller chunked to avoid), `saveAll(chunkSize:)` throws an `AttrecordException` when
+    `$session->inTransaction()`. For a bulk write inside a transaction, call `saveAll()` without
+    `$chunkSize` (single atomic statement), move it outside, or pass **`allowInTransactionChunking:
+    true`** to opt into the chunked-but-atomic mode below.
+
+The chunk-size argument's *presence* is the opt-in; a separate `chunkCommit` flag would be redundant
+(you cannot release locks mid-run and stay atomic).
+
+**Third mode — "chunk statements but keep one atomic transaction" — supported via
+`allowInTransactionChunking: true`.** This is the only way to atomically write a batch too large for
+a single SQL statement. It falls out for free: a chunked `saveAll` called *inside* an outer
+`transactional()` has each chunk's `transactional()` run **inline** (attrecord's sessions defer
+commit to the outermost call), so the chunks execute as separate, smaller statements within the one
+outer transaction — atomic, bounded statement size, footprint unbounded. Since the default rejects
+nesting (above), the flag is the explicit "I know it won't bound the footprint" acknowledgement that
+silences the throw. Lock ordering is unaffected — one transaction taking ascending-PK locks across
+chunks is identical to the non-chunked atomic path. The flag has no effect outside a transaction.
 
 Chunking alone already turns O(N²) into O(chunks · chunkSize²) = O(N · chunkSize), i.e. **linear in
 N** for a fixed chunk size. So chunking is arguably the 80/20 win. The join form below removes the
