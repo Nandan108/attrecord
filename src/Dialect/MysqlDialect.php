@@ -182,9 +182,10 @@ final class MysqlDialect implements SqlDialect
     }
 
     /**
-     * @param list<string>       $columnNames
-     * @param list<list<string>> $rows
-     * @param list<string>       $updateColumns
+     * @param list<string>              $columnNames
+     * @param list<list<string>>        $rows
+     * @param list<string>              $updateColumns
+     * @param list<array<string, bool>> $rowDirtyColumns
      */
     #[\Override]
     public function buildUpsertSql(
@@ -193,6 +194,7 @@ final class MysqlDialect implements SqlDialect
         array $columnNames,
         array $rows,
         array $updateColumns,
+        array $rowDirtyColumns = [],
     ): UpsertSql {
         $quotedTable = $this->quoteIdentifier($tableName);
         $quotedPk = $this->quoteIdentifier($pkColumn);
@@ -215,24 +217,60 @@ final class MysqlDialect implements SqlDialect
             ." WHERE {$quotedPk} IN ({$inList})"
             ." ORDER BY {$quotedPk} ASC FOR UPDATE";
 
-        // Step 3: CASE-based UPDATE for all non-PK columns
+        // Step 3: CASE-based UPDATE, per-row dirty-scoped (see SqlDialect::buildUpsertSql()).
         $update = null;
         if (!empty($updateColumns)) {
             $setParts = [];
             foreach ($updateColumns as $col) {
-                $quotedCol = $this->quoteIdentifier($col);
-                $colIndex = (int) \array_search($col, $columnNames, true);
-                $whens = \array_map(
-                    fn (array $row) => "WHEN {$row[$pkIndex]} THEN {$row[$colIndex]}",
-                    $rows,
-                );
-                $setParts[] = "{$quotedCol} = CASE {$quotedPk} ".\implode(' ', $whens).' END';
+                $setParts[] = $this->buildUpsertCaseSet($col, $columnNames, $rows, $pkIndex, $quotedPk, $rowDirtyColumns);
             }
             $setClause = \implode(",\n    ", $setParts);
             $update = "UPDATE {$quotedTable} SET\n    {$setClause}\nWHERE {$quotedPk} IN ({$inList})";
         }
 
         return new UpsertSql($create, $lock, $update);
+    }
+
+    /**
+     * Build one column's `<col> = CASE <pk> … END` fragment for the upsert UPDATE step.
+     *
+     * Emits a `WHEN pk THEN value` only for the rows that changed the column (per $rowDirtyColumns),
+     * with an `ELSE <col>` fallback so rows that did not change it keep their live value. A column
+     * changed by every row — or when no dirty info is supplied — participates for all rows and needs
+     * no `ELSE`.
+     *
+     * @param list<string>              $columnNames
+     * @param list<list<string>>        $rows
+     * @param list<array<string, bool>> $rowDirtyColumns
+     */
+    private function buildUpsertCaseSet(
+        string $col,
+        array $columnNames,
+        array $rows,
+        int $pkIndex,
+        string $quotedPk,
+        array $rowDirtyColumns,
+    ): string {
+        $quotedCol = $this->quoteIdentifier($col);
+        $colIndex = (int) \array_search($col, $columnNames, true);
+        $rowIndexes = \array_keys($rows);
+
+        $dirtyIndexes = \array_values(\array_filter(
+            $rowIndexes,
+            static fn (int $i): bool => isset($rowDirtyColumns[$i][$col]),
+        ));
+        // Empty (no dirty info) or full (every row changed it) ⇒ all rows participate, no ELSE.
+        $whenIndexes = ([] === $dirtyIndexes || \count($dirtyIndexes) === \count($rows))
+            ? $rowIndexes
+            : $dirtyIndexes;
+
+        $whens = \array_map(
+            fn (int $i): string => "WHEN {$rows[$i][$pkIndex]} THEN {$rows[$i][$colIndex]}",
+            $whenIndexes,
+        );
+        $else = \count($whenIndexes) === \count($rows) ? '' : " ELSE {$quotedCol}";
+
+        return "{$quotedCol} = CASE {$quotedPk} ".\implode(' ', $whens).$else.' END';
     }
 
     #[\Override]

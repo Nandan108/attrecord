@@ -118,13 +118,24 @@ interface SqlDialect
      * Step 3 (update): CASE-based UPDATE — applies column values in a single statement.
      *                  null when $updateColumns is empty (insert-only scenario).
      *
+     * **Per-row dirty scoping.** Each update column emits a `WHEN pk THEN value` only for the rows
+     * that actually changed it (per $rowDirtyColumns); rows that did not fall through `ELSE <col>`,
+     * preserving the column's live value. A column changed by *every* row needs no `ELSE` and
+     * collapses to the plain all-rows form. This lets a heterogeneous batch — records each carrying
+     * a different subset of fields — update each row's own fields without clobbering columns it
+     * never supplied. When $rowDirtyColumns is empty (no dirty info), every row participates in
+     * every column (the original behaviour).
+     *
      * All three statements must run inside the same transaction.
      *
-     * @param string             $tableName     Unquoted table name
-     * @param string             $pkColumn      PK column name (unquoted)
-     * @param list<string>       $columnNames   All columns to write, including PK (unquoted)
-     * @param list<list<string>> $rows          SQL literals per row, in $columnNames order
-     * @param list<string>       $updateColumns Non-PK columns to overwrite on conflict
+     * @param string                    $tableName       Unquoted table name
+     * @param string                    $pkColumn        PK column name (unquoted)
+     * @param list<string>              $columnNames     All columns to write, including PK (unquoted)
+     * @param list<list<string>>        $rows            SQL literals per row, in $columnNames order
+     * @param list<string>              $updateColumns   Non-PK columns to overwrite on conflict
+     * @param list<array<string, bool>> $rowDirtyColumns Per row (aligned to $rows): the set of column
+     *                                                   names that row changed. Empty ⇒ treat every
+     *                                                   row as having changed every column.
      */
     public function buildUpsertSql(
         string $tableName,
@@ -132,6 +143,7 @@ interface SqlDialect
         array $columnNames,
         array $rows,
         array $updateColumns,
+        array $rowDirtyColumns = [],
     ): UpsertSql;
 
     /**

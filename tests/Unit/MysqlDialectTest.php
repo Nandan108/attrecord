@@ -216,6 +216,50 @@ final class MysqlDialectTest extends TestCase
         $this->assertStringContainsString('WHERE `id` IN (42, 7)', $upsert->update);
     }
 
+    public function testBuildUpsertSqlPerRowDirtyScopingAddsElseForSparseColumns(): void
+    {
+        // Row 42 changed name + stock; row 7 changed name only. `name` is uniform (both rows) → plain
+        // CASE, no ELSE. `stock` is sparse (only row 42) → WHEN for 42 + `ELSE \`stock\`` so row 7 keeps
+        // its live value instead of being clobbered.
+        $upsert = $this->dialect->buildUpsertSql(
+            tableName: 'products',
+            pkColumn: 'id',
+            columnNames: ['id', 'name', 'stock'],
+            rows: [
+                ['42', "'Widget'", '10'],
+                ['7',  "'Gadget'", '5'],
+            ],
+            updateColumns: ['name', 'stock'],
+            rowDirtyColumns: [
+                ['name' => true, 'stock' => true],
+                ['name' => true],
+            ],
+        );
+
+        $this->assertNotNull($upsert->update);
+        // name: uniform → both WHENs, no ELSE
+        $this->assertStringContainsString("`name` = CASE `id` WHEN 42 THEN 'Widget' WHEN 7 THEN 'Gadget' END", $upsert->update);
+        // stock: sparse → only the dirtying row, with ELSE keeping the live column
+        $this->assertStringContainsString('`stock` = CASE `id` WHEN 42 THEN 10 ELSE `stock` END', $upsert->update);
+        $this->assertStringNotContainsString('WHEN 7 THEN 5', $upsert->update);
+    }
+
+    public function testBuildUpsertSqlNoDirtyInfoParticipatesEveryRow(): void
+    {
+        // Back-compat: omitting $rowDirtyColumns keeps the original all-rows, no-ELSE shape.
+        $upsert = $this->dialect->buildUpsertSql(
+            tableName: 'products',
+            pkColumn: 'id',
+            columnNames: ['id', 'stock'],
+            rows: [['42', '10'], ['7', '5']],
+            updateColumns: ['stock'],
+        );
+
+        $this->assertNotNull($upsert->update);
+        $this->assertStringContainsString('`stock` = CASE `id` WHEN 42 THEN 10 WHEN 7 THEN 5 END', $upsert->update);
+        $this->assertStringNotContainsString('ELSE', $upsert->update);
+    }
+
     public function testBuildUpsertSqlNoUpdateColumnsReturnsNullUpdate(): void
     {
         $upsert = $this->dialect->buildUpsertSql(

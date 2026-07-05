@@ -588,23 +588,26 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
         // Deadlock-safe 3-step upsert for records with a known PK
         if (!empty($keyedRecords)) {
-            // Always include PK; include other columns present in at least one record.
-            // Generated columns are DB-computed and not application-writable — including one
-            // in the INSERT/UPDATE makes MySQL reject the statement (error 1906), so skip
-            // them here exactly as the plain-INSERT branch above and save() do.
-            // Include a column when it is non-null on some record OR **dirty** on some record. The dirty
-            // clause is essential for UPDATEs that clear a column back to NULL: without it a value set to
-            // null is absent from the CASE, so the old (non-null) value silently persists. (A null-valued
-            // column that isn't dirty stays excluded — nothing to write.)
+            // Membership (columns written): always the PK; plus a non-generated column that is
+            // non-null on some record OR **dirty** on some record — the non-null clause keeps
+            // NOT NULL columns in the INSERT step, the dirty clause lets an UPDATE clear a column
+            // back to NULL. Generated columns are DB-computed — including one makes MySQL reject
+            // the statement (error 1906) — so skip them, as save() and the plain-INSERT branch do.
             $presentCols = [$pk => true];
-            foreach ($keyedRecords as $record) {
-                $dirty = $record->dirtyFields();
+            $dirtyUnion = [];   // colName => true when dirty on at least one record
+            $recordDirty = [];  // per keyed record (same iteration key): its dirtyFields() map
+            foreach ($keyedRecords as $ri => $record) {
+                $recordDirty[$ri] = $dirty = $record->dirtyFields();
                 foreach ($schema->columns as $colName => $col) {
                     if ($col->isGenerated) {
                         continue;
                     }
-                    if (($record->{$col->propertyName} ?? null) !== null || isset($dirty[$colName])) {
+                    $isDirty = isset($dirty[$colName]);
+                    if (($record->{$col->propertyName} ?? null) !== null || $isDirty) {
                         $presentCols[$colName] = true;
+                    }
+                    if ($isDirty) {
+                        $dirtyUnion[$colName] = true;
                     }
                 }
             }
@@ -615,19 +618,32 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
             if (!empty($colNames)) {
                 $rows = [];
-                foreach ($keyedRecords as $record) {
+                $rowDirty = [];  // aligned to $rows: the set of column names each row changed
+                foreach ($keyedRecords as $ri => $record) {
                     $row = [];
+                    $dirtySet = [];
                     foreach ($colNames as $colName) {
                         $col = $schema->columns[$colName];
                         $row[] = $dialect->toLiteral(
                             ColumnSerializer::toDbValue($record->{$col->propertyName} ?? null, $col),
                             $col,
                         );
+                        if (isset($recordDirty[$ri][$colName])) {
+                            $dirtySet[$colName] = true;
+                        }
                     }
                     $rows[] = $row;
+                    $rowDirty[] = $dirtySet;
                 }
-                $updateCols = array_values(array_filter($colNames, fn ($n) => $n !== $pk));
-                $upsert = $dialect->buildUpsertSql($schema->tableName, $pk, $colNames, $rows, $updateCols);
+                // UPDATE only columns dirtied by at least one record (minus PK). buildUpsertSql()
+                // then writes each column's WHEN only for the rows that changed it (ELSE keeps the
+                // live value), so a heterogeneous batch of partial records updates each row's own
+                // fields without clobbering a column a given row never supplied.
+                $updateCols = array_values(array_filter(
+                    $colNames,
+                    fn ($n) => $n !== $pk && isset($dirtyUnion[$n]),
+                ));
+                $upsert = $dialect->buildUpsertSql($schema->tableName, $pk, $colNames, $rows, $updateCols, $rowDirty);
             }
         }
 

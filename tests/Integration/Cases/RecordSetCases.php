@@ -131,6 +131,50 @@ trait RecordSetCases
         $this->assertSame(0, $reloaded->scope_key, 'the generated column reflects the now-null source');
     }
 
+    public function testSaveAllUpsertDoesNotClobberFieldsAnotherRecordSent(): void
+    {
+        // The controller shape: two DB rows, then a heterogeneous payload built as PARTIAL keyed
+        // records — each carrying a DIFFERENT subset of fields, no prior load. saveAll() must update
+        // each row's own fields and leave untouched any column that row never sent, even when a
+        // *sibling* record in the same batch did send it (which pulls it into the batch column set).
+        $a = new UserRecord();
+        $a->name = 'Alice';
+        $a->email = 'alice@example.com';
+        $a->active = true;
+        $a->save();
+        $b = new UserRecord();
+        $b->name = 'Bob';
+        $b->email = 'bob@example.com';
+        $b->active = false;
+        $b->save();
+
+        $pa = new UserRecord();
+        $pa->id = $a->id;
+        $pa->name = 'Alice2';
+        $pa->email = 'alice2@example.com';   // A changes name + email (not active)
+
+        $pb = new UserRecord();
+        $pb->id = $b->id;
+        $pb->name = 'Bob2';                  // B changes name only (email/active never sent)
+
+        (new RecordSet([$pa, $pb]))->saveAll();
+
+        $ra = UserRecord::getOne((int) $a->id);
+        $rb = UserRecord::getOne((int) $b->id);
+        $this->assertNotNull($ra);
+        $this->assertNotNull($rb);
+
+        // Sent fields applied…
+        $this->assertSame('Alice2', $ra->name);
+        $this->assertSame('alice2@example.com', $ra->email);
+        $this->assertSame('Bob2', $rb->name);
+        // …and fields a record never sent survive — including `email`, which the sibling A *did*
+        // send (so it was in the batch column set) yet B must not have cleared.
+        $this->assertTrue($ra->active, 'A.active must survive — A never sent it');
+        $this->assertSame('bob@example.com', $rb->email, 'B.email must survive — B never sent it, though A did');
+        $this->assertFalse($rb->active, 'B.active must survive — B never sent it');
+    }
+
     public function testSaveAllMarksRecordsClean(): void
     {
         $u1 = new UserRecord();

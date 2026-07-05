@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-05
+
+### Fixed
+
+- `RecordSet::saveAll()` no longer clobbers a column that one record in a batch changed but another
+  did not. Previously every record wrote the batch-wide union of changed columns using its own
+  in-memory value, so a **heterogeneous batch of partially-populated keyed records** — each carrying
+  a different subset of fields (the natural controller shape) — would overwrite, on the records that
+  did not send a given column, that column with their default (e.g. `NULL`). `saveAll()` is now
+  dirty-scoped **per row**, matching single-row `save()`: the upsert's `CASE` writes each column only
+  for the rows that actually changed it, and rows that did not keep their live value.
+
+### Changed
+
+- `SqlDialect::buildUpsertSql()` gained a trailing `array $rowDirtyColumns = []` parameter carrying,
+  per row, the set of columns that row changed. Defaulted, so existing callers are unaffected; when
+  empty, every row participates in every column (the prior behaviour). Custom `SqlDialect`
+  implementations that override `buildUpsertSql()` should accept and honour the new parameter to get
+  the per-row dirty scoping (a column changed by every row still emits the plain all-rows `CASE`;
+  a column changed by only some rows emits `… ELSE <col> END`).
+
 ## [0.1.2] - 2026-07-05
 
 ### Fixed
