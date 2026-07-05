@@ -39,7 +39,7 @@ a winner: Doctrine and Eloquent are mature, battle-tested, and far larger in sco
 | Runtime dependencies  | **None**                                                          | Several (DBAL, …)                            | `illuminate/*`                                      |
 | Install footprint (`vendor/`) | **1 package · ~80 KB**                                    | ~22 packages · ~1.6 MB                       | ~26 packages · ~2.3 MB                              |
 | Schema mapping        | PHP 8 attributes only                                             | Attributes / XML / YAML                      | Conventions (schema lives in migrations, not the model) |
-| Schema changes        | Emits `CREATE TABLE` from attributes — **no migration tool**       | `doctrine/migrations`                        | Laravel migrations                                  |
+| Schema changes        | Emits `CREATE TABLE` from attributes; forward migrations via a planned opt-in add-on (not in core) | `doctrine/migrations`                        | Laravel migrations                                  |
 | Query building        | Finders + immutable `WhereClause` + `RawSql`                      | DQL + QueryBuilder                           | Fluent query builder                                |
 | Relations             | Eager `with()` (incl. polymorphic); no lazy graph / identity map  | Full graph: lazy loading, identity map, UoW  | Full: lazy + eager, rich relationship set           |
 | Backends              | MySQL/MariaDB, PostgreSQL, SQLite                                 | Many (via DBAL)                              | MySQL, PostgreSQL, SQLite, SQL Server               |
@@ -58,9 +58,27 @@ unit of work, lazy object graphs, DQL, a full migrations toolchain — and don't
 convention-driven speed and enormous ecosystem.
 
 **Reach for attrecord** when you want a small, dependency-free, framework-agnostic Active Record where
-the PHP class *is* the schema (attributes → emitted DDL, no migration tool), and you need strong
+the PHP class *is* the schema (attributes → emitted DDL; declarative migrations are a planned opt-in
+add-on), and you need strong
 multi-backend, bulk-write, and concurrency ergonomics — accepting a young, pre-1.0 library with a
 deliberately smaller surface and ecosystem.
+
+---
+
+## Background — old ideas, young package, lean by necessity
+
+attrecord didn't start from a blank page. Most of its design — the attribute-declared schema, the
+deadlock-safe bulk-write and locking patterns, the dialect-portable DDL — was distilled from a
+production ERP I built and ran for over a decade (2012–2023). The *package* is young and pre-1.0;
+the *ideas* have years of production mileage.
+
+Its shape comes from where it runs today: a distributed WooCommerce plugin, where the data layer
+ships *inside* the plugin zip and its dependencies can collide with whatever other plugins have
+vendored on the same site. There, a twenty-package ORM isn't an option — zero runtime dependencies
+and a small footprint are survival constraints, not preferences. So attrecord is dependency-free and
+framework-agnostic (the WordPress `wpdb` adapter is optional; the core has no WP coupling), and that
+constraint is permanent: its primary consumer is still a bundled plugin, so "one package, no
+dependencies" is a design invariant — not a stage it will grow out of.
 
 ---
 
