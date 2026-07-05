@@ -592,13 +592,18 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             // Generated columns are DB-computed and not application-writable — including one
             // in the INSERT/UPDATE makes MySQL reject the statement (error 1906), so skip
             // them here exactly as the plain-INSERT branch above and save() do.
+            // Include a column when it is non-null on some record OR **dirty** on some record. The dirty
+            // clause is essential for UPDATEs that clear a column back to NULL: without it a value set to
+            // null is absent from the CASE, so the old (non-null) value silently persists. (A null-valued
+            // column that isn't dirty stays excluded — nothing to write.)
             $presentCols = [$pk => true];
             foreach ($keyedRecords as $record) {
+                $dirty = $record->dirtyFields();
                 foreach ($schema->columns as $colName => $col) {
                     if ($col->isGenerated) {
                         continue;
                     }
-                    if (($record->{$col->propertyName} ?? null) !== null) {
+                    if (($record->{$col->propertyName} ?? null) !== null || isset($dirty[$colName])) {
                         $presentCols[$colName] = true;
                     }
                 }

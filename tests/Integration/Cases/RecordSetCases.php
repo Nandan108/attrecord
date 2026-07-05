@@ -105,6 +105,32 @@ trait RecordSetCases
         $this->assertSame(7, $reloaded->scope_key, 'generated column still reflects its expression');
     }
 
+    public function testSaveAllUpsertClearsANullableColumnToNull(): void
+    {
+        // Regression: clearing a nullable column back to null on a keyed record must persist. The upsert
+        // column list previously included only non-null values, so a value cleared to null was absent
+        // from the CASE update and the old (non-null) value silently survived.
+        $rec = new DdlGeneratedColumnRecord();
+        $rec->scope_id = 3;
+        $rec->value = 'x';
+        $rec->save();
+        $id = (int) $rec->id;
+
+        $loaded = DdlGeneratedColumnRecord::where('id', $id)->first();
+        $this->assertNotNull($loaded);
+        $this->assertSame(3, $loaded->scope_id);
+
+        $loaded->scope_id = null;
+        $result = (new RecordSet([$loaded]))->saveAll();
+        $this->assertNotNull($result);
+        $this->assertSame(1, $result->updated);
+
+        $reloaded = DdlGeneratedColumnRecord::where('id', $id)->first();
+        $this->assertNotNull($reloaded);
+        $this->assertNull($reloaded->scope_id, 'a nullable column cleared to null must persist as null');
+        $this->assertSame(0, $reloaded->scope_key, 'the generated column reflects the now-null source');
+    }
+
     public function testSaveAllMarksRecordsClean(): void
     {
         $u1 = new UserRecord();

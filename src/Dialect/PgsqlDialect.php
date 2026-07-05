@@ -44,7 +44,13 @@ final class PgsqlDialect implements SqlDialect
     public function toLiteral(mixed $value, ColumnDefinition $col): string
     {
         if (null === $value) {
-            return 'NULL';
+            // A bare NULL is untyped. In `INSERT … VALUES` PG infers the type from the target
+            // column, but inside a multi-row upsert's `CASE … WHEN pk THEN NULL END` there is no
+            // such context, so PG defaults the branch to `text` and rejects it against a non-text
+            // column (SQLSTATE 42804). Emit a typed null so the CASE result carries the column's
+            // type. Autoincrement (SERIAL) columns render null only in INSERT VALUES — never in a
+            // CASE branch — and SERIAL is not a castable type, so leave those bare.
+            return $col->autoIncrement ? 'NULL' : 'CAST(NULL AS '.$this->renderColumnType($col).')';
         }
 
         if ($col->isBool) {

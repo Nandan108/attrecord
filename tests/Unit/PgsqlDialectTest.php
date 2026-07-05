@@ -40,7 +40,28 @@ final class PgsqlDialectTest extends TestCase
 
     public function testToLiteralNull(): void
     {
-        $col = $this->col(ColumnType::VarChar, nullable: true);
+        // A null literal is CAST to the column's type. A bare NULL is untyped, which PG defaults to
+        // `text` inside a multi-row upsert's `CASE … THEN NULL END` and then rejects against a
+        // non-text column (SQLSTATE 42804); the cast carries the type so the CASE result is valid.
+        $this->assertSame('CAST(NULL AS VARCHAR(0))', $this->dialect->toLiteral(null, $this->col(ColumnType::VarChar, nullable: true)));
+        $this->assertSame('CAST(NULL AS INTEGER)', $this->dialect->toLiteral(null, $this->col(ColumnType::Int, nullable: true)));
+    }
+
+    public function testToLiteralNullOnAutoIncrementColumnStaysBare(): void
+    {
+        // SERIAL pseudo-types are not castable, and an autoincrement column only ever renders null in
+        // INSERT VALUES (where PG infers the type from the target column), never in a CASE branch.
+        $col = new ColumnDefinition(
+            name: 'id',
+            propertyName: 'id',
+            type: ColumnType::BigInt,
+            nullable: false,
+            autoIncrement: true,
+            trimOnSave: null,
+            length: null,
+            precision: null,
+            scale: null,
+        );
         $this->assertSame('NULL', $this->dialect->toLiteral(null, $col));
     }
 

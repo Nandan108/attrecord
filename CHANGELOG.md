@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-05
+
+### Fixed
+
+- `RecordSet::saveAll()` now persists a nullable column that is **cleared back to `NULL`** on a
+  keyed record. The deadlock-safe upsert's `CASE`-update column list previously included a column
+  only when it held a non-null value on some record, so a value set to `null` was absent from the
+  `CASE` and the old (non-null) value silently survived. The column is now included whenever it is
+  **dirty** on any record.
+- `PgsqlDialect::toLiteral()` now emits a **typed** null (`CAST(NULL AS <type>)`) instead of a bare
+  `NULL` for non-autoincrement columns. A bare `NULL` is untyped; PostgreSQL defaults it to `text`
+  inside the upsert's `CASE … THEN NULL END` branch and rejects it against a non-text column
+  (`SQLSTATE 42804`). Autoincrement (`SERIAL`) columns — which render null only in `INSERT VALUES`,
+  never in a `CASE`, and whose pseudo-types are not castable — stay bare. (Required for the
+  null-clearing fix above to work on PostgreSQL.)
+
 ## [0.1.1] - 2026-07-01
 
 ### Fixed
