@@ -26,6 +26,44 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
 
 ---
 
+## How it compares
+
+attrecord sits in a deliberately narrow spot — a lean, standalone Active Record — rather than
+competing head-on with the full-scope ORMs. This table is here to help you *place* it, not to crown
+a winner: Doctrine and Eloquent are mature, battle-tested, and far larger in scope and ecosystem.
+
+|                       | **attrecord**                                                     | **Doctrine ORM**                             | **Eloquent**                                        |
+| --------------------- | ----------------------------------------------------------------- | -------------------------------------------- | --------------------------------------------------- |
+| Pattern               | Active Record                                                     | Data Mapper (identity map + unit of work)    | Active Record                                       |
+| Framework coupling    | Standalone, framework-agnostic                                    | Standalone (Symfony-friendly)                | Laravel-native (standalone via `illuminate/database`) |
+| Runtime dependencies  | **None**                                                          | Several (DBAL, …)                            | `illuminate/*`                                      |
+| Install footprint (`vendor/`) | **1 package · ~80 KB**                                    | ~22 packages · ~1.6 MB                       | ~26 packages · ~2.3 MB                              |
+| Schema mapping        | PHP 8 attributes only                                             | Attributes / XML / YAML                      | Conventions (schema lives in migrations, not the model) |
+| Schema changes        | Emits `CREATE TABLE` from attributes — **no migration tool**       | `doctrine/migrations`                        | Laravel migrations                                  |
+| Query building        | Finders + immutable `WhereClause` + `RawSql`                      | DQL + QueryBuilder                           | Fluent query builder                                |
+| Relations             | Eager `with()` (incl. polymorphic); no lazy graph / identity map  | Full graph: lazy loading, identity map, UoW  | Full: lazy + eager, rich relationship set           |
+| Backends              | MySQL/MariaDB, PostgreSQL, SQLite                                 | Many (via DBAL)                              | MySQL, PostgreSQL, SQLite, SQL Server               |
+| Bulk writes           | First-class: deadlock-safe multi-mask upsert, per-chunk-commit chunking, burn-free upsert | Batch inserts; bulk `UPDATE`/`DELETE` via DQL | `upsert()` / bulk `insert()`                         |
+| Concurrency           | Tier-ordered `FOR UPDATE` locks, advisory locks, transient-retry decorator | Pessimistic + optimistic locking      | `lockForUpdate()` / `sharedLock()`                  |
+| Maturity / ecosystem  | **Young, pre-1.0, small**                                         | Mature, large                                | Mature, very large                                  |
+
+<sub>Footprint measured with `composer require <pkg> --prefer-dist` into a clean project — Doctrine's
+`doctrine/orm` and Eloquent's standalone `illuminate/database`; counts and sizes vary by version.
+attrecord's figure is v0.1.3 (0.2.0 is a little larger, still one package with zero dependencies).</sub>
+
+**Reach for Doctrine** when you have a rich domain model and want data-mapper purity — identity map,
+unit of work, lazy object graphs, DQL, a full migrations toolchain — and don't mind the weight.
+
+**Reach for Eloquent** when you're in Laravel (or want its ergonomics standalone) and value the
+convention-driven speed and enormous ecosystem.
+
+**Reach for attrecord** when you want a small, dependency-free, framework-agnostic Active Record where
+the PHP class *is* the schema (attributes → emitted DDL, no migration tool), and you need strong
+multi-backend, bulk-write, and concurrency ergonomics — accepting a young, pre-1.0 library with a
+deliberately smaller surface and ecosystem.
+
+---
+
 ## Installation
 
 ```bash
