@@ -1,6 +1,11 @@
 # Concurrency & production locking (design note, targeting 0.2.0)
 
-> **Status:** design — decisions pinned here before implementation. Not yet built.
+> **Status:** IMPLEMENTED in v0.2.0. All three additions below shipped — connection hardening
+> (`connectionInitStatements()`, applied eagerly in `Connection::__construct`), transient-conflict
+> retry (`RetryingDbSession` + `DbSession::isRetryableTransactionError()`), and `FOR UPDATE`
+> dialect-gating (`forUpdateClause()`) — alongside the `SqliteDialect`. This note is retained as the
+> design rationale; the decision log in §9 records how each landed. See the CHANGELOG, README, and
+> `docs/llm-reference.md` for usage.
 > **Theme:** make attrecord handle *production locking reality* across SQLite → MySQL → PG,
 > with the concurrency machinery as **opt-in, prunable composition** rather than baked-in weight.
 
@@ -255,25 +260,30 @@ belong in the library" test passing in practice.
 
 ## 9. Decisions & open questions
 
-- **D-1:** `UpsertSql::$lock` becomes nullable; `saveAll()` skips a null lock step. *(pinned)*
-- **D-2:** default `isRetryableTransactionError()` **includes** deadlocks; consumers opt *out* via
-  the override predicate. *(pinned)*
-- **D-3:** isolation-level management is **not** in the generic retry. *(pinned)*
-- **O-1:** connection-init applied lazily on first use vs eagerly in `Connection::__construct`.
-  *(leaning lazy)*
-- **O-2:** does `find(forUpdate: true)` on SQLite silently no-op, or warn? *(leaning silent
-  no-op + docs)*
-- **O-3:** should `RetryingDbSession` expose a hook for observability (per-attempt callback), given
-  InvFlux wanted a profiler? *(leaning: a nullable `onRetry` callback, kept optional)*
+- **D-1:** *(revised — not as pinned)* `UpsertSql::$lock` stayed **non-nullable**. Rather than skip a
+  null lock step, `SqliteDialect` emits a plain ordered `SELECT … ORDER BY pk ASC` (no `FOR UPDATE`)
+  for shape parity — a harmless read on an engine that serializes writers anyway. Only `$update`
+  is nullable (insert-only batches).
+- **D-2:** *(implemented)* default `isRetryableTransactionError()` **includes** deadlocks; consumers
+  opt *out* via the `$retryable` override predicate on `RetryingDbSession`.
+- **D-3:** *(implemented)* isolation-level management is **not** in the generic retry.
+- **O-1:** *(resolved — eager)* connection-init is applied **eagerly** in `Connection::__construct`
+  (`foreach ($dialect->connectionInitStatements() as $s) $session->exec($s)`), not lazily.
+- **O-2:** *(resolved — silent no-op)* `forUpdateClause()` returns `''` on SQLite, so a `FOR UPDATE`
+  request is silently omitted; documented rather than warned.
+- **O-3:** *(deferred — not built)* `RetryingDbSession` exposes **no** per-attempt observability hook;
+  its constructor is `(DbSession $inner, int $maxAttempts, int $baseDelayUs, int $maxDelayUs,
+  ?\Closure $retryable)`. An `onRetry` callback can be added later if a consumer needs it.
 
-## 10. Sequencing (0.2.0)
+## 10. Sequencing (0.2.0) — all shipped
 
-1. `forUpdateClause()` dialect-gating refactor (D-1 included) — load-bearing; benefits MySQL/PG
-   regardless. Re-test both existing backends.
-2. `connectionInitStatements()` + `Connection` application.
-3. `SqliteDialect` + `SqliteIntegrationTestCase` + dual-run (now tri-run) suites + a
-   `SqliteDialectCreateTableTest`.
-4. `isRetryableTransactionError()` per backend + `RetryingDbSession` + tests (force a real
-   deadlock on MySQL/PG; force `SQLITE_BUSY` on SQLite).
-5. Docs: README "Concurrency" section + the idempotency contract; link this note.
-6. CHANGELOG `0.2.0`.
+1. ✅ `forUpdateClause()` dialect-gating refactor — load-bearing; benefits MySQL/PG regardless.
+2. ✅ `connectionInitStatements()` + eager `Connection` application.
+3. ✅ `SqliteDialect` + `SqliteIntegrationTestCase` + tri-run suites + `SqliteDialectCreateTableTest`.
+4. ✅ `isRetryableTransactionError()` per backend + `RetryingDbSession` + tests.
+5. ✅ Docs: CHANGELOG, README, and `docs/llm-reference.md` cover usage; this note pins the rationale.
+6. ✅ CHANGELOG entries under `[Unreleased]` (become `0.2.0` at release).
+
+Follow-on (post-0.2.0, tracked elsewhere): the multi-mask **join** upsert (`docs/arch-bulk-update-scaling.md`)
+and chunked `saveAll()` also landed in this release; and InvFlux's own session migration (§8) is
+still owed when InvFlux adopts 0.2.0.

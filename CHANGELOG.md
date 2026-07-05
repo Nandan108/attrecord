@@ -6,6 +6,39 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **SQLite as a third first-class backend** — `SqliteDialect` (DDL emission, batch insert/upsert,
+  advisory-lock no-ops). Requires **SQLite ≥ 3.33** (2020-08) for the `UPDATE … FROM` join used by
+  bulk upserts. Integration suites run against MySQL/MariaDB, PostgreSQL, **and** SQLite.
+- **Connection hardening** — `SqlDialect::connectionInitStatements()` returns per-connection setup
+  statements that `Connection` runs on construct. `SqliteDialect` emits `journal_mode` (WAL by
+  default), `busy_timeout`, and `foreign_keys` pragmas (all configurable via its constructor).
+- **`RetryingDbSession`** — an opt-in `DbSession` decorator that retries the **outer** transaction on
+  transient conflicts (deadlock / lock-wait timeout / serialization failure / `SQLITE_BUSY`) with
+  exponential backoff + jitter. Prunable and composable; wrap a session only where you want retries.
+- **Chunked `RecordSet::saveAll()`** — `saveAll(bool $force = false, ?int $chunkSize = null, bool
+  $allowInTransactionChunking = false)`. With a `$chunkSize`, the write is split into slices that
+  **commit independently**, bounding the lock/undo footprint for very large batches (not
+  all-or-nothing — resumable via dirty-tracking). Default (`null`) is unchanged: one atomic
+  transaction. `$allowInTransactionChunking` opts into chunked-but-atomic when nested in an outer
+  transaction; without it, a chunked call inside a transaction throws rather than silently degrade.
+
+### Changed
+
+- **Bulk-upsert UPDATE rewritten from per-column `CASE` to a single multi-mask derived-table join**
+  (`UpsertJoinBuilder`): `O(N²·M) → O(N·M)`. Per-row column selectivity travels as a per-row integer
+  bitmask (`_m0, _m1, …`, 63 bits each); columns changed by every row are written directly, so a
+  homogeneous batch carries no mask. One uniform path for any column count — the `buildUpsertCaseSet`
+  helper is removed.
+- **`DbSession` gained `isRetryableTransactionError(\Throwable): bool`** — the transient-error
+  classifier used by `RetryingDbSession`, folded in from a separate interface. **Breaking for custom
+  `DbSession` implementations**, which must now implement it (all bundled sessions do).
+- **`SqlDialect` gained `forUpdateClause()` and `connectionInitStatements()`**, and
+  `buildUpsertSql()` gained a trailing `array $rowDirtyColumns = []` parameter. `FOR UPDATE` is now
+  dialect-gated (SQLite, which serializes writers, omits it). **Breaking for custom `SqlDialect`
+  implementations.**
+
 ## [0.1.3] - 2026-07-05
 
 ### Fixed

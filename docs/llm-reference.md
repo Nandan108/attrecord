@@ -13,9 +13,10 @@ prose and worked examples, and the topic docs in this directory for deep dives
   eager relation loading, deadlock-safe locking, and `CREATE TABLE` DDL emission.
 - **No runtime dependencies.** Psalm level 1 clean. Namespace root `Nandan108\Attrecord\`,
   PSR-4 from `src/`.
-- **Two supported SQL dialects: MySQL/MariaDB and PostgreSQL.** A `SqlDialect` abstraction
-  isolates the differences; the same Record code runs on both. SQLite partially works through
-  PDO but is not a first-class target. See [§13 Dialect portability](#13-dialect-portability).
+- **Three supported SQL dialects: MySQL/MariaDB, PostgreSQL, and SQLite (>= 3.33).** A
+  `SqlDialect` abstraction isolates the differences; the same Record code runs on all three.
+  SQLite is a first-class target as of v0.2.0 (requires SQLite >= 3.33 for `UPDATE … FROM` in
+  the bulk-upsert join). See [§13 Dialect portability](#13-dialect-portability).
 - **Constructor params with `?` are nullable; param order matches the listed constructor.**
   All attribute properties are `readonly`.
 - **Conventions.** Column SQL type comes from `ColumnType`; PHP property type is whatever you
@@ -30,8 +31,8 @@ prose and worked examples, and the topic docs in this directory for deep dives
 | `Nandan108\Attrecord` | `Record`, `RecordSet`, `WhereClause`, `RawSql`, `Connection`, `DbSession`, `SqlDialect`, `ColumnSerializer` (internal), `ColumnCaster`, `JsonCastable`, `BinaryParam`, `LockSet`, `Transaction`, `SaveResult`, `UpsertSql`, `NamedPlaceholderSql` (internal) |
 | `Nandan108\Attrecord\Attribute` | `Table`, `Column`, `ForeignKey`, `Index`, `UniqueKey`, `Relation`, `LockTier`, `MysqlTableOptions`, `Cast` (abstract base) |
 | `Nandan108\Attrecord\Caster` | `DateTimeCaster`, `EpochCaster`, `JsonCaster` |
-| `Nandan108\Attrecord\Dialect` | `MysqlDialect`, `PgsqlDialect` |
-| `Nandan108\Attrecord\Session` | `PdoDbSession`, `MysqliDbSession`, `WpDbSession` |
+| `Nandan108\Attrecord\Dialect` | `MysqlDialect`, `PgsqlDialect`, `SqliteDialect`, `UpsertJoinBuilder` (trait) |
+| `Nandan108\Attrecord\Session` | `PdoDbSession`, `MysqliDbSession`, `WpDbSession`, `RetryingDbSession` |
 | `Nandan108\Attrecord\Schema` | `TableSchema`, `ColumnDefinition`, `ForeignKeyDefinition`, `RelationDefinition` |
 | `Nandan108\Attrecord\Enum` | `ColumnType`, `RelationType`, `ForeignKeyAction`, `GeneratedColumnMode` |
 | `Nandan108\Attrecord\Exception` | see [§12](#12-exceptions) |
@@ -51,8 +52,11 @@ Record::setConnection($conn);          // global default for all Records
 Record::setTablePrefix('wp_');         // optional; prepended to every Table name
 ```
 
-- `Connection` is a final readonly value object: `public readonly DbSession $session`,
-  `public readonly SqlDialect $dialect`.
+- `Connection` is a `final` value object: `public readonly DbSession $session`,
+  `public readonly SqlDialect $dialect`. Its constructor runs
+  `$dialect->connectionInitStatements()` against the session (per-connection baseline setup —
+  e.g. SQLite `PRAGMA journal_mode=WAL` / `busy_timeout` / `foreign_keys`; an empty no-op for
+  MySQL/MariaDB and PostgreSQL).
 - `Record::setConnection(Connection $connection, ?string $forClass = null)` — `$forClass`
   registers a per-class connection override (multi-DB); omit for the global default.
 - `Record::connection(): Connection`, `Record::tablePrefix(): string`,
@@ -182,13 +186,13 @@ column to a single-column key.
 
 Enum `Nandan108\Attrecord\Enum\ColumnType` (backed by string). PHP type ← → SQL type:
 
-| PHP type | `ColumnType` cases | MySQL SQL | PostgreSQL SQL |
-|---|---|---|---|
-| `int` | `TinyInt`,`SmallInt`,`MediumInt`,`Int`,`BigInt` (+`*Unsigned`), `Year`, `Bit` | as named (+`UNSIGNED`) | `SMALLINT`/`INTEGER`/`BIGINT` (no unsigned); `BIT(n)` |
-| `bool` | `Bool` | `TINYINT(1)` | `BOOLEAN` |
-| `float` (or exact `string`) | `Float`,`Double`,`Decimal` | `FLOAT`/`DOUBLE`/`DECIMAL(p,s)` | `REAL`/`DOUBLE PRECISION`/`NUMERIC(p,s)` |
-| `string` | `Char`,`VarChar`,`TinyText`,`Text`,`MediumText`,`LongText`,`Json`,`Enum`,`Set`,`Binary`,`VarBinary` | as named | `CHAR(n)`/`VARCHAR(n)`/`TEXT`/`JSONB`/`TEXT`+CHECK/(Set→error)/`BYTEA` |
-| `\DateTimeImmutable` | `Date`,`DateTime`,`Timestamp` | `DATE`/`DATETIME(p)`/`TIMESTAMP(p)` | `DATE`/`TIMESTAMP(p)` |
+| PHP type | `ColumnType` cases | MySQL SQL | PostgreSQL SQL | SQLite SQL (affinity) |
+|---|---|---|---|---|
+| `int` | `TinyInt`,`SmallInt`,`MediumInt`,`Int`,`BigInt` (+`*Unsigned`), `Year`, `Bit` | as named (+`UNSIGNED`) | `SMALLINT`/`INTEGER`/`BIGINT` (no unsigned); `BIT(n)` | `INTEGER` (all int/year/bit cases) |
+| `bool` | `Bool` | `TINYINT(1)` | `BOOLEAN` | `INTEGER` (`1`/`0`) |
+| `float` (or exact `string`) | `Float`,`Double`,`Decimal` | `FLOAT`/`DOUBLE`/`DECIMAL(p,s)` | `REAL`/`DOUBLE PRECISION`/`NUMERIC(p,s)` | `REAL`/`REAL`/`NUMERIC` |
+| `string` | `Char`,`VarChar`,`TinyText`,`Text`,`MediumText`,`LongText`,`Json`,`Enum`,`Set`,`Binary`,`VarBinary` | as named | `CHAR(n)`/`VARCHAR(n)`/`TEXT`/`JSONB`/`TEXT`+CHECK/(Set→error)/`BYTEA` | `TEXT` (Char/VarChar/text family/Json/Enum+CHECK); `Set`→error; `Binary`/`VarBinary`→`BLOB` |
+| `\DateTimeImmutable` | `Date`,`DateTime`,`Timestamp` | `DATE`/`DATETIME(p)`/`TIMESTAMP(p)` | `DATE`/`TIMESTAMP(p)` | `TEXT` (ISO-8601; fractional secs when `precision`) |
 
 Derived predicates on `ColumnType`: `isInteger()`, `isBool()`, `isFloat()`, `isNumeric()`,
 `isBinary()`, `isDateTime()`, `isDate()`, `isString()`.
@@ -233,7 +237,7 @@ Static finders:
 - `findOne(string|WhereClause $where, array $params = [], string $orderByLimit = 'LIMIT 1', bool $forUpdate = false): ?static`
 - `where(string $column, mixed $value, string $op = '='): RecordSet<static>` — column auto-quoted.
 - `whereIn(string|list<string> $column, array $values): RecordSet<static>` — single or composite.
-- `whereInTuples(array $columns, array $rows): RecordSet<static>` — row-value-constructor IN (MySQL+PG; not SQLite).
+- `whereInTuples(array $columns, array $rows): RecordSet<static>` — row-value-constructor IN, rendered as `((c1, c2) IN ((?, ?), …))`. Dialect-independent; supported on all three backends (SQLite has row-value IN since 3.15, well under the 3.33 floor).
 - `countWhere(string|WhereClause $where, array $params = []): int`
 - `updateWhere(array $set, string|WhereClause $where = '', array $params = []): int` — bulk UPDATE.
 - `deleteWhere(string|WhereClause $where, array $params = []): int` — bulk DELETE.
@@ -287,11 +291,26 @@ Access / shaping:
 - `bulkSet(array $attrs): static` — assign attrs to every record (stages dirty); returns `$this`.
 
 Batch persistence (single SQL per operation — never a loop of queries):
-- `saveAll(bool $force = false): ?SaveResult` — one statement: plain bulk `INSERT` for PK-null
-  records; deadlock-safe 3-step upsert for keyed records (INSERT-IGNORE/ON-CONFLICT-DO-NOTHING →
-  `SELECT … FOR UPDATE` ascending-PK → CASE `UPDATE`). Back-fills auto-increment PKs onto new
-  records (PG via `RETURNING`, MySQL via `lastInsertId()` + sequential range). Returns `null` if
-  nothing was dirty.
+- `saveAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false): ?SaveResult`
+  — plain bulk `INSERT` for PK-null records; deadlock-safe 3-step upsert for keyed records
+  (INSERT-IGNORE/ON-CONFLICT-DO-NOTHING → `SELECT … FOR UPDATE` ascending-PK → join-based
+  `UPDATE`). Back-fills auto-increment PKs onto new records (PG/SQLite via `RETURNING`, MySQL via
+  `lastInsertId()` + sequential range). Returns `null` if nothing was dirty. `force: true` saves
+  clean records too. **Chunking:**
+  - `$chunkSize === null` (default) — the whole set runs in **one transaction**, all-or-nothing
+    (unchanged v0.1 behaviour).
+  - `$chunkSize` int — split the write into `$chunkSize`-row slices that **commit independently**,
+    bounding the lock/undo footprint for very large batches at the cost of whole-set atomicity
+    (a mid-run failure leaves earlier chunks committed, so the operation must be **resumable**;
+    each chunk is `markClean()`ed as it commits). Keyed records are **PK-sorted ascending before
+    chunking** so each chunk's step-2 `FOR UPDATE` locks a contiguous ascending range and chunks
+    proceed low→high — preserving the global ascending-PK lock-order invariant. New (PK-null)
+    records are chunked for INSERT first, then keyed chunks.
+  - Issuing a chunked write **inside an open transaction** throws `AttrecordException` (per-chunk
+    commit is impossible — the outer transaction holds every lock until it commits) **unless**
+    `$allowInTransactionChunking: true`, which chunks the statements inline within the outer
+    transaction: smaller statements, still **atomic** (the outer transaction's contract), but the
+    lock/undo footprint stays unbounded. No effect outside a transaction.
 - `upsertAllByUniqueKey(string $conflictKey): ?SaveResult` — bulk burn-free upsert by unique key.
 - `buildSaveAllSql(bool $force = false): ?UpsertSql` — the SQL the upsert path would run (introspection/testing).
 - `deleteAll(): int` — single `DELETE … WHERE pk IN (…)`.
@@ -333,7 +352,9 @@ UTF-8 text), so on PostgreSQL binary parameters are wrapped. The wrapping is **d
 scalars is unaffected:
 
 - `final class BinaryParam implements \Stringable { public function __construct(public readonly string $bytes) {} }`
-- `SqlDialect::bindsBinaryAsLob(): bool` — `false` for `MysqlDialect`, `true` for `PgsqlDialect`.
+- `SqlDialect::bindsBinaryAsLob(): bool` — `false` for `MysqlDialect`, `true` for `PgsqlDialect`
+  and `SqliteDialect` (SQLite binds as a LOB so bytes land in a `BLOB` column rather than being
+  coerced to `TEXT` affinity).
 - `ColumnSerializer::toParam(mixed $value, ColumnDefinition $col, bool $bindBinaryAsLob = false)`
   wraps binary values in `BinaryParam` **only when `$bindBinaryAsLob` is true**. The binding
   call sites (save/getOne/delete/upsert/update + RecordSet) pass `$dialect->bindsBinaryAsLob()`;
@@ -355,15 +376,46 @@ string works and wrapping is unnecessary (but harmless).
 ## 11. DDL generation, dialects, and sessions
 
 ### `SqlDialect` interface (per-dialect SQL)
-`bindsBinaryAsLob(): bool` (false for MySQL, true for PG — see [§10](#10-binary-values-binaryparam)),
+`bindsBinaryAsLob(): bool` (false for MySQL, true for PG and SQLite — see [§10](#10-binary-values-binaryparam)),
 `toLiteral(mixed, ColumnDefinition): string`, `quoteIdentifier(string): string`,
 `escapeLikeWildcards(string): string`, `likeEscapeSuffix(): string`,
-`insertReturningSuffix(string $quotedPk): string`,
-`buildBulkInsert(...)`, `buildSingleUpsertSql(...)`, `buildUpsertSql(...): UpsertSql`,
+`insertReturningSuffix(string $quotedPkColumn): string`,
+`forUpdateClause(): string`, `connectionInitStatements(): array` (`list<string>`),
+`buildBulkInsert(...)`, `buildSingleUpsertSql(...)`,
+`buildUpsertSql(string $tableName, string $pkColumn, array $columnNames, array $rows, array $updateColumns, array $rowDirtyColumns = []): UpsertSql`,
 `buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string`.
 
-Implementations: `MysqlDialect` (constructor: `defaultEngine`, `defaultCharset`,
-`defaultCollation`), `PgsqlDialect`.
+New in v0.2.0:
+- `forUpdateClause(): string` — the row-locking suffix for a `SELECT … FOR UPDATE` read.
+  Returns `'FOR UPDATE'` on `MysqlDialect` and `PgsqlDialect`; `''` on `SqliteDialect` (SQLite
+  serializes writers at the database level — no per-row lock clause; callers append this after
+  `ORDER BY`, so an empty string yields a plain ordered SELECT).
+- `connectionInitStatements(): list<string>` — per-connection setup statements run by
+  `Connection` on construction. `[]` for `MysqlDialect`/`PgsqlDialect`; for `SqliteDialect` the
+  `PRAGMA journal_mode` / `busy_timeout` / `foreign_keys` statements (per its constructor).
+- `buildUpsertSql()` gained a trailing `array $rowDirtyColumns = []` param
+  (`list<array<string,bool>>`, per-row set of changed column names) driving per-row dirty
+  scoping in the join-based UPDATE (see [below](#buildupsertsql--join-based-multi-mask-upsert-step-3)).
+
+Implementations: `MysqlDialect` (constructor: `?string $defaultEngine = null`,
+`?string $defaultCharset = null`, `?string $defaultCollation = null`), `PgsqlDialect` (no
+constructor args), `SqliteDialect` (see below). All three `use UpsertJoinBuilder` (the shared
+mask/derived-table trait).
+
+### `SqliteDialect` (v0.2.0)
+Third backend; requires **SQLite >= 3.33** (`UPDATE … FROM`) and 3.35+ for `RETURNING` id
+back-fill. Constructor:
+```php
+new SqliteDialect(
+    ?string $journalMode = 'WAL',    // PRAGMA journal_mode; null leaves the default
+    int $busyTimeoutMs = 5000,       // PRAGMA busy_timeout (ms); typed int — no null
+    bool $foreignKeys = true,        // PRAGMA foreign_keys=ON (SQLite defaults it OFF)
+)
+```
+(`$busyTimeoutMs` is a plain `int`, not nullable; only `$journalMode` is nullable.)
+`connectionInitStatements()` emits `PRAGMA journal_mode=<mode>` (when non-null),
+`PRAGMA busy_timeout=<ms>`, and `PRAGMA foreign_keys=ON` (when `$foreignKeys`). See
+[§13](#13-dialect-portability) for its DDL/type mappings.
 
 ### `buildCreateTable()` — DDL from attributes
 ```php
@@ -372,23 +424,110 @@ $sql = (new PgsqlDialect())->buildCreateTable(TableSchema::fromClass(Order::clas
 ```
 MySQL returns a single statement (indexes/comments inline). PostgreSQL returns a
 **semicolon-separated batch** (`CREATE TABLE` + trailing `CREATE INDEX` / `COMMENT ON`),
-runnable in one `PDO::exec()`. Full mapping + rejections: [ddl-generation.md](ddl-generation.md).
+runnable in one `PDO::exec()`. SQLite likewise returns a semicolon-separated batch (`CREATE TABLE`
++ trailing `CREATE INDEX`; no comments), with a single auto-increment PK declared inline as
+`INTEGER PRIMARY KEY AUTOINCREMENT` (and the separate `PRIMARY KEY (...)` clause then omitted).
+Full mapping + rejections: [ddl-generation.md](ddl-generation.md).
+
+### `buildUpsertSql()` — join-based multi-mask upsert (step 3)
+As of v0.2.0 step 3 (the `UPDATE`) is a **derived-table join with per-row integer masks**, not a
+per-column `CASE pk WHEN …`. Shared logic lives in the `Dialect\UpsertJoinBuilder` trait
+(`computeUpsertMaskPlan()`, `renderUpsertDerivedTable()`, `buildUpsertDerivedColumns()`), used by
+all three dialects.
+
+Given `$rows` + `$updateColumns` + `$rowDirtyColumns`, it builds
+`UPDATE … JOIN (SELECT … UNION ALL SELECT …) u` (MySQL) / `UPDATE … FROM (…) u` (PG, SQLite),
+where the derived table `u` carries the PK, per-row mask column(s) `_m0, _m1, …`, and the update
+columns. Column classification:
+- **Uniform** — changed by *every* row (or no dirty info at all, i.e. `$rowDirtyColumns === []`):
+  written directly (`SET col = u.col`), no mask bit.
+- **Sparse** — changed by only some rows: gated by a mask bit so rows that did not change it keep
+  their live value (`ELSE` the table's own column).
+
+Each mask integer holds **63 usable bits** (bit 63 is the sign bit of a 64-bit signed integer);
+`> 63` sparse columns spill into additional mask columns `_m1, _m2, …`. Complexity O(N·M) (N rows
+× M update columns). Per-dialect SET expression for a sparse column with bit `b` in mask `_mk`
+(`k = ⌊b/63⌋`, `bit = 1 << (b % 63)`):
+
+| Dialect | Sparse-column SET expression |
+|---|---|
+| MySQL | `` `t`.`col` = IF(u.`_m0` & bit, u.`col`, `t`.`col`) `` |
+| PostgreSQL | `"col" = CASE WHEN (u."_m0" & bit) <> 0 THEN u."col" ELSE "t"."col" END` |
+| SQLite | `"col" = iif(u."_m0" & bit, u."col", "t"."col")` |
+
+(`u` is the derived table's alias; `t` above stands for the **actual quoted table name** — the
+ELSE branch is qualified with the real table, not an alias. A uniform column collapses to
+`SET col = u.col`.)
+
+The derived table is rendered as `SELECT <lit> AS <col>, … UNION ALL SELECT <lit>, …` (first
+branch aliases the columns, later branches match by position) — identical across all three
+dialects, no per-dialect `VALUES` typing. Steps 1 (`create`) and 2 (`lock`) are unchanged; step 3
+is `null` when `$updateColumns` is empty.
 
 ### `DbSession` interface (one connection abstraction)
 `exec(string $sql, array $params = []): int`,
 `fetchAll(...)`, `fetchOne(...): ?array`, `fetchScalar(...): string|int|float|null`,
 `lastInsertId(): string|int`, `transactional(\Closure): mixed`,
 `withAdvisoryLock(string $lockName, int $timeoutSeconds, \Closure $callback): mixed`,
-`inTransaction(): bool`, `isDuplicateKeyError(\Throwable): bool`.
+`inTransaction(): bool`, `isDuplicateKeyError(\Throwable): bool`,
+`isRetryableTransactionError(\Throwable $throwable): bool`.
 Param type is `array<array-key, scalar|BinaryParam|null>`; both `?` and `:named` placeholders
 are accepted (`NamedPlaceholderSql` normalizes named → positional).
+
+`isRetryableTransactionError(\Throwable): bool` (v0.2.0) — whether a throwable is a **transient,
+retryable** transaction conflict (deadlock, serialization failure, lock-wait timeout,
+`SQLITE_BUSY`) as opposed to a permanent failure (constraint violation, syntax error). Companion
+to `isDuplicateKeyError()`; the default classification **includes deadlocks** (most apps want them
+retried). Consumed by `RetryingDbSession`. Per-implementation classification:
+
+| Session | Classified as retryable |
+|---|---|
+| `PdoDbSession` | only `\PDOException`; switches on the PDO driver: **pgsql** SQLSTATE `40001` (serialization_failure) / `40P01` (deadlock_detected); **sqlite** driver code `5` (`SQLITE_BUSY`) / `6` (`SQLITE_LOCKED`) or message contains `locked`; **mysql/other** driver errno `1213` (deadlock) / `1205` (lock-wait timeout) / `1020` (MariaDB MVCC re-read) |
+| `MysqliDbSession` | `getCode()` **or** `$conn->errno` in `1213` / `1205` / `1020` |
+| `WpDbSession` | message or `wpdb->last_error` contains `Deadlock found` / `Lock wait timeout exceeded` / `Record has changed since last read` |
+| `CapturingDbSession` | always `false` (test stub) |
 
 Implementations:
 - `PdoDbSession(\PDO $pdo)` — recommended; works for MySQL, MariaDB, PostgreSQL, SQLite.
   Auto-detects the driver for advisory locks and binds `BinaryParam` as a LOB.
 - `MysqliDbSession(\mysqli $conn)` — MySQL/MariaDB.
 - `WpDbSession(\wpdb $wpdb)` — WordPress; converts `?` to `%s`.
+- `RetryingDbSession(...)` — DbSession decorator; retries the outer transaction (see below).
 - `CapturingDbSession` (in `Test\`) — records SQL+params without a DB, for unit assertions.
+
+### `RetryingDbSession` (v0.2.0)
+A `DbSession` **decorator** that retries the **outermost** transaction on classified transient
+conflicts with exponential backoff + jitter. Opt-in — wrap a session with it only where retries
+are wanted:
+```php
+$conn = new Connection(new RetryingDbSession(new PdoDbSession($pdo)), new PgsqlDialect());
+```
+Constructor:
+```php
+public function __construct(
+    private readonly DbSession $inner,
+    private readonly int $maxAttempts = 10,   // total attempts including the first (>= 1)
+    private readonly int $baseDelayUs = 5_000, // base backoff µs, doubled per attempt
+    private readonly int $maxDelayUs = 100_000, // per-attempt backoff cap µs
+    ?\Closure $retryable = null,               // (\Closure(\Throwable): bool)|null — overrides classification
+)
+```
+Semantics:
+- **Only the outermost transaction is retried.** If `$inner->inTransaction()` is already true, the
+  call runs inline (no retry loop) — nested `transactional()` calls join the outer one.
+- **Which errors retry:** `$retryable` if given, else `$inner->isRetryableTransactionError()`. (A
+  consumer with strict lock-order discipline can pass a predicate that returns `false` for
+  deadlocks to surface them instead.)
+- **Backoff:** `min($maxDelayUs, $baseDelayUs * 2**(attempt-1))` plus up-to-50% jitter, via
+  `usleep()`.
+- **Idempotency contract:** the closure passed to `transactional()` is **re-run on every attempt**.
+  Any effect the DB does not roll back (HTTP calls, queue publishes, file writes, in-memory
+  mutation) will repeat — closures must be safe to re-run (pure-SQL / side-effect-free outside the
+  DB).
+- Every other `DbSession` method (`exec`, `fetchAll`, `fetchOne`, `fetchScalar`, `lastInsertId`,
+  `withAdvisoryLock`, `inTransaction`, `isDuplicateKeyError`, `isRetryableTransactionError`)
+  **delegates verbatim** to `$inner`. So `Record::transactional()` and `RecordSet::saveAll()`
+  (which funnel through `transactional()`) gain retries automatically.
 
 ---
 
@@ -414,24 +553,30 @@ All under `Nandan108\Attrecord\Exception`, extending `AttrecordException` (which
 
 ## 13. Dialect portability
 
-| Concern | MySQL / MariaDB | PostgreSQL |
-|---|---|---|
-| Identifier quoting | `` `backtick` `` | `"double-quote"` |
-| Auto-increment PK | `BIGINT UNSIGNED AUTO_INCREMENT` + `lastInsertId()` | `BIGSERIAL` + `RETURNING` |
-| Unsigned integers | native | none — widened |
-| Bulk upsert | `INSERT IGNORE` + `FOR UPDATE` + CASE `UPDATE` | `ON CONFLICT DO NOTHING` + `FOR UPDATE` + CASE `UPDATE` |
-| Single upsert | `ON DUPLICATE KEY UPDATE` | `ON CONFLICT (cols) DO UPDATE` |
-| Binary param bind | string | `PDO::PARAM_LOB` (`bytea`); read back from stream |
-| Advisory locks | `GET_LOCK`/`RELEASE_LOCK` | `pg_advisory_lock` (crc32-hashed key); timeout polled via `pg_try_advisory_lock` |
-| Duplicate-key SQLSTATE | `23000` | `23505` |
-| `LIKE` escape | implicit backslash | explicit `ESCAPE '\'` (handled by `WhereClause`) |
-| DDL `Enum` | `ENUM(...)` | `TEXT` + `CHECK (... IN (...))` |
-| DDL indexes/comments | inline | trailing `CREATE INDEX` / `COMMENT ON` |
-| DDL `Set` / `VIRTUAL` generated | supported | `SchemaException` |
-| `onUpdate` / engine/charset | emitted | omitted (no equivalent) |
+| Concern | MySQL / MariaDB | PostgreSQL | SQLite (>= 3.33) |
+|---|---|---|---|
+| Identifier quoting | `` `backtick` `` | `"double-quote"` | `"double-quote"` |
+| Auto-increment PK | `BIGINT UNSIGNED AUTO_INCREMENT` + `lastInsertId()` | `BIGSERIAL` + `RETURNING` | `INTEGER PRIMARY KEY AUTOINCREMENT` (inline, no separate PK clause) + `RETURNING` |
+| Unsigned integers | native | none — widened | none — `INTEGER` affinity |
+| Bulk upsert (3-step) | `INSERT IGNORE` + `SELECT … FOR UPDATE` + join `UPDATE` | `INSERT … ON CONFLICT DO NOTHING` + `SELECT … FOR UPDATE` + `UPDATE … FROM` join | `INSERT OR IGNORE` + ordered `SELECT` (no `FOR UPDATE`) + `UPDATE … FROM` join |
+| Single upsert | `ON DUPLICATE KEY UPDATE col = VALUES(col)` | `ON CONFLICT (cols) DO UPDATE SET col = EXCLUDED.col` | `ON CONFLICT (cols) DO UPDATE SET col = excluded.col` |
+| Sparse-column join mask op | `IF(mask & bit, u.col, t.col)` | `CASE WHEN (mask & bit) <> 0 THEN u.col ELSE t.col END` | `iif(mask & bit, u.col, t.col)` |
+| `forUpdateClause()` | `FOR UPDATE` | `FOR UPDATE` | `''` (writers serialized at DB level) |
+| `connectionInitStatements()` | `[]` | `[]` | `PRAGMA journal_mode` / `busy_timeout` / `foreign_keys` |
+| Binary param bind | string | `PDO::PARAM_LOB` (`bytea`); read back from stream | `PDO::PARAM_LOB` (`BLOB`); `X'hex'` literal |
+| Advisory locks | `GET_LOCK`/`RELEASE_LOCK` | `pg_advisory_lock` (crc32-hashed key); timeout polled via `pg_try_advisory_lock` | none (no `GET_LOCK` primitive) |
+| Duplicate-key SQLSTATE (`isDuplicateKeyError`) | `23000` | `23505` | `23000` |
+| Retryable-error signal (`isRetryableTransactionError`) | errno `1213`/`1205`/`1020` | SQLSTATE `40001`/`40P01` | code `5`(`SQLITE_BUSY`)/`6`(`SQLITE_LOCKED`) or msg `locked` |
+| `LIKE` escape | implicit backslash | explicit `ESCAPE '\'` (handled by `WhereClause`) | explicit `ESCAPE '\'` |
+| DDL `Enum` | `ENUM(...)` | `TEXT` + `CHECK (... IN (...))` | `TEXT` + `CHECK (... IN (...))` |
+| DDL indexes/comments | inline | trailing `CREATE INDEX` / `COMMENT ON` | trailing `CREATE INDEX`; comments dropped (no support) |
+| DDL `Set` | supported | `SchemaException` | `SchemaException` |
+| DDL `VIRTUAL` generated | supported (also `STORED`) | `SchemaException` (`STORED` only) | supported (`STORED` + `VIRTUAL`, 3.31+) |
+| `onUpdate` / engine/charset | emitted | omitted (no equivalent) | omitted (no equivalent) |
+| `whereInTuples` (row-value IN) | supported | supported | supported (SQLite ≥ 3.15) |
 
 `generatedAs` expressions are raw SQL → dialect-specific. Prefer portable functions
-(`COALESCE` over `IFNULL`) when a Record's DDL must build on both engines.
+(`COALESCE` over `IFNULL`) when a Record's DDL must build on multiple engines.
 
 ---
 
@@ -443,10 +588,14 @@ All under `Nandan108\Attrecord\Exception`, extending `AttrecordException` (which
   tier, to prevent deadlocks. Throws `MissingLockTierException` / `LockTierConflictException`.
 - `Transaction` — tracks acquired locks for assertions: `current()`, `push()`, `pop()`,
   `registerLock(Record)`, `assertLocked(Record)`.
-- `find(..., forUpdate: true)` / `getOne(..., forUpdate: true)` issue `SELECT … FOR UPDATE` in
-  ascending-PK order and (with a `$tx`) register the locks.
+- `find(..., forUpdate: true)` / `getOne(..., forUpdate: true)` append the dialect's
+  `forUpdateClause()` (`FOR UPDATE` on MySQL/PG; `''` on SQLite → a plain ascending-PK ordered
+  SELECT, since SQLite serializes writers at the DB level) and (with a `$tx`) register the locks.
 - Advisory locks via `DbSession::withAdvisoryLock()` — connection-scoped named mutexes,
-  portable across MySQL and PostgreSQL (see [§13](#13-dialect-portability)).
+  portable across MySQL and PostgreSQL (SQLite has no such primitive — see
+  [§13](#13-dialect-portability)).
+- `RetryingDbSession` retries the outermost transaction on transient conflicts (deadlock /
+  serialization failure / lock-wait timeout / `SQLITE_BUSY`) — see [§11](#retryingdbsession-v020).
 
 ---
 
@@ -469,10 +618,10 @@ raw fragment with optional bound params for the WHERE/SET escape hatch.
   unless `force: true`.
 - **Never loop DB calls.** Use `saveAll()` / `deleteAll()` / `with()` / `whereIn()` — each is a
   single statement. Repository-style methods should be plural by default.
-- **Generated columns are never written** (INSERT or UPDATE) — both engines reject a value for a
+- **Generated columns are never written** (INSERT or UPDATE) — every engine rejects a value for a
   `GENERATED ALWAYS` column.
-- **Auto-increment PKs are back-filled as `int`** on both engines (PG `RETURNING`/bigint strings
-  are cast through the serializer).
+- **Auto-increment PKs are back-filled as `int`** on all engines (PG/SQLite via `RETURNING`,
+  MySQL via `lastInsertId()` + sequential range; bigint strings are cast through the serializer).
 - **Binary on PostgreSQL** needs `BinaryParam` only for ad-hoc `WhereClause` predicates; PK and
   column paths wrap automatically.
 - **`__()`/textdomain note** is a *consumer* (WordPress) concern, not attrecord's — attrecord

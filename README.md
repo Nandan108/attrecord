@@ -9,18 +9,19 @@
 Lightweight PHP 8.1+ attribute-driven active-record layer.
 
 - Declare schema with PHP attributes — no XML, no YAML, no separate migration files
-- **Emit `CREATE TABLE` directly from the attributes** — single source of truth for column type, defaults, unique keys, indexes, and FK constraints; MySQL/MariaDB **and** PostgreSQL
-- **Dialect-portable** — MySQL/MariaDB and PostgreSQL share one code path for CRUD, batch upserts, eager loading, DDL, and advisory locks; binary columns bind correctly on both (PG `bytea` included)
+- **Emit `CREATE TABLE` directly from the attributes** — single source of truth for column type, defaults, unique keys, indexes, and FK constraints; MySQL/MariaDB, PostgreSQL **and** SQLite
+- **Dialect-portable** — MySQL/MariaDB, PostgreSQL, and SQLite share one code path for CRUD, batch upserts, eager loading, and DDL; binary columns bind correctly on all three (PG `bytea` / SQLite `BLOB` included). Advisory locks are available on MySQL/MariaDB and PostgreSQL
 - **camelCase PHP / snake_case SQL** via per-column `name:` override (no auto-conversion — [decision documented](docs/design-note-no-name-auto-conversion.md))
 - Dirty-tracking — `save()` only writes changed columns
 - Column casting — map columns to value objects / JSON / custom types via `#[Cast]` attributes ([docs](docs/column-casting.md))
-- Bulk upsert via `RecordSet::saveAll()` with a single SQL statement
+- Bulk upsert via `RecordSet::saveAll()` with a single SQL statement — optionally chunked (`saveAll(chunkSize:)`) for very large, resumable batches
+- Optional automatic retry of transient transaction conflicts (deadlock / lock-wait / serialization / `SQLITE_BUSY`) via the `RetryingDbSession` decorator
 - Eager relation loading with no N+1 queries (`with()`)
 - Domain invariants enforced at assignment and save time via a `validate()` hook
 - Deadlock-safe locking helpers (`LockTier`, `LockSet`, `Transaction`) + advisory locks
 - Unique-key aware upserts — single (`upsertByUniqueKey`) and bulk (`RecordSet::upsertAllByUniqueKey`), with an optional **auto-increment-burn-free** mode; plus `updateByUniqueKey`
 - Constraint-only foreign keys via `#[ForeignKey]` — declare an FK whose target has no Record (or that you don't want to hydrate)
-- Three included `DbSession` adapters: **PDO** (works with MySQL, MariaDB, and PostgreSQL), plus MySQL/MariaDB-only **mysqli** and WordPress **`wpdb`**
+- Three included `DbSession` adapters: **PDO** (works with MySQL, MariaDB, PostgreSQL, and SQLite), plus MySQL/MariaDB-only **mysqli** and WordPress **`wpdb`**
 - Psalm-clean at level 1
 
 ---
@@ -41,10 +42,12 @@ This README is the narrative guide. Deeper references live in [`docs/`](docs/):
 
 - [llm-reference.md](docs/llm-reference.md) — exhaustive, AI-ingestion-oriented reference
   (every attribute, method signature, enum, dialect difference, and invariant in one place)
-- [ddl-generation.md](docs/ddl-generation.md) — `CREATE TABLE` emission (MySQL + PostgreSQL)
+- [ddl-generation.md](docs/ddl-generation.md) — `CREATE TABLE` emission (MySQL, PostgreSQL, SQLite)
 - [column-casting.md](docs/column-casting.md) — the `#[Cast]` family and `JsonCastable`
 - [where-clause.md](docs/where-clause.md) — the `WhereClause` builder grammar
 - [polymorphic-relations.md](docs/polymorphic-relations.md) — morph relations
+- [arch-concurrency.md](docs/arch-concurrency.md) — production locking model, retryable-error classification, `RetryingDbSession`
+- [arch-bulk-update-scaling.md](docs/arch-bulk-update-scaling.md) — the join-based bulk-`UPDATE` emitter and `saveAll()` chunking rationale
 - [design-note-no-name-auto-conversion.md](docs/design-note-no-name-auto-conversion.md) — why no auto snake/camel conversion
 
 ---
@@ -359,7 +362,7 @@ A given key/index name must be declared via one form only.
 
 INSERT this record; on conflict on the named unique key, UPDATE only the listed
 columns. Dialect-aware (uses `ON DUPLICATE KEY UPDATE` on MySQL/MariaDB, `ON CONFLICT
-… DO UPDATE` on PostgreSQL).
+… DO UPDATE` on PostgreSQL and SQLite).
 
 ```php
 $item = new InventoryItem();
@@ -447,7 +450,7 @@ $sql = (new MysqlDialect())->buildCreateTable(
 // ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
-Both dialects implement it. `PgsqlDialect::buildCreateTable()` emits the PostgreSQL
+All three dialects implement it. `PgsqlDialect::buildCreateTable()` emits the PostgreSQL
 equivalent from the same attributes — `BIGSERIAL` for an auto-increment PK, no `UNSIGNED`,
 `BYTEA` for binary, `NUMERIC` for decimal, `BOOLEAN`, `JSONB`, an `Enum` column as `TEXT`
 plus a `CHECK (... IN (...))` constraint, and FK constraints. Because PostgreSQL cannot
@@ -467,6 +470,34 @@ $sql = (new PgsqlDialect())->buildCreateTable(TableSchema::fromClass(Order::clas
 //   "status" VARCHAR(20) NOT NULL DEFAULT 'pending',
 //   ...
 //   PRIMARY KEY ("id"),
+//   CONSTRAINT "uk_external" UNIQUE ("external_ref"),
+//   CONSTRAINT "fk_orders_customer_id" FOREIGN KEY ("customer_id")
+//     REFERENCES "customers" ("id") ON DELETE CASCADE ON UPDATE RESTRICT
+// );
+// CREATE INDEX "idx_status_date" ON "orders" ("status", "created_at")
+```
+
+`SqliteDialect::buildCreateTable()` emits the SQLite equivalent from the same attributes. A
+single auto-increment PK is rendered inline as `INTEGER PRIMARY KEY AUTOINCREMENT` (with no
+separate `PRIMARY KEY` clause); column types collapse to SQLite's affinities (integer/bool →
+`INTEGER`, `Float`/`Double` → `REAL`, `Decimal` → `NUMERIC`, binary → `BLOB`, everything else
+— text family, `Json`, `Enum`, and the date/time types stored as ISO-8601 text — → `TEXT`); an
+`Enum` column is `TEXT` plus a `CHECK (... IN (...))` constraint; generated columns
+(`STORED`/`VIRTUAL`) and FK constraints are supported; secondary indexes are emitted as
+trailing `CREATE INDEX` statements in the same batch. Column comments and a MySQL `ON UPDATE`
+clause have no SQLite equivalent and are dropped; the `Set` type is rejected with a
+`SchemaException`. FK constraints are only *enforced* at runtime when `PRAGMA foreign_keys=ON`,
+which the dialect applies automatically on connection open (see below).
+
+```php
+use Nandan108\Attrecord\Dialect\SqliteDialect;
+
+$sql = (new SqliteDialect())->buildCreateTable(TableSchema::fromClass(Order::class));
+// CREATE TABLE "orders" (
+//   "id" INTEGER PRIMARY KEY AUTOINCREMENT,
+//   "customer_id" INTEGER NOT NULL,
+//   "status" TEXT NOT NULL DEFAULT 'pending',
+//   ...
 //   CONSTRAINT "uk_external" UNIQUE ("external_ref"),
 //   CONSTRAINT "fk_orders_customer_id" FOREIGN KEY ("customer_id")
 //     REFERENCES "customers" ("id") ON DELETE CASCADE ON UPDATE RESTRICT
@@ -779,7 +810,7 @@ $rows = $orders->toArraySet();   // list<array<string, scalar|null>>
 $set = new RecordSet([$line1, $line2, $line3]);
 $set->bulkSet(['updated_by' => $userId]);
 
-// Batch upsert — deadlock-safe 3-step strategy for all dirty records
+// Batch upsert — deadlock-safe 3-step strategy for all dirty records, one atomic transaction
 $result = $set->saveAll();   // ?SaveResult — null when nothing to save
 
 $result->inserted;      // rows newly written
@@ -798,14 +829,44 @@ $deleted = $set->deleteAll();  // DELETE FROM … WHERE id IN (…)
 
 - Clean records are skipped automatically (pass `force: true` to override).
 - `beforeSave()` and `validate()` run on every dirty record before any SQL is issued.
-- `insertedIds` is populated for new (no-PK) records: via `RETURNING` on PostgreSQL, or via
-  `lastInsertId()` + sequential range on MySQL/MariaDB. On MySQL/MariaDB clustered setups with
-  non-sequential auto-increment, use individual `Record::save()` calls instead.
+- `insertedIds` is populated for new (no-PK) records: via `RETURNING` on PostgreSQL and SQLite,
+  or via `lastInsertId()` + sequential range on MySQL/MariaDB. On MySQL/MariaDB clustered setups
+  with non-sequential auto-increment, use individual `Record::save()` calls instead.
 - For tables with natural (non-auto-increment) PKs, `saveAll()` performs a true upsert (PKs are
   already set on the PHP objects).
+- The keyed (known-PK) upsert is a single set-based statement — `INSERT IGNORE` → an ordered
+  `SELECT … FOR UPDATE` (ascending PK, for a consistent lock order) → one derived-table join that
+  carries a per-row bitmask so each row updates only the columns it actually changed. The join is
+  `O(N·M)` in the SQL text (N rows × M updatable columns) rather than the `O(N²)` a per-row `CASE`
+  would produce. See [docs/arch-bulk-update-scaling.md](docs/arch-bulk-update-scaling.md) for the
+  full rationale.
 
 `Record::save()` accepts the same `$force` flag — `$order->save(force: true)` writes every
 column regardless of dirty state.
+
+#### Chunked writes — `saveAll(chunkSize:)`
+
+By default `saveAll()` runs the whole set in **one transaction** — all-or-nothing. For very large
+batches, pass an integer `chunkSize` to split the write into that-many-row slices that
+**commit per chunk**, bounding the lock and undo/redo footprint each transaction holds:
+
+```php
+// 50k rows written 1000 at a time; each 1000-row chunk commits before the next begins
+$set->saveAll(chunkSize: 1000);
+```
+
+This trades whole-set atomicity for a bounded footprint: a mid-run failure leaves earlier
+chunks **committed**, so the operation must be **resumable**. It is — dirty-tracking makes it so.
+After each chunk commits, its records are marked clean, so simply re-calling `saveAll()` on the
+same set skips everything already written and retries only the rest. Keyed (known-PK) records are
+sorted by PK ascending before chunking, so each chunk locks a contiguous ascending range and
+chunks proceed low→high — preserving the global ascending-PK lock-order invariant.
+
+Per-chunk commit is impossible **inside an already-open transaction** (the outer transaction holds
+every lock until it commits), so a chunked `saveAll()` nested in a transaction **throws**
+`AttrecordException` by default. Pass `allowInTransactionChunking: true` to acknowledge this and
+chunk anyway: the chunks then run as separate, smaller **statements** within the outer transaction
+— bounding statement size while staying atomic, but leaving the lock/undo footprint unbounded.
 
 ### `upsertAllByUniqueKey($conflictKey)` — bulk burn-free upsert
 
@@ -1047,23 +1108,29 @@ database you talk to is determined by the **session** (the connection) and the *
 pair it with — not by three different "MySQL adapters":
 
 - **`PdoDbSession` is the cross-database adapter.** PDO is driver-agnostic, so this is how you
-  connect to **PostgreSQL** as well as MySQL/MariaDB — pair it with the matching `SqlDialect`.
-  It even adapts internally per driver (e.g. `pg_advisory_lock` vs `GET_LOCK`, `bytea`
-  binding). The whole PostgreSQL test suite runs through it.
+  connect to **PostgreSQL** and **SQLite** as well as MySQL/MariaDB — pair it with the matching
+  `SqlDialect`. It even adapts internally per driver (e.g. `pg_advisory_lock` vs `GET_LOCK`,
+  `bytea` binding, per-driver retryable-error classification). The PostgreSQL and SQLite test
+  suites both run through it.
 - **`MysqliDbSession` and `WpDbSession` are MySQL/MariaDB only** — the `mysqli` and WordPress
   `wpdb` extensions speak only MySQL, so there is no PostgreSQL equivalent to add (that's what
   `PdoDbSession` is for).
 
-> End-to-end support is bounded by the shipped **dialects** — MySQL/MariaDB and PostgreSQL.
-> `PdoDbSession` can open a connection to any PDO driver (SQLite, SQL Server, …), but using one
-> as a full attrecord backend requires a matching `SqlDialect` implementation, which is not
-> included for anything beyond MySQL/MariaDB and PostgreSQL.
+> End-to-end support is bounded by the shipped **dialects** — MySQL/MariaDB, PostgreSQL, and
+> SQLite. `PdoDbSession` can open a connection to any PDO driver (SQL Server, Oracle, …), but
+> using one as a full attrecord backend requires a matching `SqlDialect` implementation, which is
+> not included for anything beyond those three.
 
-### PDO — recommended (MySQL, MariaDB, PostgreSQL)
+Any custom `DbSession` must implement two error-classification methods the library relies on:
+`isDuplicateKeyError(\Throwable)` (used by the burn-free upsert paths) and
+`isRetryableTransactionError(\Throwable)` (used by `RetryingDbSession` to decide what to retry —
+see below). The three shipped adapters implement both, classified per driver.
+
+### PDO — recommended (MySQL, MariaDB, PostgreSQL, SQLite)
 
 ```php
 use Nandan108\Attrecord\Session\PdoDbSession;
-use Nandan108\Attrecord\Dialect\{MysqlDialect, PgsqlDialect};
+use Nandan108\Attrecord\Dialect\{MysqlDialect, PgsqlDialect, SqliteDialect};
 
 // MySQL / MariaDB
 $pdo  = new PDO('mysql:host=127.0.0.1;dbname=shop', 'user', 'pass');
@@ -1072,7 +1139,35 @@ $conn = new Connection(new PdoDbSession($pdo), new MysqlDialect());
 // PostgreSQL — same adapter, paired with PgsqlDialect
 $pdo  = new PDO('pgsql:host=127.0.0.1;dbname=shop', 'user', 'pass');
 $conn = new Connection(new PdoDbSession($pdo), new PgsqlDialect());
+
+// SQLite — same adapter, paired with SqliteDialect (file-based or :memory:)
+$pdo  = new PDO('sqlite:/var/data/shop.sqlite');
+$conn = new Connection(new PdoDbSession($pdo), new SqliteDialect());
 ```
+
+#### SQLite backend & connection hardening
+
+The SQLite dialect requires **SQLite >= 3.33** (2020-08), because its bulk upsert uses the
+`UPDATE … FROM` join form introduced in that release. Reading generated PKs back uses
+`RETURNING` (SQLite 3.35+), so a multi-row `saveAll()` returns every inserted id rather than only
+the last rowid.
+
+`Connection`'s constructor runs each of the dialect's `connectionInitStatements()` on the fresh
+session immediately, so a raw SQLite handle is brought to a sane baseline the moment you wrap it.
+`SqliteDialect` uses this to emit — configurable via its constructor:
+
+```php
+new SqliteDialect(
+    journalMode:   'WAL',   // PRAGMA journal_mode (default 'WAL'; pass null to leave the default)
+    busyTimeoutMs: 5000,    // PRAGMA busy_timeout in ms (default 5000; null to skip)
+    foreignKeys:   true,    // PRAGMA foreign_keys=ON (default true — SQLite defaults it OFF)
+);
+```
+
+WAL improves read/write concurrency, `busy_timeout` lets a writer wait out a competing writer
+rather than failing instantly with `SQLITE_BUSY`, and `foreign_keys=ON` makes the FK constraints
+emitted in DDL actually enforced. `MysqlDialect` and `PgsqlDialect` return an empty
+`connectionInitStatements()` array, so the hook is a no-op for them.
 
 ### mysqli (MySQL/MariaDB)
 
@@ -1094,6 +1189,48 @@ Record::setConnection($conn);
 ```
 
 `WpDbSession` converts attrecord's `?` placeholders to `%s` for `wpdb::prepare()` and escapes existing `%` in LIKE clauses automatically.
+
+### `RetryingDbSession` — automatic retry of transient conflicts
+
+Under real concurrency, an otherwise-correct transaction can still fail transiently — a deadlock,
+a lock-wait timeout, a serialization failure, or `SQLITE_BUSY`. The usual remedy is to simply
+re-run it. `RetryingDbSession` is a `DbSession` **decorator** that does exactly that: it wraps any
+session and retries the **outer** transaction on a transient conflict, with exponential backoff
+plus jitter. It's opt-in and composable — wrap a session with it only where you want retries:
+
+```php
+use Nandan108\Attrecord\Session\{RetryingDbSession, PdoDbSession};
+use Nandan108\Attrecord\Dialect\PgsqlDialect;
+
+$conn = new Connection(new RetryingDbSession(new PdoDbSession($pdo)), new PgsqlDialect());
+```
+
+Every method except `transactional()` delegates verbatim to the wrapped session, so
+`Record::transactional()` and `RecordSet::saveAll()` (which funnel through it) gain retries for
+free. Only the **outermost** transaction is retried; a nested `transactional()` call runs inline
+in the outer one.
+
+```php
+public function __construct(
+    DbSession $inner,             // the session to wrap
+    int $maxAttempts = 10,        // total attempts, including the first
+    int $baseDelayUs = 5_000,     // base backoff in µs, doubled each attempt
+    int $maxDelayUs  = 100_000,   // per-attempt backoff cap in µs
+    ?\Closure $retryable = null,  // (\Throwable): bool — overrides the default classification
+)
+```
+
+Which errors count as retryable comes from `$retryable` if you pass one, otherwise from the
+wrapped session's `isRetryableTransactionError()` (classified per driver; the default **includes
+deadlocks**, which most applications want retried). A consumer with strict lock-order discipline
+that would rather surface a deadlock than retry it can pass an override predicate.
+
+> **Idempotency contract.** The closure passed to `transactional()` is **re-run on each attempt**.
+> Any effect inside it that the database does *not* roll back — an HTTP call, a queue publish, a
+> file write, in-memory mutation — will repeat. Closures run under a `RetryingDbSession` must be
+> safe to re-run (pure-SQL, or side-effect-free outside the DB).
+
+→ See [docs/arch-concurrency.md](docs/arch-concurrency.md) for the full locking-and-retry model.
 
 ---
 
@@ -1203,20 +1340,20 @@ that has to be remembered everywhere.
 
 `Binary` / `VarBinary` columns hold raw bytes (e.g. an application-minted `BINARY(16)` /
 `BYTEA` UUID primary key). Reads and writes through the normal `save()` / `getOne()` /
-`find()` / `saveAll()` paths handle binary transparently on both MySQL and PostgreSQL.
+`find()` / `saveAll()` paths handle binary transparently on MySQL, PostgreSQL, and SQLite.
 
 The handling is **dialect-gated**, so it's invisible to MySQL consumers: on MySQL/MariaDB,
 binary values bind as ordinary byte strings exactly as any other string (so a custom
 `DbSession` that only accepts scalars keeps working). Only when the active dialect reports
-`bindsBinaryAsLob() === true` (PostgreSQL) does `toParam()` wrap binary values in a
-`BinaryParam` so the session can bind them as a `bytea` LOB; reads decode the `bytea` wire
-stream back to raw bytes. Net effect: a non-UTF-8 byte string round-trips correctly on both
-engines, and nothing changes for a MySQL-only deployment.
+`bindsBinaryAsLob() === true` (PostgreSQL and SQLite) does `toParam()` wrap binary values in a
+`BinaryParam` so the session can bind them as a LOB (`bytea` on PostgreSQL, `BLOB` on SQLite);
+reads decode the wire stream back to raw bytes. Net effect: a non-UTF-8 byte string round-trips
+correctly on all three engines, and nothing changes for a MySQL-only deployment.
 
 The one case that needs help is an **ad-hoc `WhereClause` predicate on a binary column**,
-where attrecord has no column metadata to drive the binding. On PostgreSQL, wrap the value in
-`Nandan108\Attrecord\BinaryParam` so the session binds it as binary rather than text (on MySQL
-a plain byte string works, but wrapping is harmless):
+where attrecord has no column metadata to drive the binding. On PostgreSQL and SQLite, wrap the
+value in `Nandan108\Attrecord\BinaryParam` so the session binds it as binary rather than text (on
+MySQL a plain byte string works, but wrapping is harmless):
 
 ```php
 use Nandan108\Attrecord\BinaryParam;
@@ -1277,7 +1414,7 @@ column type is known and the wrapping is applied for you.
 # Unit tests (no DB needed)
 composer test -- --testsuite unit
 
-# Integration tests (requires MariaDB + PostgreSQL)
+# Integration tests (MariaDB + PostgreSQL via Docker; SQLite needs no server)
 docker compose up -d
 composer test -- --testsuite integration
 
@@ -1287,13 +1424,15 @@ composer test
 # One backend only (the integration suites are tagged by @group)
 composer test -- --testsuite integration --group mysql
 composer test -- --testsuite integration --group pgsql
+composer test -- --testsuite integration --group sqlite
 ```
 
 Each integration suite is a shared body of test cases (a `…Cases` trait under
-`tests/Integration/Cases/`) bound to two thin concrete classes — one per backend — so the
-**same assertions run against MySQL and PostgreSQL**. Each suite's schema is generated from
-its fixtures' attributes via `buildCreateTable()`, so the DDL producer is exercised on both
-engines on every run. PostgreSQL tests skip (rather than fail) when the container is absent.
+`tests/Integration/Cases/`) bound to thin concrete classes — one per backend — so the
+**same assertions run against MySQL, PostgreSQL, and SQLite**. Each suite's schema is generated
+from its fixtures' attributes via `buildCreateTable()`, so the DDL producer is exercised on all
+three engines on every run. SQLite runs in-process (no server); PostgreSQL tests skip (rather than
+fail) when the container is absent.
 
 Environment variables for integration tests (defaults shown):
 
@@ -1325,7 +1464,7 @@ composer cs-check   # report style violations without changing files (used in CI
 composer psalm      # static analysis — must be zero errors
 ```
 
-All three (tests, Psalm, PHP CS Fixer) run in CI against PHP 8.1–8.4 with MySQL and PostgreSQL.
+All three (tests, Psalm, PHP CS Fixer) run in CI against PHP 8.1–8.4 with MySQL, PostgreSQL, and SQLite.
 
 ---
 
