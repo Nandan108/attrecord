@@ -231,8 +231,9 @@ final class PgsqlDialectTest extends TestCase
     // buildUpsertSql — update step
     // -----------------------------------------------------------------
 
-    public function testBuildUpsertSqlUpdateContainsCaseExpression(): void
+    public function testBuildUpsertSqlUpdateUsesDerivedTableFromJoin(): void
     {
+        // No dirty info → every column uniform → written directly from the derived table, no mask.
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'products',
             pkColumn: 'id',
@@ -245,11 +246,39 @@ final class PgsqlDialectTest extends TestCase
         );
 
         $this->assertNotNull($upsert->update);
-        $this->assertStringContainsString('UPDATE "products"', $upsert->update);
-        $this->assertStringContainsString('CASE "id"', $upsert->update);
-        $this->assertStringContainsString("WHEN 42 THEN 'Widget'", $upsert->update);
-        $this->assertStringContainsString('WHEN 7 THEN 5', $upsert->update);
-        $this->assertStringContainsString('WHERE "id" IN (42, 7)', $upsert->update);
+        $this->assertStringContainsString('UPDATE "products" SET', $upsert->update);
+        $this->assertStringContainsString("SELECT 42 AS \"id\", 'Widget' AS \"name\", 10 AS \"stock\"", $upsert->update);
+        $this->assertStringContainsString("UNION ALL SELECT 7, 'Gadget', 5", $upsert->update);
+        $this->assertStringContainsString('"name" = u."name"', $upsert->update);
+        $this->assertStringContainsString('"stock" = u."stock"', $upsert->update);
+        $this->assertStringContainsString('WHERE "products"."id" = u."id"', $upsert->update);
+        $this->assertStringNotContainsString('_m0', $upsert->update);
+    }
+
+    public function testBuildUpsertSqlSparseColumnGatedByMaskBit(): void
+    {
+        // Row 42 changed name + stock; row 7 changed name only. `name` uniform → direct; `stock` sparse
+        // → gated by mask bit 1 via CASE WHEN, so row 7 (mask 0) keeps its live value.
+        $upsert = $this->dialect->buildUpsertSql(
+            tableName: 'products',
+            pkColumn: 'id',
+            columnNames: ['id', 'name', 'stock'],
+            rows: [
+                ['42', "'Widget'", '10'],
+                ['7',  "'Gadget'", '5'],
+            ],
+            updateColumns: ['name', 'stock'],
+            rowDirtyColumns: [
+                ['name' => true, 'stock' => true],
+                ['name' => true],
+            ],
+        );
+
+        $this->assertNotNull($upsert->update);
+        $this->assertStringContainsString('"name" = u."name"', $upsert->update);
+        $this->assertStringContainsString('"stock" = CASE WHEN (u."_m0" & 1) <> 0 THEN u."stock" ELSE "products"."stock" END', $upsert->update);
+        $this->assertStringContainsString('1 AS "_m0"', $upsert->update);
+        $this->assertStringContainsString('UNION ALL SELECT 7, 0,', $upsert->update);
     }
 
     public function testBuildUpsertSqlNoUpdateColumnsReturnsNullUpdate(): void

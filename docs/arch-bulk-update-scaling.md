@@ -1,6 +1,8 @@
 # Design: large-batch `saveAll()` scaling — join-based UPDATE
 
-> **Status:** proposal, for review before implementation. Targets v0.2.0.
+> **Status:** IMPLEMENTED in v0.2.0. Both halves are built: opt-in chunking (`saveAll(chunkSize:)`)
+> and the single multi-mask join emitter (`UpsertJoinBuilder`, replacing the CASE UPDATE in all three
+> dialects). This document is retained as the design rationale.
 > **Depends on:** the per-row dirty-scoping contract landed in v0.1.3
 > (`SqlDialect::buildUpsertSql(..., array $rowDirtyColumns = [])`).
 > **Related:** [arch-concurrency.md](arch-concurrency.md) (the deadlock-safe 3-step upsert).
@@ -225,10 +227,13 @@ CASE builder could have played in tests is superseded by outcome-based tests (§
   through the join emitter on all three backends and assert actual resulting DB state. Because they
   check outcomes (not SQL strings), they are the real correctness oracle; the deleted CASE builder
   isn't needed as a differential reference.
-- **Mask-arithmetic unit test:** `(column ordinal) → (maskIndex, bit)` — verify 63-bit grouping,
-  bit 62 max, never bit 63, and the maskIndex boundary at column 63.
-- **Wide-table (> 63 columns) integration test:** a fixture that forces `_mask1` to prove multi-mask
-  end-to-end (no CASE fallback exists to catch this otherwise).
+- **Mask-arithmetic unit test:** ✅ `testBuildUpsertSqlMultiMaskSpillsBeyond63Columns` builds a
+  64-sparse-column upsert and asserts the SQL: two mask columns `_m0`/`_m1`, ordinal 62 → `_m0 & (1<<62)`,
+  ordinal 63 spills to `_m1 & 1`. Covers the 63-bit-group boundary at the SQL-generation level.
+- **Wide-table (> 63 columns) DB integration test:** *deferred* — a real 64-column fixture Record is
+  heavy boilerplate for low marginal value: the mask arithmetic is unit-covered above, and the
+  join-on-a-real-DB path is integration-covered (clobber / null-clear / uniform / chunked) with fewer
+  columns. Extra mask columns are just more `SELECT` columns; no engine limit is near.
 - **Scale smoke test:** a multi-thousand-row batch (pathological under the old CASE), asserting it
   completes and is correct under the join.
 - **Chunk-ordering test:** records are PK-sorted before chunking (lock-order invariant) — assert the

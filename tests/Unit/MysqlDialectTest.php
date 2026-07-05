@@ -195,8 +195,9 @@ final class MysqlDialectTest extends TestCase
     // buildUpsertSql — update step
     // -----------------------------------------------------------------
 
-    public function testBuildUpsertSqlUpdateContainsCaseExpression(): void
+    public function testBuildUpsertSqlUpdateUsesDerivedTableJoin(): void
     {
+        // No dirty info → every column is uniform → written directly from the derived table, no mask.
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'products',
             pkColumn: 'id',
@@ -210,17 +211,20 @@ final class MysqlDialectTest extends TestCase
 
         $this->assertNotNull($upsert->update);
         $this->assertStringContainsString('UPDATE `products`', $upsert->update);
-        $this->assertStringContainsString('CASE `id`', $upsert->update);
-        $this->assertStringContainsString("WHEN 42 THEN 'Widget'", $upsert->update);
-        $this->assertStringContainsString('WHEN 7 THEN 5', $upsert->update);
-        $this->assertStringContainsString('WHERE `id` IN (42, 7)', $upsert->update);
+        $this->assertStringContainsString('JOIN (', $upsert->update);
+        $this->assertStringContainsString('ON `products`.`id` = u.`id`', $upsert->update);
+        $this->assertStringContainsString("SELECT 42 AS `id`, 'Widget' AS `name`, 10 AS `stock`", $upsert->update);
+        $this->assertStringContainsString("UNION ALL SELECT 7, 'Gadget', 5", $upsert->update);
+        $this->assertStringContainsString('`products`.`name` = u.`name`', $upsert->update);
+        $this->assertStringContainsString('`products`.`stock` = u.`stock`', $upsert->update);
+        $this->assertStringNotContainsString('_m0', $upsert->update); // all uniform → no mask column
     }
 
-    public function testBuildUpsertSqlPerRowDirtyScopingAddsElseForSparseColumns(): void
+    public function testBuildUpsertSqlSparseColumnGatedByMaskBit(): void
     {
-        // Row 42 changed name + stock; row 7 changed name only. `name` is uniform (both rows) → plain
-        // CASE, no ELSE. `stock` is sparse (only row 42) → WHEN for 42 + `ELSE \`stock\`` so row 7 keeps
-        // its live value instead of being clobbered.
+        // Row 42 changed name + stock; row 7 changed name only. `name` is uniform (both rows) → written
+        // directly. `stock` is sparse (only row 42) → gated by mask bit 1, so row 7 (mask 0) keeps its
+        // live value instead of being clobbered.
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'products',
             pkColumn: 'id',
@@ -237,16 +241,16 @@ final class MysqlDialectTest extends TestCase
         );
 
         $this->assertNotNull($upsert->update);
-        // name: uniform → both WHENs, no ELSE
-        $this->assertStringContainsString("`name` = CASE `id` WHEN 42 THEN 'Widget' WHEN 7 THEN 'Gadget' END", $upsert->update);
-        // stock: sparse → only the dirtying row, with ELSE keeping the live column
-        $this->assertStringContainsString('`stock` = CASE `id` WHEN 42 THEN 10 ELSE `stock` END', $upsert->update);
-        $this->assertStringNotContainsString('WHEN 7 THEN 5', $upsert->update);
+        $this->assertStringContainsString('`products`.`name` = u.`name`', $upsert->update);
+        $this->assertStringContainsString('`products`.`stock` = IF(u.`_m0` & 1, u.`stock`, `products`.`stock`)', $upsert->update);
+        // derived table carries the mask: row 42 sets the bit (1), row 7 does not (0)
+        $this->assertStringContainsString('1 AS `_m0`', $upsert->update);
+        $this->assertStringContainsString('UNION ALL SELECT 7, 0,', $upsert->update);
     }
 
-    public function testBuildUpsertSqlNoDirtyInfoParticipatesEveryRow(): void
+    public function testBuildUpsertSqlAllUniformNeedsNoMask(): void
     {
-        // Back-compat: omitting $rowDirtyColumns keeps the original all-rows, no-ELSE shape.
+        // No dirty info → the single column is uniform → direct assignment, no mask, no IF.
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'products',
             pkColumn: 'id',
@@ -256,8 +260,43 @@ final class MysqlDialectTest extends TestCase
         );
 
         $this->assertNotNull($upsert->update);
-        $this->assertStringContainsString('`stock` = CASE `id` WHEN 42 THEN 10 WHEN 7 THEN 5 END', $upsert->update);
-        $this->assertStringNotContainsString('ELSE', $upsert->update);
+        $this->assertStringContainsString('`products`.`stock` = u.`stock`', $upsert->update);
+        $this->assertStringNotContainsString('_m0', $upsert->update);
+        $this->assertStringNotContainsString('IF(', $upsert->update);
+    }
+
+    public function testBuildUpsertSqlMultiMaskSpillsBeyond63Columns(): void
+    {
+        // 64 sparse columns → bits 0..63. One integer holds 63 usable bits (0..62), so bit 63 spills
+        // into a second mask column `_m1` (bit 0). This is the multi-mask arithmetic's boundary.
+        $columns = ['id'];
+        $updateColumns = [];
+        $row0 = ['1'];
+        $row1 = ['2'];
+        $dirty0 = [];
+        for ($i = 0; $i < 64; ++$i) {
+            $columns[] = "c{$i}";
+            $updateColumns[] = "c{$i}";
+            $row0[] = (string) $i;
+            $row1[] = (string) ($i + 100);
+            $dirty0["c{$i}"] = true; // changed on row 0 only → sparse (needs a mask bit)
+        }
+
+        $upsert = $this->dialect->buildUpsertSql(
+            tableName: 't',
+            pkColumn: 'id',
+            columnNames: $columns,
+            rows: [$row0, $row1],
+            updateColumns: $updateColumns,
+            rowDirtyColumns: [$dirty0, []],
+        );
+
+        $this->assertNotNull($upsert->update);
+        $this->assertStringContainsString('AS `_m0`', $upsert->update);
+        $this->assertStringContainsString('AS `_m1`', $upsert->update);
+        // Column ordinal 62 uses the top usable bit of _m0 (1 << 62); ordinal 63 spills to _m1 bit 0.
+        $this->assertStringContainsString('`t`.`c62` = IF(u.`_m0` & '.(1 << 62).', u.`c62`, `t`.`c62`)', $upsert->update);
+        $this->assertStringContainsString('`t`.`c63` = IF(u.`_m1` & 1, u.`c63`, `t`.`c63`)', $upsert->update);
     }
 
     public function testBuildUpsertSqlNoUpdateColumnsReturnsNullUpdate(): void

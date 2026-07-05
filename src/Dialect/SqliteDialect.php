@@ -30,6 +30,8 @@ use Nandan108\Attrecord\UpsertSql;
  */
 final class SqliteDialect implements SqlDialect
 {
+    use UpsertJoinBuilder;
+
     /**
      * @param string|null $journalMode   PRAGMA journal_mode (WAL by default; null to leave the default)
      * @param int|null    $busyTimeoutMs PRAGMA busy_timeout in milliseconds (null to leave the default)
@@ -200,7 +202,7 @@ final class SqliteDialect implements SqlDialect
     /**
      * SQLite has no row locking, so the "deadlock-safe" three-step pattern degenerates: the lock
      * step is a plain ordered SELECT (no FOR UPDATE — writers are already serialized). INSERT OR
-     * IGNORE + a CASE UPDATE keep the same shape as the other dialects.
+     * IGNORE + a derived-table `UPDATE … FROM` join keep the same shape as the other dialects.
      *
      * @param list<string>              $columnNames
      * @param list<list<string>>        $rows
@@ -236,60 +238,34 @@ final class SqliteDialect implements SqlDialect
             ." WHERE {$quotedPk} IN ({$inList})"
             ." ORDER BY {$quotedPk} ASC";
 
-        // CASE-based UPDATE, per-row dirty-scoped (see SqlDialect::buildUpsertSql()).
+        // Join-based UPDATE with a per-row multi-mask (see UpsertJoinBuilder). A column changed by
+        // every row is written directly (u.col); a column changed by only some rows is gated by its
+        // mask bit, so rows that did not change it keep their live value.
         $update = null;
         if (!empty($updateColumns)) {
+            $plan = $this->computeUpsertMaskPlan($updateColumns, $rowDirtyColumns, \count($rows));
+            $derived = $this->buildUpsertDerivedColumns($quotedPk, $columnNames, $rows, $updateColumns, $pkIndex, $plan['maskCount'], $plan['perRowMasks']);
+            $subquery = $this->renderUpsertDerivedTable($derived['columns'], $derived['valueRows']);
+
             $setParts = [];
             foreach ($updateColumns as $col) {
-                $setParts[] = $this->buildUpsertCaseSet($col, $columnNames, $rows, $pkIndex, $quotedPk, $rowDirtyColumns);
+                $quotedCol = $this->quoteIdentifier($col);
+                $uCol = 'u.'.$quotedCol;
+                $tCol = $quotedTable.'.'.$quotedCol;
+                if (isset($plan['sparseBits'][$col])) {
+                    $b = $plan['sparseBits'][$col];
+                    $qMask = 'u.'.$this->quoteIdentifier('_m'.\intdiv($b, 63));
+                    $bitValue = 1 << ($b % 63);
+                    $setParts[] = "{$quotedCol} = iif({$qMask} & {$bitValue}, {$uCol}, {$tCol})";
+                } else {
+                    $setParts[] = "{$quotedCol} = {$uCol}";
+                }
             }
             $setClause = \implode(",\n    ", $setParts);
-            $update = "UPDATE {$quotedTable} SET\n    {$setClause}\nWHERE {$quotedPk} IN ({$inList})";
+            $update = "UPDATE {$quotedTable} SET\n    {$setClause}\nFROM (\n    {$subquery}\n    ) u\nWHERE {$quotedTable}.{$quotedPk} = u.{$quotedPk}";
         }
 
         return new UpsertSql($create, $lock, $update);
-    }
-
-    /**
-     * Build one column's `<col> = CASE <pk> … END` fragment for the upsert UPDATE step.
-     *
-     * Emits a `WHEN pk THEN value` only for the rows that changed the column (per $rowDirtyColumns),
-     * with an `ELSE <col>` fallback so rows that did not change it keep their live value. A column
-     * changed by every row — or when no dirty info is supplied — participates for all rows and needs
-     * no `ELSE`.
-     *
-     * @param list<string>              $columnNames
-     * @param list<list<string>>        $rows
-     * @param list<array<string, bool>> $rowDirtyColumns
-     */
-    private function buildUpsertCaseSet(
-        string $col,
-        array $columnNames,
-        array $rows,
-        int $pkIndex,
-        string $quotedPk,
-        array $rowDirtyColumns,
-    ): string {
-        $quotedCol = $this->quoteIdentifier($col);
-        $colIndex = (int) \array_search($col, $columnNames, true);
-        $rowIndexes = \array_keys($rows);
-
-        $dirtyIndexes = \array_values(\array_filter(
-            $rowIndexes,
-            static fn (int $i): bool => isset($rowDirtyColumns[$i][$col]),
-        ));
-        // Empty (no dirty info) or full (every row changed it) ⇒ all rows participate, no ELSE.
-        $whenIndexes = ([] === $dirtyIndexes || \count($dirtyIndexes) === \count($rows))
-            ? $rowIndexes
-            : $dirtyIndexes;
-
-        $whens = \array_map(
-            fn (int $i): string => "WHEN {$rows[$i][$pkIndex]} THEN {$rows[$i][$colIndex]}",
-            $whenIndexes,
-        );
-        $else = \count($whenIndexes) === \count($rows) ? '' : " ELSE {$quotedCol}";
-
-        return "{$quotedCol} = CASE {$quotedPk} ".\implode(' ', $whens).$else.' END';
     }
 
     /**
