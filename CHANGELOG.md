@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-07-05
+
+### Changed
+
+- **`RetryingDbSession` is no longer `final`.** A consumer whose session is a richer `DbSession`
+  subtype can now subclass the decorator to implement the extra interface methods (delegating to its
+  own typed inner reference) while inheriting the retry loop verbatim, injecting a domain retry
+  policy through the existing `$retryable` seam. No behavioural change; purely relaxes the extension
+  point. (Motivating case: an InvFlux `MysqlSession`, which adds `defaultCollation()` to
+  `DbSession`, wrapping itself in retry without re-implementing the loop.)
+
 ## [0.2.0] - 2026-07-05 — Three backends, built for contention and scale
 
 ### Added

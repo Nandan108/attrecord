@@ -29,9 +29,14 @@ use Nandan108\Attrecord\DbSession;
  * Which errors count as retryable comes from `$retryable` if given, else from the wrapped
  * session's {@see DbSession::isRetryableTransactionError()}.
  *
+ * Not `final`: a consumer whose session is a richer {@see DbSession} subtype can subclass this to
+ * implement the extra interface methods (delegating to its own typed inner reference) while
+ * inheriting the retry loop verbatim. Inject a domain-specific retry policy through the
+ * `$retryable` seam rather than overriding {@see transactional()}.
+ *
  * @api
  */
-final class RetryingDbSession implements DbSession
+class RetryingDbSession implements DbSession
 {
     /** @var (\Closure(\Throwable): bool)|null */
     private readonly ?\Closure $retryable;
