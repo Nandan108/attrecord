@@ -110,11 +110,12 @@ final class RecordingInitDialect implements SqlDialect
     }
 
     /**
-     * @param list<string>       $columnNames
-     * @param list<list<string>> $rows
-     * @param list<string>       $updateColumns
+     * @param list<string>              $columnNames
+     * @param list<list<string>>        $rows
+     * @param list<string>              $updateColumns
+     * @param list<array<string, bool>> $rowDirtyColumns
      */
-    public function buildUpsertSql(string $tableName, string $pkColumn, array $columnNames, array $rows, array $updateColumns): UpsertSql
+    public function buildUpsertSql(string $tableName, string $pkColumn, array $columnNames, array $rows, array $updateColumns, array $rowDirtyColumns = []): UpsertSql
     {
         return new UpsertSql($tableName, $pkColumn, null);
     }
