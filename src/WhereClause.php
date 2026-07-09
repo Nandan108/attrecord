@@ -311,11 +311,21 @@ final class WhereClause
      *
      * Dialect-independent — the same values are used regardless of which database is targeted.
      *
-     * @return list<scalar|null>
+     * PHP booleans are normalized to their canonical SQL scalar form (`true` → 1, `false` → 0). A raw
+     * bool has exactly one correct scalar mapping for any column, yet DB drivers disagree on how to
+     * bind one — some interpolating sessions reject it outright, and PDO's emulated prepares bind
+     * `false` as an empty string — so `where('active', true)` would otherwise be a cross-driver
+     * footgun. Normalizing here (the single param boundary) keeps that value symmetric with what a
+     * bool column serializes to on write, without any column-cast introspection.
+     *
+     * @return list<int|float|string|null>
      */
     public function params(): array
     {
-        return self::collectParams($this->node);
+        return array_map(
+            static fn (int | float | string | bool | null $v): int | float | string | null => \is_bool($v) ? (int) $v : $v,
+            self::collectParams($this->node),
+        );
     }
 
     // -----------------------------------------------------------------

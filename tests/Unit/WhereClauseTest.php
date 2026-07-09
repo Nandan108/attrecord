@@ -264,7 +264,7 @@ final class WhereClauseTest extends TestCase
     {
         $c = WhereClause::whereNot(WhereClause::where('active', false));
         $this->assertSame('(NOT (active = ?))', $c->render());
-        $this->assertSame([false], $c->params());
+        $this->assertSame([0], $c->params()); // bool normalized to its SQL scalar form
     }
 
     public function testWhereNotDialectQuotes(): void
@@ -304,7 +304,7 @@ final class WhereClauseTest extends TestCase
             WhereClause::where('status', 'pending'),
         );
         $this->assertSame('((active = ?) AND (status = ?))', $c->render());
-        $this->assertSame([true, 'pending'], $c->params());
+        $this->assertSame([1, 'pending'], $c->params()); // bool normalized to its SQL scalar form
     }
 
     public function testWhereAny(): void
@@ -406,7 +406,7 @@ final class WhereClauseTest extends TestCase
             '((status = ?) AND ((total > ?) OR (flagged = ?)))',
             $c->render(),
         );
-        $this->assertSame(['pending', 100, true], $c->params());
+        $this->assertSame(['pending', 100, 1], $c->params()); // bool normalized to its SQL scalar form
     }
 
     public function testImmutability(): void
@@ -420,5 +420,50 @@ final class WhereClauseTest extends TestCase
 
         $this->assertSame('((x = ?) AND (y = ?))', $combined1->render());
         $this->assertSame('((x = ?) OR (z = ?))', $combined2->render());
+    }
+
+    // -----------------------------------------------------------------
+    // Boolean parameter normalization (true → 1, false → 0)
+    // -----------------------------------------------------------------
+
+    public function testWhereTrueNormalizesToOne(): void
+    {
+        $c = WhereClause::where('active', true);
+        $this->assertSame('(active = ?)', $c->render());
+        $this->assertSame([1], $c->params());
+    }
+
+    public function testWhereFalseNormalizesToZero(): void
+    {
+        $c = WhereClause::where('active', false);
+        $this->assertSame([0], $c->params());
+    }
+
+    public function testWhereInNormalizesBooleans(): void
+    {
+        $c = WhereClause::whereIn('flag', [true, false, true]);
+        $this->assertSame([1, 0, 1], $c->params());
+    }
+
+    public function testWhereInTuplesNormalizesBooleans(): void
+    {
+        $c = WhereClause::whereInTuples(['a', 'flag'], [[1, true], [2, false]]);
+        $this->assertSame([1, 1, 2, 0], $c->params());
+    }
+
+    public function testWhereRawNormalizesBooleans(): void
+    {
+        $c = WhereClause::whereRaw('(flag = ? OR archived = ?)', [true, false]);
+        $this->assertSame([1, 0], $c->params());
+    }
+
+    public function testNonBooleanScalarsPassThroughUnchanged(): void
+    {
+        $c = WhereClause::where('a', 1)
+            ->andWhere(WhereClause::where('b', 2.5))
+            ->andWhere(WhereClause::where('c', 'x'))
+            ->andWhere(WhereClause::where('d', null, '!='));
+        // int 1 stays int 1; null renders as IS NOT NULL (no bound param).
+        $this->assertSame([1, 2.5, 'x'], $c->params());
     }
 }
