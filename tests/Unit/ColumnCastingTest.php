@@ -175,6 +175,16 @@ final class ColumnCastingTest extends TestCase
     }
 
     #[Test]
+    public function enumCasterDerivesEnumColumnValuesFromCases(): void
+    {
+        // `kind` is `#[Column(ColumnType::Enum)]` + `#[EnumCaster(SampleKind::class)]` with NO
+        // inline `enumValues:` — the schema builder derives the value list from the enum's cases.
+        $schema = CastingRecord::schema();
+
+        self::assertSame(['alpha', 'beta'], $schema->columns['kind']->enumValues);
+    }
+
+    #[Test]
     public function jsonCasterAutoAttachesOnlyToArrayTypedJsonColumns(): void
     {
         $schema = CastingRecord::schema();

@@ -296,7 +296,10 @@ Batch persistence (single SQL per operation — never a loop of queries):
   (INSERT-IGNORE/ON-CONFLICT-DO-NOTHING → `SELECT … FOR UPDATE` ascending-PK → join-based
   `UPDATE`). Back-fills auto-increment PKs onto new records (PG/SQLite via `RETURNING`, MySQL via
   `lastInsertId()` + sequential range). Returns `null` if nothing was dirty. `force: true` saves
-  clean records too. **Chunking:**
+  clean records too. **Runs the full per-record lifecycle — `beforeSave()` then `validate()` are
+  called on every dirty record before the write** (exactly like `save()`), so it is *not* a raw
+  CASE-UPDATE that bypasses Record hooks: a per-row `save()` loop can be replaced by one `saveAll()`
+  with no loss of validation or timestamp-stamping. **Chunking:**
   - `$chunkSize === null` (default) — the whole set runs in **one transaction**, all-or-nothing
     (unchanged v0.1 behaviour).
   - `$chunkSize` int — split the write into `$chunkSize`-row slices that **commit independently**,
@@ -340,6 +343,10 @@ Built-in casters (all extend abstract `Cast implements ColumnCaster`, used as at
   as the enum). Normalizes the raw scalar to the enum backing before `::from()`, so int- and
   string-backed enums both round-trip; a non-backed enum is rejected at construction. Use it to type a
   status/basis column as its enum (`public MyStatus $status`) instead of a scalar + hand-rolled `tryFrom`.
+  On a `ColumnType::Enum` column, **omit `enumValues:` — the schema builder derives the `ENUM(...)`
+  value list from the enum's cases** (the caster already names the enum; an inline list would just
+  duplicate it and could drift). Provide `enumValues:` only to intentionally narrow the column to a
+  subset of the enum's cases.
 
 `JsonCastable` interface (for value objects stored as JSON): `static fromJson(array $data): static`.
 

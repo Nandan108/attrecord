@@ -13,6 +13,7 @@ use Nandan108\Attrecord\Attribute\MysqlTableOptions;
 use Nandan108\Attrecord\Attribute\Relation;
 use Nandan108\Attrecord\Attribute\Table;
 use Nandan108\Attrecord\Attribute\UniqueKey;
+use Nandan108\Attrecord\Caster\EnumCaster;
 use Nandan108\Attrecord\Caster\JsonCaster;
 use Nandan108\Attrecord\ColumnCaster;
 use Nandan108\Attrecord\Enum\ColumnType;
@@ -242,6 +243,14 @@ final class TableSchema
                     ));
                 }
 
+                // An Enum column with an #[EnumCaster] but no explicit `enumValues:` derives its
+                // allowed-value list from the enum's cases — the caster already names the enum, so
+                // the inline list would just duplicate it (and could drift out of sync).
+                $enumValues = $colAttr->enumValues;
+                if (null === $enumValues && ColumnType::Enum === $colAttr->type && $caster instanceof EnumCaster) {
+                    $enumValues = $caster->enumValues();
+                }
+
                 $col = new ColumnDefinition(
                     name: $colName,
                     propertyName: $propName,
@@ -260,7 +269,7 @@ final class TableSchema
                     defaultExpr: $colAttr->defaultExpr,
                     onUpdate: $colAttr->onUpdate,
                     comment: $colAttr->comment,
-                    enumValues: $colAttr->enumValues,
+                    enumValues: $enumValues,
                     generatedAs: $colAttr->generatedAs,
                     generatedMode: null !== $colAttr->generatedAs
                         ? ($colAttr->generatedMode ?? GeneratedColumnMode::Stored)
@@ -270,6 +279,15 @@ final class TableSchema
                 if (true === $colAttr->trimOnSave && !$col->isString) {
                     throw new SchemaException(
                         "{$class}::\${$propName}: trimOnSave is only valid for string column types.",
+                    );
+                }
+
+                if ((ColumnType::Enum === $col->type || ColumnType::Set === $col->type)
+                    && (null === $col->enumValues || [] === $col->enumValues)
+                ) {
+                    throw new SchemaException(
+                        "{$class}::\${$propName}: #[Column(ColumnType::{$col->type->name})] requires a non-empty "
+                        .'`enumValues` list (or, on an Enum column, an #[EnumCaster] to derive it from the enum\'s cases).',
                     );
                 }
 
@@ -449,13 +467,9 @@ final class TableSchema
             }
         }
 
-        if (ColumnType::Enum === $col->type || ColumnType::Set === $col->type) {
-            if (null === $col->enumValues || [] === $col->enumValues) {
-                throw new SchemaException(
-                    "{$loc}: #[Column(ColumnType::{$col->type->name})] requires a non-empty `enumValues` list.",
-                );
-            }
-        }
+        // Enum/Set `enumValues` non-emptiness is validated on the *derived* ColumnDefinition (see
+        // buildColumns), so an #[EnumCaster] on an Enum column may supply the list in place of an
+        // inline `enumValues:`.
 
         // Generated columns (GENERATED ALWAYS AS (...) STORED/VIRTUAL) are computed by
         // the database, so application-side writes (DEFAULT, ON UPDATE, AUTO_INCREMENT)

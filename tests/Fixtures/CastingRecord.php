@@ -47,4 +47,12 @@ final class CastingRecord extends Record
     #[Column(ColumnType::TinyIntUnsigned, nullable: true)]
     #[EnumCaster(SampleStatus::class)]
     public ?SampleStatus $status = null;
+
+    /**
+     * String-backed enum on an Enum column with NO explicit `enumValues:` — the schema builder
+     * derives the ENUM(...) value list from the caster's cases.
+     */
+    #[Column(ColumnType::Enum, nullable: true)]
+    #[EnumCaster(SampleKind::class)]
+    public ?SampleKind $kind = null;
 }

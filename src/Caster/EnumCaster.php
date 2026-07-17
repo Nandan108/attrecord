@@ -53,4 +53,21 @@ final class EnumCaster extends Cast
 
         return $value->value;
     }
+
+    /**
+     * The backing values of every case, in declaration order. Lets the schema builder derive an
+     * `ColumnType::Enum` column's allowed-value list from the caster's enum instead of a duplicated
+     * inline `enumValues:` list — declare `#[EnumCaster(MyEnum::class)]` and omit `enumValues`.
+     * Meaningful for a string-backed enum on an `Enum` column (an int-backed enum belongs on an
+     * `Int*` column, which carries no value list).
+     *
+     * @return list<string>
+     */
+    public function enumValues(): array
+    {
+        return array_map(
+            static fn (\BackedEnum $case): string => (string) $case->value,
+            $this->enum::cases(),
+        );
+    }
 }
