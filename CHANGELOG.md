@@ -4,6 +4,40 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-07-18 — Enum column casting
+
+### Added
+
+- **`EnumCaster` — backed-enum ⇆ scalar column.** `#[EnumCaster(MyStatus::class)]` on an
+  enum-typed property (`public MyStatus $status`) hydrates to/from the enum's backing value against
+  a matching scalar `ColumnType`, so consumers stop hand-rolling `tryFrom` and magic
+  ints/strings. The raw DB scalar is normalized to the enum's backing type before `::from()`
+  (drivers may return an int column as a numeric string), so int- and string-backed enums both
+  round-trip; a non-backed enum is rejected at construction; null short-circuits like every caster.
+- **`ENUM` column value sets are derived from `EnumCaster`.** An `Enum` column that carries
+  `#[EnumCaster(SomeEnum::class)]` no longer needs an inline `enumValues:` list — `TableSchema`
+  derives the `ENUM(...)` set from the enum's cases (via `EnumCaster::enumValues()`), removing a
+  duplication that could silently drift out of sync. Supply `enumValues:` only to intentionally
+  narrow a column to a subset of the enum's cases; an `Enum` column with neither a caster nor an
+  inline list still errors.
+
+### Changed
+
+- **`WhereClause::params()` normalizes PHP booleans to their SQL scalar form** (`true→1`,
+  `false→0`). A raw bool has exactly one correct scalar mapping for any column, yet drivers
+  disagreed on binding it — interpolating sessions could reject it outright, and PDO's emulated
+  prepares bind `false` as an empty string — making `where('active', true)` a latent cross-driver
+  footgun. Normalizing at the single `params()` boundary (covering Leaf / IN / IN-tuples / raw /
+  between / compound nodes) keeps the bound value symmetric with what a bool column serializes to on
+  write, with no column-cast introspection. Non-bool scalars pass through unchanged. **Note:** code
+  that asserted on a raw bool in `params()` output now sees the normalized int.
+
+### Documentation
+
+- **`RecordSet::saveAll()` lifecycle documented** — it runs `beforeSave()` / `validate()` per
+  record (the full write lifecycle, not a raw `CASE` UPDATE), which is exactly what lets a per-row
+  `save()` loop collapse into a single `saveAll()`.
+
 ## [0.2.1] - 2026-07-05
 
 ### Changed
