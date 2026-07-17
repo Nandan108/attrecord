@@ -30,7 +30,7 @@ prose and worked examples, and the topic docs in this directory for deep dives
 |---|---|
 | `Nandan108\Attrecord` | `Record`, `RecordSet`, `WhereClause`, `RawSql`, `Connection`, `DbSession`, `SqlDialect`, `ColumnSerializer` (internal), `ColumnCaster`, `JsonCastable`, `BinaryParam`, `LockSet`, `Transaction`, `SaveResult`, `UpsertSql`, `NamedPlaceholderSql` (internal) |
 | `Nandan108\Attrecord\Attribute` | `Table`, `Column`, `ForeignKey`, `Index`, `UniqueKey`, `Relation`, `LockTier`, `MysqlTableOptions`, `Cast` (abstract base) |
-| `Nandan108\Attrecord\Caster` | `DateTimeCaster`, `EpochCaster`, `JsonCaster` |
+| `Nandan108\Attrecord\Caster` | `DateTimeCaster`, `EpochCaster`, `JsonCaster`, `EnumCaster` |
 | `Nandan108\Attrecord\Dialect` | `MysqlDialect`, `PgsqlDialect`, `SqliteDialect`, `UpsertJoinBuilder` (trait) |
 | `Nandan108\Attrecord\Session` | `PdoDbSession`, `MysqliDbSession`, `WpDbSession`, `RetryingDbSession` |
 | `Nandan108\Attrecord\Schema` | `TableSchema`, `ColumnDefinition`, `ForeignKeyDefinition`, `RelationDefinition` |
@@ -336,6 +336,10 @@ Built-in casters (all extend abstract `Cast implements ColumnCaster`, used as at
 - `#[EpochCaster]` — integer epoch column ↔ `\DateTimeImmutable`.
 - `#[JsonCaster(array|bool $excludeNullFields = false)]` — JSON column ↔ array / `JsonCastable`
   object. `excludeNullFields` drops null keys on write (whole payload `true`, or a field list).
+- `#[EnumCaster(class-string<\BackedEnum> $enum)]` — scalar column ↔ a **backed enum** (property typed
+  as the enum). Normalizes the raw scalar to the enum backing before `::from()`, so int- and
+  string-backed enums both round-trip; a non-backed enum is rejected at construction. Use it to type a
+  status/basis column as its enum (`public MyStatus $status`) instead of a scalar + hand-rolled `tryFrom`.
 
 `JsonCastable` interface (for value objects stored as JSON): `static fromJson(array $data): static`.
 

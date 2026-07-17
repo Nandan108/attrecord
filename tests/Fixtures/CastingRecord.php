@@ -6,6 +6,7 @@ namespace Nandan108\Attrecord\Tests\Fixtures;
 
 use Nandan108\Attrecord\Attribute\Column;
 use Nandan108\Attrecord\Attribute\Table;
+use Nandan108\Attrecord\Caster\EnumCaster;
 use Nandan108\Attrecord\Caster\EpochCaster;
 use Nandan108\Attrecord\Caster\JsonCaster;
 use Nandan108\Attrecord\Enum\ColumnType;
@@ -41,4 +42,9 @@ final class CastingRecord extends Record
     /** JsonCastable value object — auto-cast via jsonSerialize()/fromJson(), no #[Cast]. */
     #[Column(ColumnType::Json, nullable: true)]
     public ?Money $price = null;
+
+    /** Backed enum on an integer column — hydrates to/from the enum via EnumCaster. */
+    #[Column(ColumnType::TinyIntUnsigned, nullable: true)]
+    #[EnumCaster(SampleStatus::class)]
+    public ?SampleStatus $status = null;
 }

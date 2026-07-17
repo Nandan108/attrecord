@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord\Tests\Unit;
 
 use Nandan108\Attrecord\Caster\DateTimeCaster;
+use Nandan108\Attrecord\Caster\EnumCaster;
 use Nandan108\Attrecord\Caster\EpochCaster;
 use Nandan108\Attrecord\Caster\JsonCaster;
 use Nandan108\Attrecord\ColumnCaster;
@@ -22,9 +23,23 @@ use Nandan108\Attrecord\Tests\Fixtures\BadDoubleCasterRecord;
 use Nandan108\Attrecord\Tests\Fixtures\CastingRecord;
 use Nandan108\Attrecord\Tests\Fixtures\DiscriminatorRecord;
 use Nandan108\Attrecord\Tests\Fixtures\Money;
+use Nandan108\Attrecord\Tests\Fixtures\SampleStatus;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+
+/** String-backed enum — EnumCaster must round-trip it verbatim (no int coercion). */
+enum SampleBasis: string
+{
+    case Wac = 'wac';
+    case Fifo = 'fifo';
+}
+
+/** Pure (non-backed) enum — EnumCaster must reject it at construction. */
+enum SamplePureEnum
+{
+    case A;
+}
 
 /**
  * @psalm-suppress PropertyNotSetInConstructor
@@ -32,6 +47,7 @@ use PHPUnit\Framework\TestCase;
 #[CoversClass(JsonCaster::class)]
 #[CoversClass(EpochCaster::class)]
 #[CoversClass(DateTimeCaster::class)]
+#[CoversClass(EnumCaster::class)]
 #[CoversClass(ColumnSerializer::class)]
 final class ColumnCastingTest extends TestCase
 {
@@ -125,6 +141,37 @@ final class ColumnCastingTest extends TestCase
         $back = ColumnSerializer::fromDb('2026-01-02 10:00:00', $col);
         self::assertInstanceOf(\DateTimeImmutable::class, $back);
         self::assertSame('2026-01-02 10:00:00', $back->format('Y-m-d H:i:s'));
+    }
+
+    #[Test]
+    public function enumCasterRoundTripsIntBackedEnum(): void
+    {
+        $col = $this->colDef(ColumnType::TinyIntUnsigned, new EnumCaster(SampleStatus::class), phpType: SampleStatus::class);
+
+        self::assertSame(3, ColumnSerializer::toParam(SampleStatus::Submitted, $col));
+        // A driver may return the int column as a numeric string; the caster normalizes to the backing.
+        self::assertSame(SampleStatus::Submitted, ColumnSerializer::fromDb('3', $col));
+        self::assertSame(SampleStatus::Submitted, ColumnSerializer::fromDb(3, $col));
+        // Null short-circuits — the caster is never invoked.
+        self::assertNull(ColumnSerializer::toParam(null, $col));
+        self::assertNull(ColumnSerializer::fromDb(null, $col));
+    }
+
+    #[Test]
+    public function enumCasterRoundTripsStringBackedEnum(): void
+    {
+        $col = $this->colDef(ColumnType::VarChar, new EnumCaster(SampleBasis::class), phpType: SampleBasis::class);
+
+        self::assertSame('wac', ColumnSerializer::toParam(SampleBasis::Wac, $col));
+        self::assertSame(SampleBasis::Wac, ColumnSerializer::fromDb('wac', $col));
+    }
+
+    #[Test]
+    public function enumCasterRejectsNonBackedEnum(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        /** @psalm-suppress InvalidArgument — deliberately passing a non-backed enum to prove the guard. */
+        new EnumCaster(SamplePureEnum::class);
     }
 
     #[Test]
