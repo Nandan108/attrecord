@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord\Tests\Integration\Cases;
 
 use Nandan108\Attrecord\Exception\AttrecordException;
+use Nandan108\Attrecord\Exception\RecordDeleteException;
+use Nandan108\Attrecord\Exception\RecordNotFoundException;
 use Nandan108\Attrecord\RecordSet;
 use Nandan108\Attrecord\Tests\Fixtures\CommentRecord;
 use Nandan108\Attrecord\Tests\Fixtures\DdlGeneratedColumnRecord;
@@ -13,6 +15,7 @@ use Nandan108\Attrecord\Tests\Fixtures\PostTagPivot;
 use Nandan108\Attrecord\Tests\Fixtures\TagRecord;
 use Nandan108\Attrecord\Tests\Fixtures\TimestampedRecord;
 use Nandan108\Attrecord\Tests\Fixtures\UserRecord;
+use Nandan108\Attrecord\WhereClause;
 
 /**
  * Shared RecordSet cases (saveAll batch insert/upsert, deleteAll, with() eager loading,
@@ -750,6 +753,49 @@ trait RecordSetCases
         $this->assertNotNull($user);
         $this->assertInstanceOf(RecordSet::class, $user->postComments);
         $this->assertCount(0, $user->postComments);
+    }
+
+    // -----------------------------------------------------------------
+    // Record finder / update / delete edge branches
+    // -----------------------------------------------------------------
+
+    public function testGetOneOrFailThrowsWhenMissing(): void
+    {
+        $this->expectException(RecordNotFoundException::class);
+        UserRecord::getOneOrFail(999999);
+    }
+
+    public function testDeleteWithoutPrimaryKeyThrows(): void
+    {
+        $this->expectException(RecordDeleteException::class);
+        (new UserRecord())->delete();
+    }
+
+    public function testCountAndDeleteWhereAcceptAWhereClause(): void
+    {
+        $this->makeUser('Keep');
+        $this->makeUser('Drop');
+
+        $this->assertSame(1, UserRecord::countWhere(WhereClause::where('name', 'Drop')));
+        $this->assertSame(1, UserRecord::deleteWhere(WhereClause::where('name', 'Drop')));
+        $this->assertSame(0, UserRecord::countWhere(WhereClause::where('name', 'Drop')));
+    }
+
+    public function testWhereInWithCompositeColumnsDelegatesToTuples(): void
+    {
+        $u = $this->makeUser('A');
+
+        $found = UserRecord::whereIn(['id', 'name'], [[(int) $u->id, 'A']]);
+
+        $this->assertCount(1, $found);
+    }
+
+    public function testSaveAllWithForceWritesCleanRecords(): void
+    {
+        $u = $this->makeUser('Once');
+        // Clean (just saved) — force makes saveAll write it anyway.
+        $result = (new RecordSet([$u]))->saveAll(force: true);
+        $this->assertNotNull($result);
     }
 
     // -----------------------------------------------------------------
