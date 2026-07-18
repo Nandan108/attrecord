@@ -21,6 +21,7 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
 - Lifecycle hooks — `beforeSave()`/`afterSave()`, `beforeDelete()`/`afterDelete()`, `afterLoad()`
 - Auto-managed timestamps via `#[CreatedAt]` / `#[UpdatedAt]`
 - find-or-create ergonomics — `firstOrNew()` / `findOrCreate()` / `updateOrCreate()` (array-match)
+- Aggregate finders — `countWhere()` / `sumWhere()` / `avgWhere()` / `minWhere()` / `maxWhere()` / `existsWhere()`
 - Domain invariants enforced at assignment and save time via a `validate()` hook
 - Deadlock-safe locking helpers (`LockTier`, `LockSet`, `Transaction`) + advisory locks
 - Unique-key aware upserts — single (`upsertByUniqueKey`) and bulk (`RecordSet::upsertAllByUniqueKey`), with an optional **auto-increment-burn-free** mode; plus `updateByUniqueKey`

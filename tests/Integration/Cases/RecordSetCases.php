@@ -790,6 +790,44 @@ trait RecordSetCases
         $this->assertCount(1, $found);
     }
 
+    public function testAggregateHelpersOverAScopedSet(): void
+    {
+        $a = $this->makeUser('agg-a');
+        $b = $this->makeUser('agg-b');
+        $c = $this->makeUser('agg-c');
+        $ids = [(int) $a->id, (int) $b->id, (int) $c->id];
+        $scope = WhereClause::whereIn('id', $ids);
+
+        $this->assertSame(array_sum($ids), UserRecord::sumWhere('id', $scope));
+        $this->assertEqualsWithDelta(array_sum($ids) / 3, UserRecord::avgWhere('id', $scope), 0.001);
+        $this->assertEquals(min($ids), UserRecord::minWhere('id', $scope));
+        $this->assertEquals(max($ids), UserRecord::maxWhere('id', $scope));
+    }
+
+    public function testAggregatesOnAnEmptyMatch(): void
+    {
+        $this->makeUser('agg-x');
+        $none = WhereClause::where('name', 'does-not-exist');
+
+        $this->assertSame(0, UserRecord::sumWhere('id', $none));
+        $this->assertNull(UserRecord::avgWhere('id', $none));
+        $this->assertNull(UserRecord::minWhere('id', $none));
+    }
+
+    public function testExistsWhere(): void
+    {
+        $this->makeUser('agg-present');
+
+        $this->assertTrue(UserRecord::existsWhere('name = ?', ['agg-present']));
+        $this->assertFalse(UserRecord::existsWhere('name = ?', ['agg-absent']));
+    }
+
+    public function testAggregateRejectsUnknownColumn(): void
+    {
+        $this->expectException(\Nandan108\Attrecord\Exception\SchemaException::class);
+        UserRecord::sumWhere('not_a_column');
+    }
+
     public function testSaveAllWithForceWritesCleanRecords(): void
     {
         $u = $this->makeUser('Once');

@@ -31,6 +31,9 @@ Additive across the board — no breaking changes.
 - **find-or-create** — `firstOrNew(array $match, array $defaults = [])` (returns an unsaved
   instance), `findOrCreate(...)` and `updateOrCreate(array $match, array $values)` (both persist).
   Array-match is AND-ed column equality on a non-empty match map.
+- **Aggregate finders** — `sumWhere()`, `avgWhere()`, `minWhere()`, `maxWhere()`, `existsWhere()`
+  alongside the existing `countWhere()`. Empty `$where` aggregates the whole table; an unknown
+  column throws a `SchemaException`.
 - **`WhereClause::match(array $match)`** — build an AND-ed all-columns-equal clause from a map
   (values matched as raw scalars — match an enum/VO column by its stored `->value`). Backs
   find-or-create and is usable directly with `find()` / `updateWhere()` / `countWhere()` / etc.

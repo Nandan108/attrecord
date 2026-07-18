@@ -495,6 +495,113 @@ abstract class Record
     }
 
     /**
+     * `SUM($column)` over matching rows — `0` when none match. Empty `$where` aggregates the whole table.
+     *
+     * @api
+     *
+     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     */
+    public static function sumWhere(string $column, string | WhereClause $where = '', array $params = []): int | float
+    {
+        $v = static::aggregateWhere('SUM', $column, $where, $params);
+        if (null === $v) {
+            return 0;
+        }
+        if (\is_int($v) || \is_float($v)) {
+            return $v;
+        }
+
+        // Drivers return SUM as a numeric string — keep it an int unless it carries a fraction.
+        return str_contains($v, '.') ? (float) $v : (int) $v;
+    }
+
+    /**
+     * `AVG($column)` over matching rows, or null when none match.
+     *
+     * @api
+     *
+     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     */
+    public static function avgWhere(string $column, string | WhereClause $where = '', array $params = []): ?float
+    {
+        $v = static::aggregateWhere('AVG', $column, $where, $params);
+
+        return null === $v ? null : (float) $v;
+    }
+
+    /**
+     * `MIN($column)` over matching rows (raw value; null when none match).
+     *
+     * @api
+     *
+     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     */
+    public static function minWhere(string $column, string | WhereClause $where = '', array $params = []): string | int | float | null
+    {
+        return static::aggregateWhere('MIN', $column, $where, $params);
+    }
+
+    /**
+     * `MAX($column)` over matching rows (raw value; null when none match).
+     *
+     * @api
+     *
+     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     */
+    public static function maxWhere(string $column, string | WhereClause $where = '', array $params = []): string | int | float | null
+    {
+        return static::aggregateWhere('MAX', $column, $where, $params);
+    }
+
+    /**
+     * Whether any row matches `$where` (a single-row `SELECT 1 … LIMIT 1`).
+     *
+     * @api
+     *
+     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     */
+    public static function existsWhere(string | WhereClause $where = '', array $params = []): bool
+    {
+        $schema = static::schema();
+        if ($where instanceof WhereClause) {
+            $params = $where->params();
+            $where = $where->render(static::connection()->dialect);
+        }
+        ['sql' => $normSql, 'params' => $normParams] = NamedPlaceholderSql::positional($where, $params);
+        $sql = 'SELECT 1 FROM '.static::qi($schema->tableName);
+        if ('' !== $normSql) {
+            $sql .= ' WHERE '.$normSql;
+        }
+
+        return null !== static::connection()->session->fetchScalar($sql.' LIMIT 1', $normParams);
+    }
+
+    /**
+     * Run a single-column SQL aggregate (`SUM`/`AVG`/`MIN`/`MAX`) over matching rows and return the
+     * raw scalar. Empty `$where` aggregates the whole table.
+     *
+     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     */
+    private static function aggregateWhere(string $func, string $column, string | WhereClause $where, array $params): string | int | float | null
+    {
+        $schema = static::schema();
+        if (!isset($schema->columns[$column])) {
+            throw new SchemaException(sprintf('%sWhere: unknown column "%s" on %s.', strtolower($func), $column, static::class));
+        }
+        if ($where instanceof WhereClause) {
+            $params = $where->params();
+            $where = $where->render(static::connection()->dialect);
+        }
+        ['sql' => $normSql, 'params' => $normParams] = NamedPlaceholderSql::positional($where, $params);
+        $sql = 'SELECT '.$func.'('.static::qi($column).') FROM '.static::qi($schema->tableName);
+        if ('' !== $normSql) {
+            $sql .= ' WHERE '.$normSql;
+        }
+
+        return static::connection()->session->fetchScalar($sql, $normParams);
+    }
+
+    /**
      * Execute a bulk UPDATE on all rows matching a WHERE clause.
      *
      * @api

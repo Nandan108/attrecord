@@ -255,6 +255,7 @@ Static finders:
 - `whereIn(string|list<string> $column, array $values): RecordSet<static>` — single or composite.
 - `whereInTuples(array $columns, array $rows): RecordSet<static>` — row-value-constructor IN, rendered as `((c1, c2) IN ((?, ?), …))`. Dialect-independent; supported on all three backends (SQLite has row-value IN since 3.15, well under the 3.33 floor).
 - `countWhere(string|WhereClause $where, array $params = []): int`
+- `sumWhere(string $column, string|WhereClause $where = '', array $params = []): int|float` (0 when none match) · `avgWhere(...): ?float` · `minWhere(...) / maxWhere(...): string|int|float|null` · `existsWhere(string|WhereClause $where = '', array $params = []): bool`. Empty `$where` aggregates the whole table; unknown column → `SchemaException`.
 - `updateWhere(array $set, string|WhereClause $where = '', array $params = []): int` — bulk UPDATE.
 - `deleteWhere(string|WhereClause $where, array $params = []): int` — bulk DELETE.
 - `firstOrNew(array $match, array $defaults = []): static` — first record matching `$match`
