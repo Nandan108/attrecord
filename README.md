@@ -16,7 +16,11 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
 - Column casting — map columns to value objects / JSON / custom types via `#[Cast]` attributes ([docs](docs/column-casting.md))
 - Bulk upsert via `RecordSet::saveAll()` with a single SQL statement — optionally chunked (`saveAll(chunkSize:)`) for very large, resumable batches
 - Optional automatic retry of transient transaction conflicts (deadlock / lock-wait / serialization / `SQLITE_BUSY`) via the `RetryingDbSession` decorator
-- Relation loading with no N+1 queries — `load()` / `loadMissing()` (variadic, shared-prefix)
+- Relation loading with no N+1 queries — `load()` / `loadMissing()` (variadic, shared-prefix); nine
+  relation types incl. **many-to-many** (pivot) and **has-many-through**
+- Lifecycle hooks — `beforeSave()`/`afterSave()`, `beforeDelete()`/`afterDelete()`, `afterLoad()`
+- Auto-managed timestamps via `#[CreatedAt]` / `#[UpdatedAt]`
+- find-or-create ergonomics — `firstOrNew()` / `findOrCreate()` / `updateOrCreate()` (array-match)
 - Domain invariants enforced at assignment and save time via a `validate()` hook
 - Deadlock-safe locking helpers (`LockTier`, `LockSet`, `Transaction`) + advisory locks
 - Unique-key aware upserts — single (`upsertByUniqueKey`) and bulk (`RecordSet::upsertAllByUniqueKey`), with an optional **auto-increment-burn-free** mode; plus `updateByUniqueKey`
@@ -46,7 +50,7 @@ attrecord's *typed, schema-authoring, contention-hardened* design diverges from 
 | Column access / typing | **Typed properties** (psalm-checked) | Dynamic `__get`/`__set` (magic) | Typed properties | Dynamic `$attributes` (magic) |
 | Schema changes | Emits `CREATE TABLE` from attributes; forward migrations via a planned opt-in add-on (not in core) | None — the DB *is* the source; no DDL/migrations | `doctrine/migrations` | Laravel migrations |
 | Query building | Finders + immutable `WhereClause` + `RawSql` | Dynamic finders + string conditions (`find_by_x`) | DQL + QueryBuilder | Fluent query builder |
-| Relations | Imperative `load()` / `loadMissing()` (incl. polymorphic); no lazy graph / identity map | `has_many`/`belongs_to`/HABTM/`through` + eager loading | Full graph: lazy loading, identity map, UoW | Full: lazy + eager, rich relationship set |
+| Relations | Imperative `load()` / `loadMissing()`; incl. polymorphic, **many-to-many**, **has-many-through**; no lazy graph / identity map | `has_many`/`belongs_to`/HABTM/`through` + eager loading | Full graph: lazy loading, identity map, UoW | Full: lazy + eager, rich relationship set |
 | Backends | MySQL/MariaDB, PostgreSQL, SQLite | MySQL, PostgreSQL, SQLite | Many (via DBAL) | MySQL, PostgreSQL, SQLite, SQL Server |
 | Driver / session layer | Pluggable `DbSession`: PDO, **mysqli, wpdb** + retry decorator | **PDO only** | DBAL | PDO |
 | Bulk writes | First-class: deadlock-safe multi-mask upsert, per-chunk-commit chunking, burn-free upsert | None (row-at-a-time `save()`) | Batch inserts; bulk `UPDATE`/`DELETE` via DQL | `upsert()` / bulk `insert()` |
@@ -1470,6 +1474,8 @@ column type is known and the wrapping is applied for you.
 | `MorphMany`        | Related table has type+FK pointing here  | `?RecordSet<T>`   | `class`, `morphType`, `morphKey`, `morphValue` |
 | `MorphOne`         | Related table has type+FK pointing here  | `?T`              | `class`, `morphType`, `morphKey`, `morphValue` |
 | `MorphTo`          | This table has type+FK columns           | `?T` (union)      | `morphType`, `morphKey`, `morphMap`            |
+| `ManyToMany`       | Pivot (junction) table                   | `?RecordSet<T>`   | `class`, `pivotTable`, `pivotLocalKey`, `pivotForeignKey` |
+| `HasManyThrough`   | Via an intermediate Record               | `?RecordSet<T>`   | `class`, `through`, `foreignKey`, `secondKey`  |
 
 ```php
 // Standard relation
@@ -1496,7 +1502,29 @@ column type is known and the wrapping is applied for you.
     morphKey:  'tagable_id',        // local FK column
     morphMap:  ['order' => Order::class, 'product' => Product::class],
 )]
+
+// Many-to-many through a pivot table (junction of two FK columns)
+#[Relation(
+    type:            RelationType::ManyToMany,
+    class:           Tag::class,
+    pivotTable:      'post_tag',     // junction table
+    pivotLocalKey:   'post_id',      // pivot column → this record's PK
+    pivotForeignKey: 'tag_id',       // pivot column → the target's PK
+)]
+
+// Has-many-through an intermediate Record (reach the far records, skip the middle)
+#[Relation(
+    type:       RelationType::HasManyThrough,
+    class:      Comment::class,      // far records
+    through:    Post::class,         // intermediate Record
+    foreignKey: 'user_id',           // intermediate column → this record's PK
+    secondKey:  'post_id',           // far column → the intermediate's PK
+)]
 ```
+
+`ManyToMany` is deliberately **pivot-less** — it returns the related records, not pivot-column data.
+When the junction carries data, model it as its own Record and traverse a `OneToMany → ManyToOne`
+chain (`$post->load('postTags.tag')`) for fully-typed pivot columns.
 
 ---
 

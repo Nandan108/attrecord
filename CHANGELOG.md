@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-07-18 — Relations, lifecycle & convenience
+
+Additive across the board — no breaking changes.
+
+### Added
+
+- **`RelationType::ManyToMany`** — relate through a pivot (junction) table that holds only the two
+  FK columns; `load()`/`loadMissing()` resolve it as a batched two-hop `IN(…)` (pivot query, then
+  the targets by PK), returning a `RecordSet` of the related records. Params: `class`, `pivotTable`,
+  `pivotLocalKey`, `pivotForeignKey` (`localKey` defaults to the PK). It is deliberately
+  **pivot-less** — when the junction carries data, model it as its own Record and traverse it with a
+  `OneToMany → ManyToOne` chain for fully-typed pivot columns.
+- **`RelationType::HasManyThrough`** — reach the far records via an intermediate Record without
+  hydrating it. Params: `class` (far), `through` (intermediate), `foreignKey` (through→local),
+  `secondKey` (far→through); `localKey`/`throughKey` default to PKs.
+- **Lifecycle hooks** (overridable methods, mirroring the existing `beforeSave()`): `afterSave(bool
+  $wasInsert)` fires after an actual write from both `save()` and `saveAll()` (default + chunked),
+  never on a clean no-op; `beforeDelete()`/`afterDelete()` around single `delete()` (bulk
+  `deleteAll()` bypasses them); `afterLoad()` after every hydration.
+- **Auto-timestamps** — `#[CreatedAt]` / `#[UpdatedAt]` on a DateTime/Timestamp column. Both are set
+  on INSERT; `UpdatedAt` is additionally bumped on any UPDATE that changes another column (a clean
+  save does not bump it). Enforced across `save()` and `saveAll()`; schema validates the column type
+  and one-per-record.
+- **find-or-create** — `firstOrNew(array $match, array $defaults = [])` (returns an unsaved
+  instance), `findOrCreate(...)` and `updateOrCreate(array $match, array $values)` (both persist).
+  Array-match is AND-ed column equality on a non-empty match map.
+- **`WhereClause::match(array $match)`** — build an AND-ed all-columns-equal clause from a map
+  (values matched as raw scalars — match an enum/VO column by its stored `->value`). Backs
+  find-or-create and is usable directly with `find()` / `updateWhere()` / `countWhere()` / etc.
+
 ## [0.4.0] - 2026-07-18 — Relation loading, refined
 
 ### Added

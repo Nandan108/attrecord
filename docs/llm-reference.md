@@ -136,6 +136,12 @@ All attributes are `readonly`. Param order below matches the constructor.
 Property-level `#[UniqueKey('name')]` / `#[Index('name')]` (no `columns`) attach the property's
 column to a single-column key.
 
+### `#[CreatedAt]` / `#[UpdatedAt]` (property-level, on a DateTime/Timestamp column)
+
+Auto-managed timestamps, typed `?\DateTimeImmutable`. `#[CreatedAt]` is set on INSERT only;
+`#[UpdatedAt]` is set on INSERT and bumped on any UPDATE that changes another column (a clean save
+does not bump it). At most one of each per Record. Applied in `save()` and `saveAll()`.
+
 ### `#[UniqueKey]` / `#[Index]`
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -209,7 +215,7 @@ Type notes:
 ## 6. Relations
 
 `RelationType`: `OneToMany`, `ManyToOne`, `OneToOne`, `OneToOneReversed`, `MorphMany`,
-`MorphOne`, `MorphTo`.
+`MorphOne`, `MorphTo`, `ManyToMany`, `HasManyThrough`.
 
 | Type | FK location | PHP property type | Required params |
 |---|---|---|---|
@@ -220,6 +226,13 @@ Type notes:
 | `MorphMany` | related table | `?RecordSet<T>` | `class`, `morphType`, `morphKey`, `morphValue` |
 | `MorphOne` | related table | `?T` | `class`, `morphType`, `morphKey`, `morphValue` |
 | `MorphTo` | this table | union `?T` | `morphType`, `morphKey`, `morphMap` |
+| `ManyToMany` | pivot table | `?RecordSet<T>` | `class`, `pivotTable`, `pivotLocalKey`, `pivotForeignKey` |
+| `HasManyThrough` | via intermediate | `?RecordSet<T>` | `class`, `through`, `foreignKey`, `secondKey` |
+
+`ManyToMany` resolves as a two-hop `IN(…)` (pivot rows, then targets by PK); it is pivot-less — for
+pivot-column data, model the junction as its own Record and traverse a `OneToMany → ManyToOne`
+chain. `HasManyThrough` reaches the far records via the intermediate without hydrating it
+(`foreignKey` = through→local, `secondKey` = far→through; `localKey`/`throughKey` default to PKs).
 
 Loaded imperatively via `RecordSet::load('relation')`, dot-paths `load('posts.user')`, or several
 paths at once `load('a.b', 'a.c')` (shared prefixes load once). Batched — one `IN(…)` query per
@@ -242,13 +255,22 @@ Static finders:
 - `countWhere(string|WhereClause $where, array $params = []): int`
 - `updateWhere(array $set, string|WhereClause $where = '', array $params = []): int` — bulk UPDATE.
 - `deleteWhere(string|WhereClause $where, array $params = []): int` — bulk DELETE.
+- `firstOrNew(array $match, array $defaults = []): static` — first record matching `$match`
+  (AND-ed column equality, non-empty), or an **unsaved** `new` with `$match + $defaults`.
+- `findOrCreate(array $match, array $defaults = []): static` — like `firstOrNew` but **saves** a new record.
+- `updateOrCreate(array $match, array $values): static` — find-and-update or create; always persisted.
 
 Construction / mutation:
 - `newWith(array $attrs): static` — construct + `set()`.
 - `set(array $attrs, bool $validate = true): static` — assign + optional `validate()`.
 - `validate(): void` — override to enforce invariants (throw `RecordValidationException`).
   Called from `set()` and at save time.
-- `beforeSave(): void` — override hook; runs before INSERT/UPDATE (e.g. stamp timestamps).
+
+Lifecycle hooks (override; empty by default):
+- `beforeSave(): void` / `afterSave(bool $wasInsert): void` — around INSERT/UPDATE. `afterSave`
+  fires only on an actual write (single `save()` and per record in `saveAll()`), not a clean no-op.
+- `beforeDelete(): void` / `afterDelete(): void` — around single `delete()` (bulk `deleteAll()` skips them).
+- `afterLoad(): void` — after each hydration from a DB row.
 
 Persistence:
 - `save(bool $force = false): static` — INSERT if new, else UPDATE of **dirty** columns only.
@@ -617,7 +639,8 @@ All under `Nandan108\Attrecord\Exception`, extending `AttrecordException` (which
 ## 15. WhereClause
 
 Immutable builder; `render(?SqlDialect)` produces dialect-correct SQL, `params()` the bound
-values. Static constructors: `where`, `whereIn`, `whereNotIn`, `whereInTuples`,
+values. Static constructors: `where`, `match` (AND-ed all-equal from a `array<string, scalar|null>`
+map — raw scalars, match enum/VO columns by their `->value`), `whereIn`, `whereNotIn`, `whereInTuples`,
 `whereNotInTuples`, `whereRaw`, `whereLike`, `whereNotLike`, `whereNot`, `whereBetween`,
 `whereNotBetween`, `whereNone`, `whereAll`, `whereAny`. Instance combinators: `andWhere(...)`,
 `orWhere(...)`. Values accept `scalar|null` and `BinaryParam`; a bound `bool` is normalized to its
