@@ -375,7 +375,7 @@ abstract class Record
      */
     public static function firstOrNew(array $match, array $defaults = []): static
     {
-        return static::findOne(self::matchClause($match))
+        return static::findOne(WhereClause::match($match))
             ?? static::newWith([...$match, ...$defaults]);
     }
 
@@ -389,7 +389,7 @@ abstract class Record
      */
     public static function findOrCreate(array $match, array $defaults = []): static
     {
-        $found = static::findOne(self::matchClause($match));
+        $found = static::findOne(WhereClause::match($match));
         if (null !== $found) {
             return $found;
         }
@@ -408,33 +408,12 @@ abstract class Record
      */
     public static function updateOrCreate(array $match, array $values): static
     {
-        $found = static::findOne(self::matchClause($match));
+        $found = static::findOne(WhereClause::match($match));
         if (null !== $found) {
             return $found->set($values)->save();
         }
 
         return static::newWith([...$match, ...$values])->save();
-    }
-
-    /**
-     * Build an all-columns-equal {@see WhereClause} from a non-empty match map.
-     *
-     * @param array<string, scalar|null> $match
-     */
-    private static function matchClause(array $match): WhereClause
-    {
-        if ([] === $match) {
-            throw new AttrecordException('firstOrNew()/findOrCreate()/updateOrCreate() require a non-empty match array.');
-        }
-
-        /** @var WhereClause|null $clause */
-        $clause = null;
-        foreach ($match as $col => $value) {
-            $cond = WhereClause::where($col, $value);
-            $clause = null === $clause ? $cond : $clause->andWhere($cond);
-        }
-
-        return $clause;
     }
 
     /**

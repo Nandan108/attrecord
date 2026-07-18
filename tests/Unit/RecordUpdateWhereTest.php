@@ -32,6 +32,23 @@ final class RecordUpdateWhereTest extends TestCase
         TableSchema::clearCache();
     }
 
+    public function testMatchClauseBuildsAndedEqualityWhereForUpdate(): void
+    {
+        // WhereClause::match() lets callers target updateWhere()/countWhere()/etc. without a hand-written
+        // SQL fragment; columns are auto-quoted and AND-ed.
+        UserRecord::updateWhere(
+            ['name' => 'Bob'],
+            WhereClause::match(['id' => 42]),
+        );
+
+        $sql = $this->session->lastSql();
+        $this->assertNotNull($sql);
+        $this->assertStringContainsString('UPDATE `attrecord_users` SET `name` = ?', $sql);
+        $this->assertStringContainsString('WHERE (`id` = ?)', $sql);
+        // SET params first, then the WHERE params from the clause.
+        $this->assertSame(['Bob', 42], $this->session->lastParams());
+    }
+
     public function testScalarSetGeneratesParameterisedUpdate(): void
     {
         UserRecord::updateWhere(

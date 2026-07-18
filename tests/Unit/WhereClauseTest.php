@@ -31,6 +31,26 @@ final class WhereClauseTest extends TestCase
         $this->assertSame([100], $c->params());
     }
 
+    public function testMatchAndsColumnEqualities(): void
+    {
+        $c = WhereClause::match(['order_id' => 7, 'status' => 'staged']);
+        $this->assertSame('((order_id = ?) AND (status = ?))', $c->render());
+        $this->assertSame([7, 'staged'], $c->params());
+    }
+
+    public function testMatchSingleColumn(): void
+    {
+        $c = WhereClause::match(['id' => 42]);
+        $this->assertSame('(id = ?)', $c->render());
+        $this->assertSame([42], $c->params());
+    }
+
+    public function testMatchRejectsEmptyMap(): void
+    {
+        $this->expectException(\Nandan108\Attrecord\Exception\AttrecordException::class);
+        WhereClause::match([]);
+    }
+
     public function testWhereNullProducesIsNull(): void
     {
         $c = WhereClause::where('deleted_at', null);

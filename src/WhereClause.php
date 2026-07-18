@@ -139,6 +139,34 @@ final class WhereClause
     }
 
     /**
+     * All-columns-equal (AND-ed) condition from a non-empty `column => value` map — the multi-column
+     * sibling of {@see self::where()}. A clean way to target `updateWhere()` / `countWhere()` /
+     * `deleteWhere()` / `find()` without hand-writing a SQL fragment + positional params; column
+     * names are auto-quoted at render time.
+     *
+     * Values are matched as raw scalars (no column caster is applied), so match an enum/VO column by
+     * its stored scalar — e.g. `match(['status' => $status->value])`, mirroring the "->value at the
+     * SQL boundary" convention.
+     *
+     * @param array<string, scalar|null> $match
+     */
+    public static function match(array $match): self
+    {
+        if ([] === $match) {
+            throw new Exception\AttrecordException('WhereClause::match() requires a non-empty match map.');
+        }
+
+        /** @var self|null $clause */
+        $clause = null;
+        foreach ($match as $col => $value) {
+            $cond = self::where($col, $value);
+            $clause = null === $clause ? $cond : $clause->andWhere($cond);
+        }
+
+        return $clause;
+    }
+
+    /**
      * IN-list condition — single or multi-column.
      *
      * Single column:   whereIn('status', ['pending', 'confirmed'])
