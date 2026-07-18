@@ -544,6 +544,11 @@ abstract class Record
             return 0;
         }
 
+        if (null !== ($ts = self::autoUpdatedAtAssignment($schema, $dialect, $set))) {
+            $setParts[] = $ts[0];
+            $setParams[] = $ts[1];
+        }
+
         $qt = $dialect->quoteIdentifier($schema->tableName);
         $sql = 'UPDATE '.$qt.' SET '.implode(', ', $setParts);
         if ('' !== $normWhere) {
@@ -649,6 +654,29 @@ abstract class Record
         if (!empty($dirty)) {
             $this->{$schema->propFor($schema->updatedAtColumn)} = new \DateTimeImmutable();
         }
+    }
+
+    /**
+     * Build the auto-managed `updated_at = now` assignment for the bulk-UPDATE paths
+     * ({@see updateWhere()} / {@see updateByWhere()} / {@see updateByUniqueKey()}), so #[UpdatedAt]
+     * stays consistent with {@see save()}. Returns `[setFragment, boundValue]`, or null when the
+     * schema has no #[UpdatedAt] column or the caller already set that column ($setCols).
+     *
+     * @param array<string, mixed> $setCols columns already present in the SET (by key)
+     *
+     * @return array{0: string, 1: scalar|BinaryParam|null}|null
+     */
+    private static function autoUpdatedAtAssignment(TableSchema $schema, SqlDialect $dialect, array $setCols): ?array
+    {
+        $col = $schema->updatedAtColumn;
+        if (null === $col || \array_key_exists($col, $setCols)) {
+            return null;
+        }
+
+        return [
+            $dialect->quoteIdentifier($col).' = ?',
+            ColumnSerializer::toParam(new \DateTimeImmutable(), $schema->columns[$col], $dialect->bindsBinaryAsLob()),
+        ];
     }
 
     public function save(bool $force = false): static
@@ -1023,10 +1051,13 @@ abstract class Record
         // --- SET clause ---
         $setParts = [];
         $setParams = [];
+        $setCols = [];
 
         if (empty($fields)) {
             foreach ($schema->columns as $colName => $col) {
-                if ($col->autoIncrement || $col->isGenerated || $colName === $pk) {
+                // Skip updated_at in the implicit all-columns set so it is stamped `now`, not the
+                // record's (possibly stale) property value.
+                if ($col->autoIncrement || $col->isGenerated || $colName === $pk || $colName === $schema->updatedAtColumn) {
                     continue;
                 }
                 /** @psalm-suppress MixedAssignment */
@@ -1034,6 +1065,7 @@ abstract class Record
                 if (null !== $value) {
                     $setParts[] = $dialect->quoteIdentifier($colName).' = ?';
                     $setParams[] = ColumnSerializer::toParam($value, $col, $dialect->bindsBinaryAsLob());
+                    $setCols[$colName] = true;
                 }
             }
         } else {
@@ -1044,11 +1076,17 @@ abstract class Record
                 $value = $this->{$col->propertyName} ?? null;
                 $setParts[] = $dialect->quoteIdentifier($colName).' = ?';
                 $setParams[] = ColumnSerializer::toParam($value, $col, $dialect->bindsBinaryAsLob());
+                $setCols[$colName] = true;
             }
         }
 
         if (empty($setParts)) {
             return 0;
+        }
+
+        if (null !== ($ts = self::autoUpdatedAtAssignment($schema, $dialect, $setCols))) {
+            $setParts[] = $ts[0];
+            $setParams[] = $ts[1];
         }
 
         $qt = $dialect->quoteIdentifier($schema->tableName);
@@ -1108,9 +1146,12 @@ abstract class Record
         $setParts = [];
         $setParams = [];
 
+        $setCols = [];
         if (empty($fields)) {
             foreach ($schema->columns as $colName => $col) {
-                if ($col->autoIncrement || $col->isGenerated || $colName === $pk) {
+                // Skip updated_at in the implicit all-columns set so it is stamped `now`, not the
+                // record's (possibly stale) property value.
+                if ($col->autoIncrement || $col->isGenerated || $colName === $pk || $colName === $schema->updatedAtColumn) {
                     continue;
                 }
                 /** @psalm-suppress MixedAssignment */
@@ -1118,6 +1159,7 @@ abstract class Record
                 if (null !== $value) {
                     $setParts[] = $dialect->quoteIdentifier($colName).' = ?';
                     $setParams[] = ColumnSerializer::toParam($value, $col, $dialect->bindsBinaryAsLob());
+                    $setCols[$colName] = true;
                 }
             }
         } else {
@@ -1128,11 +1170,17 @@ abstract class Record
                 $value = $this->{$col->propertyName} ?? null;
                 $setParts[] = $dialect->quoteIdentifier($colName).' = ?';
                 $setParams[] = ColumnSerializer::toParam($value, $col, $dialect->bindsBinaryAsLob());
+                $setCols[$colName] = true;
             }
         }
 
         if (empty($setParts)) {
             return 0;
+        }
+
+        if (null !== ($ts = self::autoUpdatedAtAssignment($schema, $dialect, $setCols))) {
+            $setParts[] = $ts[0];
+            $setParams[] = $ts[1];
         }
 
         $qt = $dialect->quoteIdentifier($schema->tableName);

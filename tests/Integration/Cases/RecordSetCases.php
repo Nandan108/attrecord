@@ -982,6 +982,81 @@ trait RecordSetCases
         $this->assertContains('afterSave', $b->hookLog);
     }
 
+    /** Push updated_at far into the past so a subsequent auto-bump to `now` is unmistakable. */
+    private function ageUpdatedAt(int $id): \DateTimeImmutable
+    {
+        $old = new \DateTimeImmutable('2000-01-01 00:00:00');
+        TimestampedRecord::updateWhere(['updated_at' => $old], 'id = ?', [$id]);
+
+        return $old;
+    }
+
+    public function testUpdateWhereBumpsUpdatedAt(): void
+    {
+        $rec = new TimestampedRecord();
+        $rec->name = 'a';
+        $rec->save();
+        $old = $this->ageUpdatedAt((int) $rec->id);
+
+        TimestampedRecord::updateWhere(['name' => 'b'], 'id = ?', [(int) $rec->id]);
+
+        $reloaded = TimestampedRecord::getOne((int) $rec->id);
+        $this->assertNotNull($reloaded);
+        $this->assertSame('b', $reloaded->name);
+        $this->assertNotNull($reloaded->updated_at);
+        $this->assertGreaterThan($old, $reloaded->updated_at, 'updateWhere bumped updated_at to now');
+    }
+
+    public function testUpdateWhereRespectsAnExplicitUpdatedAt(): void
+    {
+        $rec = new TimestampedRecord();
+        $rec->name = 'a';
+        $rec->save();
+
+        $fixed = new \DateTimeImmutable('2000-01-01 00:00:00');
+        TimestampedRecord::updateWhere(['name' => 'b', 'updated_at' => $fixed], 'id = ?', [(int) $rec->id]);
+
+        $reloaded = TimestampedRecord::getOne((int) $rec->id);
+        $this->assertNotNull($reloaded);
+        $this->assertNotNull($reloaded->updated_at);
+        $this->assertSame('2000-01-01', $reloaded->updated_at->format('Y-m-d'));
+    }
+
+    public function testUpdateByWhereBumpsUpdatedAt(): void
+    {
+        $rec = new TimestampedRecord();
+        $rec->name = 'a';
+        $rec->save();
+
+        $old = $this->ageUpdatedAt((int) $rec->id);
+
+        $rec->name = 'b';
+        $rec->updateByWhere('id = ?', [(int) $rec->id]);
+
+        $reloaded = TimestampedRecord::getOne((int) $rec->id);
+        $this->assertNotNull($reloaded);
+        $this->assertSame('b', $reloaded->name);
+        $this->assertNotNull($reloaded->updated_at);
+        $this->assertGreaterThan($old, $reloaded->updated_at, 'updateByWhere stamped updated_at now');
+    }
+
+    public function testUpdateByUniqueKeyBumpsUpdatedAt(): void
+    {
+        $rec = new TimestampedRecord();
+        $rec->name = 'a';
+        $rec->save();
+        $old = $this->ageUpdatedAt((int) $rec->id);
+
+        $rec->name = 'b';
+        $rec->updateByUniqueKey(['name']);
+
+        $reloaded = TimestampedRecord::getOne((int) $rec->id);
+        $this->assertNotNull($reloaded);
+        $this->assertSame('b', $reloaded->name);
+        $this->assertNotNull($reloaded->updated_at);
+        $this->assertGreaterThan($old, $reloaded->updated_at, 'updateByUniqueKey stamped updated_at now');
+    }
+
     // -----------------------------------------------------------------
     // ArrayAccess / Iterator / Countable
     // -----------------------------------------------------------------

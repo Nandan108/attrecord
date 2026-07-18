@@ -24,9 +24,10 @@ Additive across the board — no breaking changes.
   never on a clean no-op; `beforeDelete()`/`afterDelete()` around single `delete()` (bulk
   `deleteAll()` bypasses them); `afterLoad()` after every hydration.
 - **Auto-timestamps** — `#[CreatedAt]` / `#[UpdatedAt]` on a DateTime/Timestamp column. Both are set
-  on INSERT; `UpdatedAt` is additionally bumped on any UPDATE that changes another column (a clean
-  save does not bump it). Enforced across `save()` and `saveAll()`; schema validates the column type
-  and one-per-record.
+  on INSERT; `UpdatedAt` is additionally bumped on UPDATE. Enforced across `save()`/`saveAll()`
+  (bumped only when another column changed) **and** the bulk-UPDATE paths `updateWhere()` /
+  `updateByWhere()` / `updateByUniqueKey()`, unless the caller sets the column explicitly. Schema
+  validates the column type and one-per-record.
 - **find-or-create** — `firstOrNew(array $match, array $defaults = [])` (returns an unsaved
   instance), `findOrCreate(...)` and `updateOrCreate(array $match, array $values)` (both persist).
   Array-match is AND-ed column equality on a non-empty match map.

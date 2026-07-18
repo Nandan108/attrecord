@@ -139,8 +139,10 @@ column to a single-column key.
 ### `#[CreatedAt]` / `#[UpdatedAt]` (property-level, on a DateTime/Timestamp column)
 
 Auto-managed timestamps, typed `?\DateTimeImmutable`. `#[CreatedAt]` is set on INSERT only;
-`#[UpdatedAt]` is set on INSERT and bumped on any UPDATE that changes another column (a clean save
-does not bump it). At most one of each per Record. Applied in `save()` and `saveAll()`.
+`#[UpdatedAt]` is set on INSERT and bumped on UPDATE. At most one of each per Record. Applied in
+`save()`/`saveAll()` (bumped only when another column actually changed) **and** the bulk-UPDATE paths
+`updateWhere()` / `updateByWhere()` / `updateByUniqueKey()` — in all cases unless the caller sets the
+column explicitly.
 
 ### `#[UniqueKey]` / `#[Index]`
 | Param | Type | Default | Notes |
