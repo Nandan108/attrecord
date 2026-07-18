@@ -55,4 +55,28 @@ enum RelationType
      * e.g. Tag morphTo (tagable_type + tagable_id → Order or Product)
      */
     case MorphTo;
+
+    /**
+     * Many-to-many through a pivot (junction) table that holds only the two FK columns. Returns a
+     * RecordSet of the related records; the pivot carries no payload (model the pivot as its own
+     * Record and traverse it explicitly when you need pivot-column data).
+     *
+     * Required attribute parameters: class, pivotTable, pivotLocalKey, pivotForeignKey.
+     * localKey defaults to this table's PK; the far side joins on the target's PK.
+     *
+     * e.g. Post manyToMany Tag  (post_tag.post_id → posts.id, post_tag.tag_id → tags.id)
+     */
+    case ManyToMany;
+
+    /**
+     * Has-many-through an intermediate table: reach the far records via a middle Record without
+     * hydrating the middle. Returns a RecordSet of the far records.
+     *
+     * Required attribute parameters: class (far), through (intermediate class), foreignKey
+     * (through-table column → this record's localKey), secondKey (far-table column → through's
+     * throughKey). localKey defaults to this table's PK; throughKey defaults to the through table's PK.
+     *
+     * e.g. User hasManyThrough Comment via Post  (posts.user_id → users.id, comments.post_id → posts.id)
+     */
+    case HasManyThrough;
 }

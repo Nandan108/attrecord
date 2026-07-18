@@ -1032,6 +1032,14 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             case RelationType::MorphTo:
                 $this->loadMorphChild($relName, $relDef);
                 break;
+
+            case RelationType::ManyToMany:
+                $this->loadManyToMany($relName, $relDef, $localProp);
+                break;
+
+            case RelationType::HasManyThrough:
+                $this->loadHasManyThrough($relName, $relDef, $localProp);
+                break;
         }
 
         // Record that this relation is now loaded on every record in the set (so loadMissing()
@@ -1185,6 +1193,157 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                 /** @psalm-suppress MixedArrayOffset */
                 $record->$relName = $byPk[$record->{$morphKeyProp}] ?? null;
             }
+        }
+    }
+
+    /**
+     * Load a ManyToMany relation: one query on the pivot table for the (local, target) key pairs,
+     * then one query loading the target records by PK; group the targets back onto each local record.
+     */
+    private function loadManyToMany(string $relName, RelationDefinition $relDef, string $localProp): void
+    {
+        /** @var class-string<Record> $targetClass */
+        $targetClass = $relDef->targetClass;
+
+        $localValues = array_values(array_unique($this->pluck($localProp)));
+        if (empty($localValues)) {
+            foreach ($this->records as $record) {
+                $record->$relName = new self([]);
+            }
+
+            return;
+        }
+
+        $dialect = $targetClass::connection()->dialect;
+        $qLocal = $dialect->quoteIdentifier((string) $relDef->pivotLocalKey);
+        $qForeign = $dialect->quoteIdentifier((string) $relDef->pivotForeignKey);
+        $qPivot = $dialect->quoteIdentifier(Record::tablePrefix().(string) $relDef->pivotTable);
+        $placeholders = implode(', ', array_fill(0, \count($localValues), '?'));
+        /** @psalm-suppress MixedArgumentTypeCoercion */
+        $pivotRows = $targetClass::connection()->session->fetchAll(
+            "SELECT {$qLocal}, {$qForeign} FROM {$qPivot} WHERE {$qLocal} IN ({$placeholders})",
+            $localValues,
+        );
+
+        /** @var array<array-key, list<int|string>> $foreignByLocal */
+        $foreignByLocal = [];
+        /** @var array<array-key, int|string> $allForeign */
+        $allForeign = [];
+        foreach ($pivotRows as $row) {
+            $lv = $row[(string) $relDef->pivotLocalKey] ?? null;
+            $fv = $row[(string) $relDef->pivotForeignKey] ?? null;
+            if (null === $lv || null === $fv) {
+                continue;
+            }
+            /** @psalm-suppress InvalidArrayOffset */
+            $foreignByLocal[$lv][] = $fv;
+            /** @psalm-suppress InvalidArrayOffset */
+            $allForeign[$fv] = $fv;
+        }
+
+        /** @var array<array-key, Record> $targetsByPk */
+        $targetsByPk = [];
+        if (!empty($allForeign)) {
+            $targetSchema = TableSchema::fromClass($targetClass);
+            $foreignValues = array_values($allForeign);
+            $ph2 = implode(', ', array_fill(0, \count($foreignValues), '?'));
+            $qtpk = $dialect->quoteIdentifier($targetSchema->pk);
+            $targetsByPk = $targetClass::find("{$qtpk} IN ({$ph2})", $foreignValues)
+                ->recordsByKey($targetSchema->pkProp);
+        }
+
+        foreach ($this->records as $record) {
+            /**
+             * @psalm-suppress MixedArrayOffset
+             *
+             * @var list<int|string> $keys
+             */
+            $keys = $foreignByLocal[$record->{$localProp}] ?? [];
+            $related = [];
+            foreach ($keys as $fk) {
+                if (isset($targetsByPk[$fk])) {
+                    $related[] = $targetsByPk[$fk];
+                }
+            }
+            $record->$relName = new self($related);
+        }
+    }
+
+    /**
+     * Load a HasManyThrough relation: fetch the intermediate rows linking this set to the through
+     * table, then the far records via secondKey; group the far records back onto each local record.
+     */
+    private function loadHasManyThrough(string $relName, RelationDefinition $relDef, string $localProp): void
+    {
+        /** @var class-string<Record> $farClass */
+        $farClass = $relDef->targetClass;
+        /** @var class-string<Record> $throughClass */
+        $throughClass = $relDef->throughClass;
+
+        $localValues = array_values(array_unique($this->pluck($localProp)));
+        if (empty($localValues)) {
+            foreach ($this->records as $record) {
+                $record->$relName = new self([]);
+            }
+
+            return;
+        }
+
+        $throughSchema = TableSchema::fromClass($throughClass);
+        $throughKeyProp = $throughSchema->propFor($relDef->throughKey ?? $throughSchema->pk);
+        $fkProp = $throughSchema->propFor((string) $relDef->foreignKey);
+
+        // Step 1: intermediate rows (through) whose foreignKey points at this set.
+        $qFk = $throughClass::connection()->dialect->quoteIdentifier((string) $relDef->foreignKey);
+        $ph = implode(', ', array_fill(0, \count($localValues), '?'));
+        /** @psalm-suppress MixedArgumentTypeCoercion */
+        $throughRecords = $throughClass::find("{$qFk} IN ({$ph})", $localValues);
+
+        /** @var array<array-key, int|string> $localByThroughKey  through-key value → local value */
+        $localByThroughKey = [];
+        /** @var array<array-key, int|string> $throughKeyValues */
+        $throughKeyValues = [];
+        foreach ($throughRecords as $tr) {
+            /** @psalm-suppress MixedAssignment */
+            $tk = $tr->{$throughKeyProp};
+            /** @psalm-suppress MixedAssignment */
+            $lv = $tr->{$fkProp};
+            if (null === $tk || null === $lv) {
+                continue;
+            }
+            /** @psalm-suppress MixedArrayOffset, MixedAssignment */
+            $localByThroughKey[$tk] = $lv;
+            /** @psalm-suppress MixedArrayOffset, MixedAssignment */
+            $throughKeyValues[$tk] = $tk;
+        }
+
+        // Step 2: far records via secondKey IN (through key values); regroup by local value.
+        /** @var array<array-key, list<Record>> $farByLocal */
+        $farByLocal = [];
+        if (!empty($throughKeyValues)) {
+            $farSchema = TableSchema::fromClass($farClass);
+            $secondKeyProp = $farSchema->propFor((string) $relDef->secondKey);
+            $tkVals = array_values($throughKeyValues);
+            $ph2 = implode(', ', array_fill(0, \count($tkVals), '?'));
+            $qSecond = $farClass::connection()->dialect->quoteIdentifier((string) $relDef->secondKey);
+            /** @psalm-suppress MixedArgumentTypeCoercion */
+            $farRecords = $farClass::find("{$qSecond} IN ({$ph2})", $tkVals);
+            foreach ($farRecords as $fr) {
+                /** @psalm-suppress MixedAssignment, MixedArrayOffset */
+                $lv = $localByThroughKey[$fr->{$secondKeyProp}] ?? null;
+                if (null === $lv) {
+                    continue;
+                }
+                /** @psalm-suppress MixedArrayOffset, MixedArrayAssignment */
+                $farByLocal[$lv][] = $fr;
+            }
+        }
+
+        foreach ($this->records as $record) {
+            /** @psalm-suppress MixedAssignment, MixedArrayOffset */
+            $farByLocal[$record->{$localProp}] ??= [];
+            /** @psalm-suppress MixedArrayOffset, MixedArgument */
+            $record->$relName = new self($farByLocal[$record->{$localProp}]);
         }
     }
 

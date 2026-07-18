@@ -37,4 +37,8 @@ final class UserRecord extends Record
 
     #[Relation(RelationType::MorphOne, class: TagRecord::class, morphType: 'tagable_type', morphKey: 'tagable_id', morphValue: 'user')]
     public ?TagRecord $firstTag = null;
+
+    /** @var RecordSet<CommentRecord>|null */
+    #[Relation(RelationType::HasManyThrough, class: CommentRecord::class, through: PostRecord::class, foreignKey: 'user_id', secondKey: 'post_id')]
+    public ?RecordSet $postComments = null;
 }

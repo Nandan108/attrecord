@@ -6,8 +6,11 @@ namespace Nandan108\Attrecord\Tests\Integration\Cases;
 
 use Nandan108\Attrecord\Exception\AttrecordException;
 use Nandan108\Attrecord\RecordSet;
+use Nandan108\Attrecord\Tests\Fixtures\CommentRecord;
 use Nandan108\Attrecord\Tests\Fixtures\DdlGeneratedColumnRecord;
 use Nandan108\Attrecord\Tests\Fixtures\PostRecord;
+use Nandan108\Attrecord\Tests\Fixtures\PostTagPivot;
+use Nandan108\Attrecord\Tests\Fixtures\TagRecord;
 use Nandan108\Attrecord\Tests\Fixtures\TimestampedRecord;
 use Nandan108\Attrecord\Tests\Fixtures\UserRecord;
 
@@ -22,7 +25,15 @@ trait RecordSetCases
     /** @return list<class-string<\Nandan108\Attrecord\Record>> */
     protected static function recordClasses(): array
     {
-        return [UserRecord::class, PostRecord::class, DdlGeneratedColumnRecord::class, TimestampedRecord::class];
+        return [
+            UserRecord::class,
+            PostRecord::class,
+            DdlGeneratedColumnRecord::class,
+            TimestampedRecord::class,
+            TagRecord::class,
+            CommentRecord::class,
+            PostTagPivot::class,
+        ];
     }
 
     private function makeUser(string $name): UserRecord
@@ -42,6 +53,33 @@ trait RecordSetCases
         $p->save();
 
         return $p;
+    }
+
+    private function makeTag(string $name): TagRecord
+    {
+        $t = new TagRecord();
+        $t->name = $name;
+        $t->save();
+
+        return $t;
+    }
+
+    private function makeComment(int $postId, string $body): CommentRecord
+    {
+        $c = new CommentRecord();
+        $c->post_id = $postId;
+        $c->body = $body;
+        $c->save();
+
+        return $c;
+    }
+
+    private function linkPostTag(int $postId, int $tagId): void
+    {
+        $link = new PostTagPivot();
+        $link->post_id = $postId;
+        $link->tag_id = $tagId;
+        $link->save();
     }
 
     // -----------------------------------------------------------------
@@ -639,6 +677,79 @@ trait RecordSetCases
     {
         $empty = UserRecord::find('1 = 0');
         $this->assertSame(0, $empty->deleteAll());
+    }
+
+    // -----------------------------------------------------------------
+    // ManyToMany + HasManyThrough
+    // -----------------------------------------------------------------
+
+    public function testManyToManyLoadsRelatedThroughPivot(): void
+    {
+        $user = $this->makeUser('U');
+        $p1 = $this->makePost((int) $user->id, 'P1');
+        $p2 = $this->makePost((int) $user->id, 'P2');
+        $t1 = $this->makeTag('t1');
+        $t2 = $this->makeTag('t2');
+        $t3 = $this->makeTag('t3');
+        $this->linkPostTag((int) $p1->id, (int) $t1->id);
+        $this->linkPostTag((int) $p1->id, (int) $t2->id);
+        $this->linkPostTag((int) $p2->id, (int) $t3->id);
+
+        $byId = PostRecord::find()->load('manyTags')->recordsByKey('id');
+
+        $p1Tags = $byId[(int) $p1->id]->manyTags;
+        $p2Tags = $byId[(int) $p2->id]->manyTags;
+        $this->assertInstanceOf(RecordSet::class, $p1Tags);
+        $this->assertInstanceOf(RecordSet::class, $p2Tags);
+        $this->assertCount(2, $p1Tags);
+        $this->assertCount(1, $p2Tags);
+
+        $names = $p1Tags->pluck('name');
+        sort($names);
+        $this->assertSame(['t1', 't2'], $names);
+    }
+
+    public function testManyToManyIsEmptyWhenNoPivotRows(): void
+    {
+        $user = $this->makeUser('U');
+        $this->makePost((int) $user->id, 'Lonely');
+
+        $post = PostRecord::find()->load('manyTags')->first();
+        $this->assertNotNull($post);
+        $this->assertInstanceOf(RecordSet::class, $post->manyTags);
+        $this->assertCount(0, $post->manyTags);
+    }
+
+    public function testHasManyThroughLoadsFarRecords(): void
+    {
+        $u1 = $this->makeUser('U1');
+        $u2 = $this->makeUser('U2');
+        $p1 = $this->makePost((int) $u1->id, 'P1');
+        $p2 = $this->makePost((int) $u1->id, 'P2');
+        $p3 = $this->makePost((int) $u2->id, 'P3');
+        $this->makeComment((int) $p1->id, 'c1');
+        $this->makeComment((int) $p1->id, 'c2');
+        $this->makeComment((int) $p2->id, 'c3');
+        $this->makeComment((int) $p3->id, 'c4');
+
+        $byName = UserRecord::find()->load('postComments')->recordsByKey('name');
+
+        $u1Comments = $byName['U1']->postComments;
+        $u2Comments = $byName['U2']->postComments;
+        $this->assertInstanceOf(RecordSet::class, $u1Comments);
+        $this->assertInstanceOf(RecordSet::class, $u2Comments);
+        $this->assertCount(3, $u1Comments, 'comments across both of U1\'s posts');
+        $this->assertCount(1, $u2Comments);
+    }
+
+    public function testHasManyThroughIsEmptyForRecordWithNoIntermediates(): void
+    {
+        $this->makeUser('Loner'); // no posts → no comments
+
+        $user = UserRecord::find()->load('postComments')->first();
+        $this->assertNotNull($user);
+        $this->assertInstanceOf(RecordSet::class, $user->postComments);
+        $this->assertCount(0, $user->postComments);
     }
 
     // -----------------------------------------------------------------

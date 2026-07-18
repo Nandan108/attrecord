@@ -33,4 +33,12 @@ final class PostRecord extends Record
     /** @var RecordSet<TagRecord>|null */
     #[Relation(RelationType::MorphMany, class: TagRecord::class, morphType: 'tagable_type', morphKey: 'tagable_id', morphValue: 'post')]
     public ?RecordSet $tags = null;
+
+    /** @var RecordSet<CommentRecord>|null */
+    #[Relation(RelationType::OneToMany, class: CommentRecord::class, foreignKey: 'post_id')]
+    public ?RecordSet $comments = null;
+
+    /** @var RecordSet<TagRecord>|null */
+    #[Relation(RelationType::ManyToMany, class: TagRecord::class, pivotTable: 'attrecord_post_tag', pivotLocalKey: 'post_id', pivotForeignKey: 'tag_id')]
+    public ?RecordSet $manyTags = null;
 }

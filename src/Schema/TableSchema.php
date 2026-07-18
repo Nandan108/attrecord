@@ -342,6 +342,12 @@ final class TableSchema
                     morphKey: $relAttr->morphKey,
                     morphValue: $relAttr->morphValue,
                     morphMap: $relAttr->morphMap,
+                    pivotTable: $relAttr->pivotTable,
+                    pivotLocalKey: $relAttr->pivotLocalKey,
+                    pivotForeignKey: $relAttr->pivotForeignKey,
+                    throughClass: $relAttr->through,
+                    secondKey: $relAttr->secondKey,
+                    throughKey: $relAttr->throughKey,
                 );
             }
         }
@@ -674,6 +680,8 @@ final class TableSchema
         $isMorphParent = RelationType::MorphMany === $rel->type
             || RelationType::MorphOne === $rel->type;
         $isMorphChild = RelationType::MorphTo === $rel->type;
+        $isManyToMany = RelationType::ManyToMany === $rel->type;
+        $isThrough = RelationType::HasManyThrough === $rel->type;
 
         if (!$isMorphChild) {
             if (null === $rel->class) {
@@ -683,10 +691,27 @@ final class TableSchema
             }
         }
 
-        if (!$isMorphParent && !$isMorphChild) {
+        // Standard relations and HasManyThrough need a foreignKey; ManyToMany uses pivot keys.
+        if (!$isMorphParent && !$isMorphChild && !$isManyToMany) {
             if (null === $rel->foreignKey) {
                 throw new SchemaException(
                     "{$loc}: #[Relation({$type})] requires the \"foreignKey\" parameter.",
+                );
+            }
+        }
+
+        if ($isManyToMany) {
+            if (null === $rel->pivotTable || null === $rel->pivotLocalKey || null === $rel->pivotForeignKey) {
+                throw new SchemaException(
+                    "{$loc}: #[Relation(ManyToMany)] requires \"pivotTable\", \"pivotLocalKey\", and \"pivotForeignKey\" parameters.",
+                );
+            }
+        }
+
+        if ($isThrough) {
+            if (null === $rel->through || null === $rel->secondKey) {
+                throw new SchemaException(
+                    "{$loc}: #[Relation(HasManyThrough)] requires \"through\" and \"secondKey\" parameters (plus \"foreignKey\").",
                 );
             }
         }

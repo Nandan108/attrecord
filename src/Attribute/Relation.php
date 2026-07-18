@@ -24,6 +24,16 @@ use Nandan108\Attrecord\Enum\RelationType;
  *   - `morphType` and `morphKey` are local columns on this table.
  *   - `morphMap` maps each discriminator value to its target Record class-string.
  *
+ * Many-to-many (ManyToMany):
+ *   - `class`, `pivotTable`, `pivotLocalKey`, and `pivotForeignKey` are required.
+ *   - `pivotLocalKey` is the pivot column referencing this record's `localKey` (default PK).
+ *   - `pivotForeignKey` is the pivot column referencing the target's PK.
+ *
+ * Has-many-through (HasManyThrough):
+ *   - `class` (far), `through` (intermediate class-string), `foreignKey`, and `secondKey` are required.
+ *   - `foreignKey` is the through-table column referencing this record's `localKey` (default PK).
+ *   - `secondKey` is the far-table column referencing the through table's `throughKey` (default its PK).
+ *
  * Foreign-key constraint emission:
  *   - FK constraints are emitted in CREATE TABLE only for owning-side relations
  *     (ManyToOne, OneToOne). Inverse-side (OneToMany, OneToOneReversed) and
@@ -37,17 +47,23 @@ use Nandan108\Attrecord\Enum\RelationType;
 final class Relation
 {
     /**
-     * @param RelationType                         $type       relation kind
-     * @param string|null                          $class      Target Record subclass (required for all except MorphTo)
-     * @param string|null                          $foreignKey FK column name (required for standard relations)
-     * @param string|null                          $localKey   Local join key; defaults to this table's PK
-     * @param string|null                          $morphType  Type-discriminator column name
-     * @param string|null                          $morphKey   Polymorphic FK column name
-     * @param int|string|null                      $morphValue Discriminator value stored in morphType for this class
-     * @param array<int|string, class-string>|null $morphMap   Discriminator value → target class map (MorphTo only)
-     * @param ForeignKeyAction                     $onDelete   FK constraint ON DELETE action (owning-side relations only)
-     * @param ForeignKeyAction                     $onUpdate   FK constraint ON UPDATE action (owning-side relations only)
-     * @param bool                                 $emitFk     whether to emit a FOREIGN KEY constraint in CREATE TABLE
+     * @param RelationType                         $type            relation kind
+     * @param string|null                          $class           Target Record subclass (required for all except MorphTo)
+     * @param string|null                          $foreignKey      FK column name (required for standard relations)
+     * @param string|null                          $localKey        Local join key; defaults to this table's PK
+     * @param string|null                          $morphType       Type-discriminator column name
+     * @param string|null                          $morphKey        Polymorphic FK column name
+     * @param int|string|null                      $morphValue      Discriminator value stored in morphType for this class
+     * @param array<int|string, class-string>|null $morphMap        Discriminator value → target class map (MorphTo only)
+     * @param ForeignKeyAction                     $onDelete        FK constraint ON DELETE action (owning-side relations only)
+     * @param ForeignKeyAction                     $onUpdate        FK constraint ON UPDATE action (owning-side relations only)
+     * @param bool                                 $emitFk          whether to emit a FOREIGN KEY constraint in CREATE TABLE
+     * @param string|null                          $pivotTable      ManyToMany: junction table name
+     * @param string|null                          $pivotLocalKey   ManyToMany: pivot column → this record's localKey
+     * @param string|null                          $pivotForeignKey ManyToMany: pivot column → the target's PK
+     * @param class-string|null                    $through         HasManyThrough: intermediate Record class
+     * @param string|null                          $secondKey       HasManyThrough: far-table column → the through's throughKey
+     * @param string|null                          $throughKey      HasManyThrough: the through table's join key (default its PK)
      */
     public function __construct(
         public readonly RelationType $type,
@@ -61,6 +77,12 @@ final class Relation
         public readonly ForeignKeyAction $onDelete = ForeignKeyAction::Restrict,
         public readonly ForeignKeyAction $onUpdate = ForeignKeyAction::Restrict,
         public readonly bool $emitFk = true,
+        public readonly ?string $pivotTable = null,
+        public readonly ?string $pivotLocalKey = null,
+        public readonly ?string $pivotForeignKey = null,
+        public readonly ?string $through = null,
+        public readonly ?string $secondKey = null,
+        public readonly ?string $throughKey = null,
     ) {
     }
 }

@@ -14,14 +14,20 @@ use Nandan108\Attrecord\Enum\RelationType;
 final class RelationDefinition
 {
     /**
-     * @param string                               $propertyName Property name on the owning class
-     * @param string|null                          $targetClass  Fully-qualified target Record subclass (null for MorphTo)
-     * @param string|null                          $foreignKey   FK column name on the related table (null for morph relations)
-     * @param string|null                          $localKey     Local join key; null = use this table's PK
-     * @param string|null                          $morphType    Type-discriminator column name
-     * @param string|null                          $morphKey     Polymorphic FK column name
-     * @param int|string|null                      $morphValue   Discriminator value for this class (MorphMany/MorphOne)
-     * @param array<int|string, class-string>|null $morphMap     Discriminator → class map (MorphTo)
+     * @param string                               $propertyName    Property name on the owning class
+     * @param string|null                          $targetClass     Fully-qualified target Record subclass (null for MorphTo)
+     * @param string|null                          $foreignKey      FK column name on the related table (null for morph relations)
+     * @param string|null                          $localKey        Local join key; null = use this table's PK
+     * @param string|null                          $morphType       Type-discriminator column name
+     * @param string|null                          $morphKey        Polymorphic FK column name
+     * @param int|string|null                      $morphValue      Discriminator value for this class (MorphMany/MorphOne)
+     * @param array<int|string, class-string>|null $morphMap        Discriminator → class map (MorphTo)
+     * @param string|null                          $pivotTable      ManyToMany junction table name
+     * @param string|null                          $pivotLocalKey   ManyToMany pivot column → this record's localKey
+     * @param string|null                          $pivotForeignKey ManyToMany pivot column → the target's PK
+     * @param class-string|null                    $throughClass    HasManyThrough intermediate Record class
+     * @param string|null                          $secondKey       HasManyThrough far-table column → the through's throughKey
+     * @param string|null                          $throughKey      HasManyThrough through-table join key (null = its PK)
      */
     public function __construct(
         public readonly string $propertyName,
@@ -33,6 +39,12 @@ final class RelationDefinition
         public readonly ?string $morphKey = null,
         public readonly int | string | null $morphValue = null,
         public readonly ?array $morphMap = null,
+        public readonly ?string $pivotTable = null,
+        public readonly ?string $pivotLocalKey = null,
+        public readonly ?string $pivotForeignKey = null,
+        public readonly ?string $throughClass = null,
+        public readonly ?string $secondKey = null,
+        public readonly ?string $throughKey = null,
     ) {
     }
 }
