@@ -304,6 +304,8 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
         foreach ($dirtyRecords as $r) {
             $r->beforeSave();
+            /** @psalm-suppress MixedPropertyFetch */
+            $r->applyAutoTimestamps(null === $r->{$pkProp});
             $r->validate();
         }
 
@@ -366,8 +368,13 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             }
         }
 
+        $insertedSet = [];
+        foreach ($insertedRecords as $record) {
+            $insertedSet[spl_object_id($record)] = true;
+        }
         foreach ($dirtyRecords as $record) {
             $record->markClean();
+            $record->afterSave(isset($insertedSet[spl_object_id($record)]));
         }
 
         return new SaveResult($counts['inserted'], $counts['updated'], $insertedIds);
@@ -477,6 +484,14 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $allInsertedIds = [];
 
         foreach ($chunks as $chunk) {
+            // Capture inserts (PK-null) before the write back-fills their ids, for afterSave().
+            $chunkInsertSet = [];
+            foreach ($chunk as $r) {
+                if (null === $r->{$pkProp}) {
+                    $chunkInsertSet[spl_object_id($r)] = true;
+                }
+            }
+
             $plan = $this->buildPlan($chunk, $schema, $dialect);
             if (null === $plan['insert'] && null === $plan['upsert']) {
                 continue;
@@ -507,6 +522,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
             foreach ($chunk as $record) {
                 $record->markClean();
+                $record->afterSave(isset($chunkInsertSet[spl_object_id($record)]));
             }
 
             $totalInserted += $counts['inserted'];

@@ -365,6 +365,79 @@ abstract class Record
     }
 
     /**
+     * Return the first record matching all `$match` columns, or a **new, unsaved** instance
+     * populated with `$match + $defaults` if none exists.
+     *
+     * @api
+     *
+     * @param array<string, scalar|null> $match    columns → values, matched by equality (all AND-ed)
+     * @param array<string, mixed>       $defaults extra columns set only on a newly-built record
+     */
+    public static function firstOrNew(array $match, array $defaults = []): static
+    {
+        return static::findOne(self::matchClause($match))
+            ?? static::newWith([...$match, ...$defaults]);
+    }
+
+    /**
+     * Like {@see firstOrNew()}, but a newly-built record is **saved** before it is returned.
+     *
+     * @api
+     *
+     * @param array<string, scalar|null> $match
+     * @param array<string, mixed>       $defaults
+     */
+    public static function findOrCreate(array $match, array $defaults = []): static
+    {
+        $found = static::findOne(self::matchClause($match));
+        if (null !== $found) {
+            return $found;
+        }
+
+        return static::newWith([...$match, ...$defaults])->save();
+    }
+
+    /**
+     * Find the first record matching `$match` and update it with `$values` (saved); or create and
+     * save `$match + $values` if none exists. Returns the saved record either way.
+     *
+     * @api
+     *
+     * @param array<string, scalar|null> $match
+     * @param array<string, mixed>       $values columns to set (on the found or the created record)
+     */
+    public static function updateOrCreate(array $match, array $values): static
+    {
+        $found = static::findOne(self::matchClause($match));
+        if (null !== $found) {
+            return $found->set($values)->save();
+        }
+
+        return static::newWith([...$match, ...$values])->save();
+    }
+
+    /**
+     * Build an all-columns-equal {@see WhereClause} from a non-empty match map.
+     *
+     * @param array<string, scalar|null> $match
+     */
+    private static function matchClause(array $match): WhereClause
+    {
+        if ([] === $match) {
+            throw new AttrecordException('firstOrNew()/findOrCreate()/updateOrCreate() require a non-empty match array.');
+        }
+
+        /** @var WhereClause|null $clause */
+        $clause = null;
+        foreach ($match as $col => $value) {
+            $cond = WhereClause::where($col, $value);
+            $clause = null === $clause ? $cond : $clause->andWhere($cond);
+        }
+
+        return $clause;
+    }
+
+    /**
      * Convenience finder: single-column equality/comparison condition.
      *
      * Column name is quoted automatically using the class's configured dialect.
@@ -548,15 +621,68 @@ abstract class Record
     {
     }
 
+    /**
+     * Called after a successful write (INSERT or UPDATE). Not called for a clean save that wrote
+     * nothing. Fired by both {@see save()} and {@see RecordSet::saveAll()} (per record). Override to
+     * dispatch events, invalidate caches, etc.
+     *
+     * @param bool $wasInsert true if the write was an INSERT (new row), false if an UPDATE
+     *
+     * @psalm-suppress PossiblyUnusedParam base hook is empty; the param is for overriders
+     */
+    public function afterSave(bool $wasInsert): void
+    {
+    }
+
+    /**
+     * Set auto-managed timestamps before a write: {@see Attribute\CreatedAt}
+     * on INSERT, {@see Attribute\UpdatedAt} on INSERT and on any UPDATE that
+     * actually changes another column (a clean update does not bump it). No-op when neither
+     * attribute is declared.
+     *
+     * @internal called by save() and RecordSet::saveAll()
+     *
+     * @psalm-suppress PossiblyUnusedMethod called by RecordSet::saveAll()
+     */
+    public function applyAutoTimestamps(bool $isInsert): void
+    {
+        $schema = static::schema();
+
+        if ($isInsert) {
+            $now = new \DateTimeImmutable();
+            if (null !== $schema->createdAtColumn) {
+                $this->{$schema->propFor($schema->createdAtColumn)} = $now;
+            }
+            if (null !== $schema->updatedAtColumn) {
+                $this->{$schema->propFor($schema->updatedAtColumn)} = $now;
+            }
+
+            return;
+        }
+
+        if (null === $schema->updatedAtColumn) {
+            return;
+        }
+
+        // Bump updated_at only when a real change is pending (ignore updated_at's own dirtiness).
+        $dirty = $this->dirtyFields();
+        unset($dirty[$schema->updatedAtColumn]);
+        if (!empty($dirty)) {
+            $this->{$schema->propFor($schema->updatedAtColumn)} = new \DateTimeImmutable();
+        }
+    }
+
     public function save(bool $force = false): static
     {
         $this->beforeSave();
+        $this->applyAutoTimestamps($this->_isNew);
         $this->validate();
 
         $schema = static::schema();
         $conn = static::connection();
         $dialect = $conn->dialect;
         $session = $conn->session;
+        $wasInsert = $this->_isNew;
 
         $colNames = [];
         $setParts = [];
@@ -641,6 +767,7 @@ abstract class Record
 
         $this->refreshSnapshot($schema);
         $this->_saved = true;
+        $this->afterSave($wasInsert);
 
         return $this;
     }
@@ -654,6 +781,8 @@ abstract class Record
      */
     public function delete(): void
     {
+        $this->beforeDelete();
+
         $schema = static::schema();
         $pk = $schema->pk;
         /** @psalm-suppress MixedAssignment */
@@ -677,6 +806,31 @@ abstract class Record
 
         $this->_snapshot = [];
         $this->_isNew = true;
+        $this->afterDelete();
+    }
+
+    /**
+     * Called before {@see delete()} removes the row. Override to cascade, guard, or dispatch.
+     * Bulk {@see RecordSet::deleteAll()} does NOT fire this (set-based delete, no per-row hooks).
+     */
+    public function beforeDelete(): void
+    {
+    }
+
+    /**
+     * Called after {@see delete()} successfully removes the row (the record is now marked new).
+     * Bulk {@see RecordSet::deleteAll()} does NOT fire this.
+     */
+    public function afterDelete(): void
+    {
+    }
+
+    /**
+     * Called after this record's columns have been hydrated from a DB row (single fetch or bulk
+     * load). Override to derive transient state from loaded columns.
+     */
+    public function afterLoad(): void
+    {
     }
 
     /**
@@ -1203,6 +1357,7 @@ abstract class Record
         }
 
         $this->_isNew = false;
+        $this->afterLoad();
     }
 
     /**

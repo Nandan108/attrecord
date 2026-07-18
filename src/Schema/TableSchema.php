@@ -6,6 +6,7 @@ namespace Nandan108\Attrecord\Schema;
 
 use Nandan108\Attrecord\Attribute\Cast;
 use Nandan108\Attrecord\Attribute\Column;
+use Nandan108\Attrecord\Attribute\CreatedAt;
 use Nandan108\Attrecord\Attribute\ForeignKey;
 use Nandan108\Attrecord\Attribute\Index;
 use Nandan108\Attrecord\Attribute\LockTier;
@@ -13,6 +14,7 @@ use Nandan108\Attrecord\Attribute\MysqlTableOptions;
 use Nandan108\Attrecord\Attribute\Relation;
 use Nandan108\Attrecord\Attribute\Table;
 use Nandan108\Attrecord\Attribute\UniqueKey;
+use Nandan108\Attrecord\Attribute\UpdatedAt;
 use Nandan108\Attrecord\Caster\EnumCaster;
 use Nandan108\Attrecord\Caster\JsonCaster;
 use Nandan108\Attrecord\ColumnCaster;
@@ -93,6 +95,10 @@ final class TableSchema
         array $foreignKeys,
         public readonly ?string $comment,
         public readonly ?MysqlTableOptions $mysqlOptions,
+        /** Column name auto-set to now on INSERT ({@see CreatedAt}), or null. */
+        public readonly ?string $createdAtColumn = null,
+        /** Column name auto-set to now on INSERT + dirty UPDATE ({@see UpdatedAt}), or null. */
+        public readonly ?string $updatedAtColumn = null,
     ) {
         $this->columns = $columns;
         $this->relations = $relations;
@@ -140,6 +146,8 @@ final class TableSchema
         // --- Properties: columns and relations, plus property-level keys/indexes ---
         /** @var array<string, ColumnDefinition> $columns */
         $columns = [];
+        $createdAtColumn = null;
+        $updatedAtColumn = null;
         /** @var array<string, RelationDefinition> $relations */
         $relations = [];
         /** @var array<string, \ReflectionProperty> $reflProperties */
@@ -291,6 +299,27 @@ final class TableSchema
                     );
                 }
 
+                foreach ([[CreatedAt::class, 'created'], [UpdatedAt::class, 'updated']] as [$attrClass, $kind]) {
+                    if (empty($prop->getAttributes($attrClass))) {
+                        continue;
+                    }
+                    if (ColumnType::DateTime !== $col->type && ColumnType::Timestamp !== $col->type) {
+                        throw new SchemaException(sprintf(
+                            '%s::$%s: #[%s] requires a DateTime or Timestamp column.',
+                            $class,
+                            $propName,
+                            'created' === $kind ? 'CreatedAt' : 'UpdatedAt',
+                        ));
+                    }
+                    if ('created' === $kind) {
+                        null === $createdAtColumn || throw new SchemaException(sprintf('%s: at most one #[CreatedAt] column (already on "%s").', $class, $createdAtColumn));
+                        $createdAtColumn = $colName;
+                    } else {
+                        null === $updatedAtColumn || throw new SchemaException(sprintf('%s: at most one #[UpdatedAt] column (already on "%s").', $class, $updatedAtColumn));
+                        $updatedAtColumn = $colName;
+                    }
+                }
+
                 $columns[$colName] = $col;
                 $reflProperties[$colName] = $prop;
                 continue;
@@ -406,6 +435,8 @@ final class TableSchema
             foreignKeys: $foreignKeys,
             comment: $tableAttr->comment,
             mysqlOptions: $mysqlOptions,
+            createdAtColumn: $createdAtColumn,
+            updatedAtColumn: $updatedAtColumn,
         );
     }
 

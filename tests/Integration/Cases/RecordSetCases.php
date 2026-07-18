@@ -8,6 +8,7 @@ use Nandan108\Attrecord\Exception\AttrecordException;
 use Nandan108\Attrecord\RecordSet;
 use Nandan108\Attrecord\Tests\Fixtures\DdlGeneratedColumnRecord;
 use Nandan108\Attrecord\Tests\Fixtures\PostRecord;
+use Nandan108\Attrecord\Tests\Fixtures\TimestampedRecord;
 use Nandan108\Attrecord\Tests\Fixtures\UserRecord;
 
 /**
@@ -21,7 +22,7 @@ trait RecordSetCases
     /** @return list<class-string<\Nandan108\Attrecord\Record>> */
     protected static function recordClasses(): array
     {
-        return [UserRecord::class, PostRecord::class, DdlGeneratedColumnRecord::class];
+        return [UserRecord::class, PostRecord::class, DdlGeneratedColumnRecord::class, TimestampedRecord::class];
     }
 
     private function makeUser(string $name): UserRecord
@@ -638,6 +639,190 @@ trait RecordSetCases
     {
         $empty = UserRecord::find('1 = 0');
         $this->assertSame(0, $empty->deleteAll());
+    }
+
+    // -----------------------------------------------------------------
+    // find-or-create
+    // -----------------------------------------------------------------
+
+    public function testFirstOrNewReturnsUnsavedNewAndNeverPersists(): void
+    {
+        $new = UserRecord::firstOrNew(['name' => 'Nemo'], ['email' => 'n@x.com']);
+        $this->assertNull($new->id, 'firstOrNew does not save');
+        $this->assertSame('Nemo', $new->name);
+        $this->assertSame('n@x.com', $new->email);
+
+        // A second call still finds nothing (the first never persisted).
+        $this->assertNull(UserRecord::firstOrNew(['name' => 'Nemo'])->id);
+    }
+
+    public function testFindOrCreateCreatesThenReturnsExisting(): void
+    {
+        $a = UserRecord::findOrCreate(['name' => 'Zoe'], ['email' => 'zoe@x.com']);
+        $this->assertNotNull($a->id);
+        $this->assertSame('zoe@x.com', $a->email);
+
+        // Second call matches the existing row; defaults are ignored.
+        $b = UserRecord::findOrCreate(['name' => 'Zoe'], ['email' => 'other@x.com']);
+        $this->assertSame($a->id, $b->id);
+        $this->assertSame('zoe@x.com', $b->email);
+    }
+
+    public function testUpdateOrCreateUpdatesExisting(): void
+    {
+        $u = UserRecord::findOrCreate(['name' => 'Kai'], ['email' => 'kai@x.com']);
+
+        $again = UserRecord::updateOrCreate(['name' => 'Kai'], ['email' => 'kai2@x.com']);
+
+        $this->assertSame($u->id, $again->id);
+        $this->assertSame('kai2@x.com', $again->email);
+    }
+
+    public function testUpdateOrCreateCreatesWhenMissing(): void
+    {
+        $created = UserRecord::updateOrCreate(['name' => 'Lena'], ['email' => 'lena@x.com']);
+
+        $this->assertNotNull($created->id);
+        $this->assertSame('lena@x.com', $created->email);
+    }
+
+    public function testMatchRequiresNonEmptyArray(): void
+    {
+        $this->expectException(AttrecordException::class);
+        UserRecord::firstOrNew([]);
+    }
+
+    // -----------------------------------------------------------------
+    // Lifecycle hooks + auto-timestamps
+    // -----------------------------------------------------------------
+
+    public function testAutoTimestampsSetOnInsert(): void
+    {
+        $rec = new TimestampedRecord();
+        $rec->name = 'a';
+        $rec->save();
+
+        $this->assertInstanceOf(\DateTimeImmutable::class, $rec->created_at);
+        $this->assertInstanceOf(\DateTimeImmutable::class, $rec->updated_at);
+        $this->assertEquals($rec->created_at, $rec->updated_at, 'both set to the same instant on insert');
+    }
+
+    public function testUpdatedAtBumpsOnChangeButCreatedAtDoesNot(): void
+    {
+        $rec = new TimestampedRecord();
+        $rec->name = 'a';
+        $rec->save();
+        $createdAtInsert = $rec->created_at;
+        $updatedAtInsert = $rec->updated_at;
+
+        $rec->name = 'b';
+        $rec->save();
+
+        $this->assertSame($createdAtInsert, $rec->created_at, 'created_at is never touched after insert');
+        $this->assertGreaterThan($updatedAtInsert, $rec->updated_at, 'updated_at bumped on a real change');
+    }
+
+    public function testUpdatedAtNotBumpedOnCleanSave(): void
+    {
+        $rec = new TimestampedRecord();
+        $rec->name = 'a';
+        $rec->save();
+        $updatedAtInsert = $rec->updated_at;
+
+        $rec->save(); // nothing changed → clean no-op
+
+        $this->assertSame($updatedAtInsert, $rec->updated_at, 'a clean save must not bump updated_at');
+    }
+
+    public function testSaveAllSetsTimestamps(): void
+    {
+        $set = new RecordSet([
+            (function (): TimestampedRecord {
+                $r = new TimestampedRecord();
+                $r->name = 'a';
+
+                return $r;
+            })(),
+            (function (): TimestampedRecord {
+                $r = new TimestampedRecord();
+                $r->name = 'b';
+
+                return $r;
+            })(),
+        ]);
+        $set->saveAll();
+
+        foreach ($set as $r) {
+            $this->assertInstanceOf(\DateTimeImmutable::class, $r->created_at);
+            $this->assertInstanceOf(\DateTimeImmutable::class, $r->updated_at);
+        }
+    }
+
+    public function testAfterSaveFiresWithInsertThenUpdateFlag(): void
+    {
+        $rec = new TimestampedRecord();
+        $rec->name = 'a';
+        $rec->save();
+        $this->assertContains('afterSave', $rec->hookLog);
+        $this->assertTrue($rec->lastAfterSaveWasInsert, 'afterSave(wasInsert=true) on INSERT');
+
+        $rec->name = 'b';
+        $rec->save();
+        $this->assertFalse($rec->lastAfterSaveWasInsert, 'afterSave(wasInsert=false) on UPDATE');
+    }
+
+    public function testAfterSaveDoesNotFireOnCleanSave(): void
+    {
+        $rec = new TimestampedRecord();
+        $rec->name = 'a';
+        $rec->save();
+        $rec->hookLog = [];
+
+        $rec->save(); // no-op
+
+        $this->assertNotContains('afterSave', $rec->hookLog);
+    }
+
+    public function testBeforeAndAfterDeleteFire(): void
+    {
+        $rec = new TimestampedRecord();
+        $rec->name = 'a';
+        $rec->save();
+
+        $rec->delete();
+
+        $log = $rec->hookLog;
+        $this->assertContains('beforeDelete', $log);
+        $this->assertContains('afterDelete', $log);
+        $this->assertTrue(
+            array_search('beforeDelete', $log, true) < array_search('afterDelete', $log, true),
+            'beforeDelete fires before afterDelete',
+        );
+    }
+
+    public function testAfterLoadFiresOnHydration(): void
+    {
+        $seed = new TimestampedRecord();
+        $seed->name = 'a';
+        $seed->save();
+
+        $loaded = TimestampedRecord::find()->first();
+        $this->assertNotNull($loaded);
+        $this->assertContains('afterLoad', $loaded->hookLog);
+    }
+
+    public function testSaveAllFiresAfterSavePerRecord(): void
+    {
+        $a = new TimestampedRecord();
+        $a->name = 'a';
+        $b = new TimestampedRecord();
+        $b->name = 'b';
+        (new RecordSet([$a, $b]))->saveAll();
+
+        $this->assertTrue($a->lastAfterSaveWasInsert);
+        $this->assertTrue($b->lastAfterSaveWasInsert);
+        $this->assertContains('afterSave', $a->hookLog);
+        $this->assertContains('afterSave', $b->hookLog);
     }
 
     // -----------------------------------------------------------------
