@@ -828,26 +828,130 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     // -----------------------------------------------------------------
 
     /**
-     * Load one relation (or a dot-notation chain) for all records in this set.
+     * Imperatively load one or more relations (each a name or dot-notation chain) onto every record
+     * in this set.
+     *
+     * Runs immediately against the already-loaded records — one IN(…) query per distinct relation
+     * level, no JOINs, no N+1. Paths given in the same call share prefixes: `load('a.b', 'a.c')`
+     * loads `a` once, then `b` and `c` off it. Relations are always (re)fetched; use
+     * {@see loadMissing()} to skip records that already have a relation loaded.
      *
      * Examples:
-     *   $orders->with('lines')           — one extra query
-     *   $orders->with('lines.product')   — two extra queries (lines, then products)
-     *
-     * Each level issues one IN(…) query — no JOINs, no N+1 queries.
+     *   $orders->load('lines')                                          — one extra query
+     *   $orders->load('lines.product')                                  — two (lines, then products)
+     *   $orders->load('customer.billing', 'customer.shipping.country')  — customer loaded once
      *
      * @return static<T> fluent — returns $this after populating relation properties
      */
-    public function with(string $relationPath): static
+    public function load(string ...$relationPaths): static
     {
-        if (empty($this->records)) {
-            return $this;
+        $this->loadTree(self::buildPathTree($relationPaths), false);
+
+        return $this;
+    }
+
+    /**
+     * Like {@see load()}, but at each relation level only the records that don't already have it
+     * loaded are queried — the skip-if-present counterpart.
+     *
+     * "Loaded" is tracked per record by the loader (see {@see Record::relationIsLoaded()}), so a
+     * to-one relation that legitimately resolved to null is treated as loaded and left alone.
+     * Multiple paths share prefixes within the call, exactly as {@see load()}.
+     *
+     * @return static<T> fluent
+     */
+    public function loadMissing(string ...$relationPaths): static
+    {
+        $this->loadTree(self::buildPathTree($relationPaths), true);
+
+        return $this;
+    }
+
+    /**
+     * Alias for {@see load()}.
+     *
+     * @deprecated since 0.4.0 — renamed to load() to match the "imperative post-load" semantics
+     *             (Eloquent reserves with() for query-time eager loading). Will be removed at 1.0.
+     *
+     * @return static<T>
+     */
+    public function with(string ...$relationPaths): static
+    {
+        return $this->load(...$relationPaths);
+    }
+
+    /**
+     * Parse dot-notation relation paths into a prefix trie, so segments shared across paths load
+     * exactly once (`['a.b', 'a.c']` → `['a' => ['b' => [], 'c' => []]]`).
+     *
+     * @param array<array-key, string> $paths
+     *
+     * @return array<string, mixed> relName => nested subtree (recursively the same shape)
+     */
+    private static function buildPathTree(array $paths): array
+    {
+        $tree = [];
+        foreach ($paths as $path) {
+            $node = &$tree;
+            foreach (explode('.', $path) as $segment) {
+                if (!isset($node[$segment]) || !\is_array($node[$segment])) {
+                    $node[$segment] = [];
+                }
+                /** @psalm-suppress MixedAssignment reference walk into the nested trie */
+                $node = &$node[$segment];
+            }
+            unset($node);
         }
 
-        $parts = explode('.', $relationPath, 2);
-        $relName = $parts[0];
-        $nestedPath = $parts[1] ?? null;
+        /** @var array<string, mixed> $tree */
+        return $tree;
+    }
 
+    /**
+     * Walk a relation trie: load each relation at this level once, then descend into its subtree on
+     * the related records. Shared prefixes are therefore loaded a single time.
+     *
+     * @param array<string, mixed> $tree relName => nested subtree (recursively the same shape)
+     */
+    private function loadTree(array $tree, bool $missingOnly): void
+    {
+        if (empty($this->records)) {
+            return;
+        }
+
+        /** @psalm-suppress MixedAssignment iterating a recursively-typed trie (values are subtrees) */
+        foreach ($tree as $relName => $subtree) {
+            $this->loadOne($relName, $missingOnly);
+
+            if (\is_array($subtree) && [] !== $subtree) {
+                $related = $this->collectRelated($relName);
+                if (!empty($related)) {
+                    /** @var array<string, mixed> $subtree */
+                    (new self($related))->loadTree($subtree, $missingOnly);
+                }
+            }
+        }
+    }
+
+    /**
+     * Load a single relation level onto this set (no chaining). With $missingOnly, only records
+     * that don't already have the relation loaded are queried; the rest keep their value.
+     */
+    private function loadOne(string $relName, bool $missingOnly): void
+    {
+        if ($missingOnly) {
+            $targets = array_values(array_filter(
+                $this->records,
+                static fn (Record $r): bool => !$r->relationIsLoaded($relName),
+            ));
+            if (!empty($targets)) {
+                (new self($targets))->loadOne($relName, false);
+            }
+
+            return;
+        }
+
+        // Callers (loadTree, and the $missingOnly branch above) guarantee a non-empty set here.
         $first = $this->records[0];
         $schema = $first::schema();
 
@@ -914,26 +1018,35 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                 break;
         }
 
-        // Recurse for dot-notation chains
-        if (null !== $nestedPath) {
-            $allRelated = [];
-            foreach ($this->records as $record) {
-                /** @psalm-suppress MixedAssignment */
-                $rel = $record->$relName;
-                if ($rel instanceof self) {
-                    foreach ($rel->records as $r) {
-                        $allRelated[] = $r;
-                    }
-                } elseif ($rel instanceof Record) {
-                    $allRelated[] = $rel;
+        // Record that this relation is now loaded on every record in the set (so loadMissing()
+        // can distinguish a loaded-but-null to-one from one never loaded).
+        foreach ($this->records as $record) {
+            $record->markRelationLoaded($relName);
+        }
+    }
+
+    /**
+     * Flatten the related records reachable via $relName across this whole set — a to-one yields
+     * its single record, a to-many yields each of its records — for chained (dot-path) loading.
+     *
+     * @return list<Record>
+     */
+    private function collectRelated(string $relName): array
+    {
+        $allRelated = [];
+        foreach ($this->records as $record) {
+            /** @psalm-suppress MixedAssignment */
+            $rel = $record->$relName;
+            if ($rel instanceof self) {
+                foreach ($rel->records as $r) {
+                    $allRelated[] = $r;
                 }
-            }
-            if (!empty($allRelated)) {
-                (new self($allRelated))->with($nestedPath);
+            } elseif ($rel instanceof Record) {
+                $allRelated[] = $rel;
             }
         }
 
-        return $this;
+        return $allRelated;
     }
 
     // -----------------------------------------------------------------

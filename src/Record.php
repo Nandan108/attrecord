@@ -47,6 +47,15 @@ abstract class Record
     private bool $_isNew = true;
 
     /**
+     * Names of relations that have been *loaded* onto this record (populated by
+     * {@see RecordSet::load()}), so {@see RecordSet::loadMissing()} can tell an
+     * already-loaded-but-null to-one relation apart from one never loaded.
+     *
+     * @var array<string, true>
+     */
+    private array $_loadedRelations = [];
+
+    /**
      * Whether the last save() call wrote to the database.
      *
      * true  — an INSERT or UPDATE was issued.
@@ -1076,6 +1085,58 @@ abstract class Record
         }
 
         return $dirty;
+    }
+
+    /**
+     * Imperatively load one or more relations (names or dot-notation chains) onto this record.
+     *
+     * The single-record counterpart to {@see RecordSet::load()} — same semantics: runs immediately,
+     * one IN(…) query per distinct relation level, shared prefixes across the given paths load once.
+     *
+     *     $order->load('lines', 'customer.billing');
+     *
+     * @return static fluent
+     */
+    public function load(string ...$relationPaths): static
+    {
+        (new RecordSet([$this]))->load(...$relationPaths);
+
+        return $this;
+    }
+
+    /**
+     * Like {@see load()}, but skips relations already loaded on this record — the single-record
+     * counterpart to {@see RecordSet::loadMissing()}.
+     *
+     * @return static fluent
+     */
+    public function loadMissing(string ...$relationPaths): static
+    {
+        (new RecordSet([$this]))->loadMissing(...$relationPaths);
+
+        return $this;
+    }
+
+    /**
+     * Mark a relation as loaded on this record. Called by {@see RecordSet::load()} after it
+     * populates the relation property, so a later {@see RecordSet::loadMissing()} skips it.
+     *
+     * @internal
+     */
+    public function markRelationLoaded(string $relation): void
+    {
+        $this->_loadedRelations[$relation] = true;
+    }
+
+    /**
+     * Whether a relation has been loaded onto this record (regardless of whether the loaded
+     * value is null / an empty set). Manual assignment to the relation property is not tracked.
+     *
+     * @api
+     */
+    public function relationIsLoaded(string $relation): bool
+    {
+        return isset($this->_loadedRelations[$relation]);
     }
 
     /** @api */

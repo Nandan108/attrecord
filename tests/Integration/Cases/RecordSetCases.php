@@ -371,7 +371,7 @@ trait RecordSetCases
         $this->makePost((int) $alice->id, 'Post A2');
         $this->makePost((int) $bob->id, 'Post B1');
 
-        $users = UserRecord::find()->with('posts');
+        $users = UserRecord::find()->load('posts');
 
         /** @var array<string, UserRecord> $byName */
         $byName = $users->recordsByKey('name');
@@ -388,7 +388,7 @@ trait RecordSetCases
     {
         $this->makeUser('Alice'); // no posts
 
-        $users = UserRecord::find()->with('posts');
+        $users = UserRecord::find()->load('posts');
         $alice = $users->first();
         $this->assertNotNull($alice);
         $this->assertInstanceOf(RecordSet::class, $alice->posts);
@@ -402,7 +402,7 @@ trait RecordSetCases
         $this->makePost((int) $alice->id, 'Post 1');
         $this->makePost((int) $alice->id, 'Post 2');
 
-        $posts = PostRecord::find()->with('user');
+        $posts = PostRecord::find()->load('user');
 
         foreach ($posts as $post) {
             $this->assertInstanceOf(UserRecord::class, $post->user);
@@ -416,7 +416,7 @@ trait RecordSetCases
         $this->makePost((int) $alice->id, 'Post A');
 
         // users → posts → user (roundtrip through both relations).
-        $users = UserRecord::find()->with('posts.user');
+        $users = UserRecord::find()->load('posts.user');
 
         $first = $users->first();
         $this->assertNotNull($first);
@@ -428,8 +428,237 @@ trait RecordSetCases
     }
 
     // -----------------------------------------------------------------
+    // loadMissing() + relation-load tracking
+    // -----------------------------------------------------------------
+
+    public function testRelationIsLoadedTracksLoadState(): void
+    {
+        $this->makeUser('Alice');
+
+        $users = UserRecord::find();
+        $alice = $users->first();
+        $this->assertNotNull($alice);
+        $this->assertFalse($alice->relationIsLoaded('posts'));
+
+        $users->load('posts');
+        $this->assertTrue($alice->relationIsLoaded('posts'));
+    }
+
+    public function testLoadMissingLoadsRecordsLackingTheRelation(): void
+    {
+        $alice = $this->makeUser('Alice');
+        $this->makePost((int) $alice->id, 'Post A1');
+        $this->makePost((int) $alice->id, 'Post A2');
+
+        $users = UserRecord::find(); // nothing loaded yet
+        $users->loadMissing('posts');
+
+        $loaded = $users->first();
+        $this->assertNotNull($loaded);
+        $this->assertInstanceOf(RecordSet::class, $loaded->posts);
+        $this->assertCount(2, $loaded->posts);
+    }
+
+    public function testLoadMissingSkipsAnAlreadyLoadedRelation(): void
+    {
+        $alice = $this->makeUser('Alice');
+        $this->makePost((int) $alice->id, 'Post A1');
+        $this->makePost((int) $alice->id, 'Post A2');
+
+        $users = UserRecord::find()->load('posts');
+        $loaded = $users->first();
+        $this->assertNotNull($loaded);
+
+        // Tamper with the loaded value: loadMissing must NOT overwrite it (it's already loaded).
+        /** @var RecordSet<PostRecord> $empty */
+        $empty = new RecordSet([]);
+        $loaded->posts = $empty;
+        $users->loadMissing('posts');
+
+        $this->assertCount(0, $loaded->posts, 'loadMissing re-loaded a relation that was already loaded');
+    }
+
+    public function testChainedLoadMissing(): void
+    {
+        $alice = $this->makeUser('Alice');
+        $this->makePost((int) $alice->id, 'Post A');
+
+        $users = UserRecord::find()->loadMissing('posts.user');
+
+        $first = $users->first();
+        $this->assertNotNull($first);
+        $this->assertInstanceOf(RecordSet::class, $first->posts);
+        $post = $first->posts->first();
+        $this->assertNotNull($post);
+        $this->assertInstanceOf(UserRecord::class, $post->user);
+    }
+
+    public function testDeprecatedWithAliasDelegatesToLoad(): void
+    {
+        $alice = $this->makeUser('Alice');
+        $this->makePost((int) $alice->id, 'Post A1');
+
+        /** @psalm-suppress DeprecatedMethod intentionally exercising the back-compat alias */
+        $users = UserRecord::find()->with('posts');
+
+        $loaded = $users->first();
+        $this->assertNotNull($loaded);
+        $this->assertInstanceOf(RecordSet::class, $loaded->posts);
+        $this->assertCount(1, $loaded->posts);
+    }
+
+    public function testLoadAcceptsMultiplePathsSharingAPrefix(): void
+    {
+        $alice = $this->makeUser('Alice');
+        $this->makePost((int) $alice->id, 'Post A1');
+        $this->makePost((int) $alice->id, 'Post A2');
+
+        // Two paths share the 'posts' prefix — it must load once, then descend to 'user'.
+        $users = UserRecord::find()->load('posts.user', 'posts');
+
+        $u = $users->first();
+        $this->assertNotNull($u);
+        $this->assertInstanceOf(RecordSet::class, $u->posts);
+        $this->assertCount(2, $u->posts);
+
+        $post = $u->posts->first();
+        $this->assertNotNull($post);
+        $this->assertInstanceOf(UserRecord::class, $post->user);
+        $this->assertSame('Alice', $post->user->name);
+    }
+
+    public function testLoadMissingAcceptsMultiplePaths(): void
+    {
+        $alice = $this->makeUser('Alice');
+        $this->makePost((int) $alice->id, 'Post A1');
+
+        $users = UserRecord::find()->load('posts'); // 'posts' already loaded
+        $loaded = $users->first();
+        $this->assertNotNull($loaded);
+
+        // Tamper 'posts' — loadMissing must keep it (loaded), but still resolve the new 'posts.user' leg.
+        /** @var RecordSet<PostRecord> $empty */
+        $empty = new RecordSet([]);
+        $loaded->posts = $empty;
+
+        $users->loadMissing('posts', 'posts.user');
+
+        $this->assertCount(0, $loaded->posts, 'already-loaded prefix must be preserved');
+    }
+
+    public function testLoadMissingLoadsOnlyTheUnloadedPrefixThenDescends(): void
+    {
+        // Stand-ins: post→user→posts models order→customer→shipping.
+        $alice = $this->makeUser('Alice');
+        $bob = $this->makeUser('Bob');
+        $this->makePost((int) $alice->id, 'A1');
+        $this->makePost((int) $bob->id, 'B1');
+
+        $posts = PostRecord::find(); // nothing loaded
+
+        // Preload 'user' on ONE post only (the "already-loaded half").
+        $preloaded = $posts->first();
+        $this->assertNotNull($preloaded);
+        (new RecordSet([$preloaded]))->load('user');
+        $preloadedUser = $preloaded->user; // capture the instance to detect re-fetching
+
+        // loadMissing must (a) load 'user' only on the not-yet-loaded post, leaving the preloaded
+        // one's instance intact, then (b) descend to 'user.posts' for every post's user.
+        $posts->loadMissing('user.posts');
+
+        $this->assertSame($preloadedUser, $preloaded->user, 'already-loaded prefix must not be re-fetched');
+
+        foreach ($posts as $post) {
+            $this->assertInstanceOf(UserRecord::class, $post->user);
+            $this->assertTrue($post->user->relationIsLoaded('posts'), 'descend level loaded for all');
+            $this->assertInstanceOf(RecordSet::class, $post->user->posts);
+        }
+    }
+
+    public function testSingleRecordLoad(): void
+    {
+        $alice = $this->makeUser('Alice');
+        $this->makePost((int) $alice->id, 'A1');
+        $this->makePost((int) $alice->id, 'A2');
+
+        $user = UserRecord::find()->first();
+        $this->assertNotNull($user);
+        $this->assertFalse($user->relationIsLoaded('posts'));
+
+        $returned = $user->load('posts');
+
+        $this->assertSame($user, $returned, 'load() is fluent on a single record');
+        $this->assertInstanceOf(RecordSet::class, $user->posts);
+        $this->assertCount(2, $user->posts);
+    }
+
+    public function testSingleRecordLoadMissingSkipsAlreadyLoaded(): void
+    {
+        $alice = $this->makeUser('Alice');
+        $this->makePost((int) $alice->id, 'A1');
+
+        $user = UserRecord::find()->first();
+        $this->assertNotNull($user);
+        $user->load('posts');
+
+        /** @var RecordSet<PostRecord> $empty */
+        $empty = new RecordSet([]);
+        $user->posts = $empty;
+        $user->loadMissing('posts');
+
+        $this->assertCount(0, $user->posts, 'single-record loadMissing must preserve an already-loaded relation');
+    }
+
+    public function testLoadAndLoadMissingOnEmptySetAreNoops(): void
+    {
+        $empty = UserRecord::find('1 = 0'); // matches nothing
+        $this->assertCount(0, $empty);
+
+        // Must not query or error; fluent return.
+        $this->assertSame($empty, $empty->load('posts'));
+        $this->assertSame($empty, $empty->loadMissing('posts.user'));
+    }
+
+    public function testLoadDeduplicatesRepeatedPaths(): void
+    {
+        $alice = $this->makeUser('Alice');
+        $this->makePost((int) $alice->id, 'A1');
+
+        // 'posts' appears three times (twice bare, once as a prefix) — the trie collapses it.
+        $users = UserRecord::find()->load('posts', 'posts', 'posts.user');
+
+        $u = $users->first();
+        $this->assertNotNull($u);
+        $this->assertInstanceOf(RecordSet::class, $u->posts);
+        $this->assertCount(1, $u->posts);
+        $this->assertInstanceOf(UserRecord::class, $u->posts->first()?->user);
+    }
+
+    public function testDeleteAllOnEmptySetReturnsZero(): void
+    {
+        $empty = UserRecord::find('1 = 0');
+        $this->assertSame(0, $empty->deleteAll());
+    }
+
+    // -----------------------------------------------------------------
     // ArrayAccess / Iterator / Countable
     // -----------------------------------------------------------------
+
+    public function testArrayAccessMutation(): void
+    {
+        $a = $this->makeUser('A');
+        $b = $this->makeUser('B');
+
+        $set = new RecordSet([$a]);
+        $set[] = $b; // offsetSet with null → append
+
+        $this->assertTrue(isset($set[0]));
+        $this->assertCount(2, $set);
+        $this->assertSame($b, $set[1]); // offsetGet
+
+        unset($set[1]); // offsetUnset
+        $this->assertCount(1, $set);
+    }
 
     public function testCountable(): void
     {

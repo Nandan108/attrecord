@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-18 — Relation loading, refined
+
+### Added
+
+- **`RecordSet::load()` / `loadMissing()` are variadic and share prefixes.**
+  `load('customer.billing', 'customer.shipping.country')` loads `customer` **once**, then descends
+  into both branches — via an internal prefix trie, one `IN(…)` query per *distinct* relation level
+  (still no N+1, no JOINs).
+- **`RecordSet::loadMissing(string ...$paths)`** — the skip-if-already-loaded counterpart to
+  `load()`. Load-state is tracked per record (new `Record::relationIsLoaded()`), so a to-one
+  relation that legitimately resolved to `null` counts as *loaded* and is not re-queried.
+- **`Record::load(...)` / `Record::loadMissing(...)`** — the single-record counterparts, e.g.
+  `$order->load('lines', 'customer.billing')` (wrap the record in a one-element set and delegate).
+
+### Changed
+
+- **BREAKING — `RecordSet::with()` renamed to `load()`.** It was always the *imperative post-load*
+  loader (it runs immediately against an already-materialised set), whereas Eloquent reserves
+  `with()` for *query-time* eager loading — so the old name was a false friend. `with()` stays as a
+  **`@deprecated` alias** for `load()` and will be removed at 1.0. Migration is a literal
+  `->with(` → `->load(` rename.
+
 ## [0.3.0] - 2026-07-18 — Enum column casting
 
 ### Added

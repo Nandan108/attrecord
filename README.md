@@ -16,7 +16,7 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
 - Column casting — map columns to value objects / JSON / custom types via `#[Cast]` attributes ([docs](docs/column-casting.md))
 - Bulk upsert via `RecordSet::saveAll()` with a single SQL statement — optionally chunked (`saveAll(chunkSize:)`) for very large, resumable batches
 - Optional automatic retry of transient transaction conflicts (deadlock / lock-wait / serialization / `SQLITE_BUSY`) via the `RetryingDbSession` decorator
-- Eager relation loading with no N+1 queries (`with()`)
+- Relation loading with no N+1 queries — `load()` / `loadMissing()` (variadic, shared-prefix)
 - Domain invariants enforced at assignment and save time via a `validate()` hook
 - Deadlock-safe locking helpers (`LockTier`, `LockSet`, `Transaction`) + advisory locks
 - Unique-key aware upserts — single (`upsertByUniqueKey`) and bulk (`RecordSet::upsertAllByUniqueKey`), with an optional **auto-increment-burn-free** mode; plus `updateByUniqueKey`
@@ -31,25 +31,38 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
 attrecord sits in a deliberately narrow spot — a lean, standalone Active Record — rather than
 competing head-on with the full-scope ORMs. This table is here to help you *place* it, not to crown
 a winner: Doctrine and Eloquent are mature, battle-tested, and far larger in scope and ecosystem.
+[php-activerecord](https://github.com/php-activerecord/activerecord) — the long-standing Rails-style
+port — is the closest sibling by pattern and lean/zero-dependency niche; it's included to show where
+attrecord's *typed, schema-authoring, contention-hardened* design diverges from the classic
+*dynamic, DB-introspecting* Active Record.
 
-|                       | **attrecord**                                                     | **Doctrine ORM**                             | **Eloquent**                                        |
-| --------------------- | ----------------------------------------------------------------- | -------------------------------------------- | --------------------------------------------------- |
-| Pattern               | Active Record                                                     | Data Mapper (identity map + unit of work)    | Active Record                                       |
-| Framework coupling    | Standalone, framework-agnostic                                    | Standalone (Symfony-friendly)                | Laravel-native (standalone via `illuminate/database`) |
-| Runtime dependencies  | **None**                                                          | Several (DBAL, …)                            | `illuminate/*`                                      |
-| Install footprint (`vendor/`) | **1 package · ~80 KB**                                    | ~22 packages · ~1.6 MB                       | ~26 packages · ~2.3 MB                              |
-| Schema mapping        | PHP 8 attributes only                                             | Attributes / XML / YAML                      | Conventions (schema lives in migrations, not the model) |
-| Schema changes        | Emits `CREATE TABLE` from attributes; forward migrations via a planned opt-in add-on (not in core) | `doctrine/migrations`                        | Laravel migrations                                  |
-| Query building        | Finders + immutable `WhereClause` + `RawSql`                      | DQL + QueryBuilder                           | Fluent query builder                                |
-| Relations             | Eager `with()` (incl. polymorphic); no lazy graph / identity map  | Full graph: lazy loading, identity map, UoW  | Full: lazy + eager, rich relationship set           |
-| Backends              | MySQL/MariaDB, PostgreSQL, SQLite                                 | Many (via DBAL)                              | MySQL, PostgreSQL, SQLite, SQL Server               |
-| Bulk writes           | First-class: deadlock-safe multi-mask upsert, per-chunk-commit chunking, burn-free upsert | Batch inserts; bulk `UPDATE`/`DELETE` via DQL | `upsert()` / bulk `insert()`                         |
-| Concurrency           | Tier-ordered `FOR UPDATE` locks, advisory locks, transient-retry decorator | Pessimistic + optimistic locking      | `lockForUpdate()` / `sharedLock()`                  |
-| Maturity / ecosystem  | **Young, pre-1.0, small**                                         | Mature, large                                | Mature, very large                                  |
+|  | **attrecord** | **php-activerecord** | **Doctrine ORM** | **Eloquent** |
+| --- | --- | --- | --- | --- |
+| Pattern | Active Record | Active Record | Data Mapper (identity map + unit of work) | Active Record |
+| Framework coupling | Standalone, framework-agnostic | Standalone, framework-agnostic | Standalone (Symfony-friendly) | Laravel-native (standalone via `illuminate/database`) |
+| Runtime dependencies | **None** | **None** (PDO ext) | Several (DBAL, …) | `illuminate/*` |
+| Install footprint (`vendor/`) | **1 package · ~300 KB** | 1 package · ~280 KB | ~22 packages · ~1.6 MB | ~26 packages · ~2.3 MB |
+| Schema mapping | PHP 8 attributes only | **Introspected from the live DB** (no code mapping) | Attributes / XML / YAML | Conventions (schema lives in migrations, not the model) |
+| Column access / typing | **Typed properties** (psalm-checked) | Dynamic `__get`/`__set` (magic) | Typed properties | Dynamic `$attributes` (magic) |
+| Schema changes | Emits `CREATE TABLE` from attributes; forward migrations via a planned opt-in add-on (not in core) | None — the DB *is* the source; no DDL/migrations | `doctrine/migrations` | Laravel migrations |
+| Query building | Finders + immutable `WhereClause` + `RawSql` | Dynamic finders + string conditions (`find_by_x`) | DQL + QueryBuilder | Fluent query builder |
+| Relations | Imperative `load()` / `loadMissing()` (incl. polymorphic); no lazy graph / identity map | `has_many`/`belongs_to`/HABTM/`through` + eager loading | Full graph: lazy loading, identity map, UoW | Full: lazy + eager, rich relationship set |
+| Backends | MySQL/MariaDB, PostgreSQL, SQLite | MySQL, PostgreSQL, SQLite | Many (via DBAL) | MySQL, PostgreSQL, SQLite, SQL Server |
+| Driver / session layer | Pluggable `DbSession`: PDO, **mysqli, wpdb** + retry decorator | **PDO only** | DBAL | PDO |
+| Bulk writes | First-class: deadlock-safe multi-mask upsert, per-chunk-commit chunking, burn-free upsert | None (row-at-a-time `save()`) | Batch inserts; bulk `UPDATE`/`DELETE` via DQL | `upsert()` / bulk `insert()` |
+| Concurrency | Tier-ordered `FOR UPDATE` locks, advisory locks, transient-retry decorator | None | Pessimistic + optimistic locking | `lockForUpdate()` / `sharedLock()` |
+| Maturity / ecosystem | **Young, pre-1.0, small** | Mature (since 2010), established | Mature, large | Mature, very large |
 
-<sub>Footprint measured with `composer require <pkg> --prefer-dist` into a clean project — Doctrine's
-`doctrine/orm` and Eloquent's standalone `illuminate/database`; counts and sizes vary by version.
-attrecord's figure is v0.1.3 (0.2.0 is a little larger, still one package with zero dependencies).</sub>
+<sub>attrecord and php-activerecord ship as a **single package with zero runtime dependencies**
+(php-activerecord needs a PDO driver extension); their figures are shipped source — attrecord `src/`
+≈ 300 KB at v0.3.0 (only ~130 KB is code; the rest is docblocks), php-activerecord `lib/` ≈ 280 KB.
+Doctrine and Eloquent figures are a full `composer require --prefer-dist` install **including their
+dependency trees** (`doctrine/orm`, `illuminate/database`); counts and sizes vary by version.</sub>
+
+**Reach for php-activerecord** when you want the classic Rails-style experience over an *existing*
+database — dynamic finders, magic attributes, a mature validations / callbacks / serialization suite,
+15 years of battle-testing — you're on PDO, and you're happy to let the live schema be the source of
+truth rather than authoring it in code.
 
 **Reach for Doctrine** when you have a rich domain model and want data-mapper purity — identity map,
 unit of work, lazy object graphs, DQL, a full migrations toolchain — and don't mind the weight.
@@ -115,7 +128,15 @@ This README is the narrative guide. Deeper references live in [`docs/`](docs/):
 ```php
 use Nandan108\Attrecord\Record;
 use Nandan108\Attrecord\Attribute\{Table, Column, Relation};
+use Nandan108\Attrecord\Caster\EnumCaster;
 use Nandan108\Attrecord\Enum\{ColumnType, RelationType};
+
+enum OrderStatus: string
+{
+    case Draft = 'draft';
+    case Placed = 'placed';
+    case Shipped = 'shipped';
+}
 
 #[Table(name: 'orders')]
 class Order extends Record
@@ -123,8 +144,9 @@ class Order extends Record
     #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
     public ?int $id = null;
 
-    #[Column(ColumnType::VarChar, length: 64)]
-    public string $status = 'draft';
+    #[Column(ColumnType::Enum)]                // ENUM(...) value set derived from OrderStatus' cases
+    #[EnumCaster(OrderStatus::class)]
+    public OrderStatus $status = OrderStatus::Draft;
 
     #[Column(ColumnType::Decimal, precision: 10, scale: 2, nullable: true)]
     public ?float $total = null;
@@ -765,10 +787,13 @@ public ?array $audit = null;
 public ?\DateTimeImmutable $logged_at = null;
 ```
 
-A caster *is* its attribute: `JsonCaster` / `DateTimeCaster` / `EpochCaster` ship
+A caster *is* its attribute: `JsonCaster` / `DateTimeCaster` / `EpochCaster` / `EnumCaster` ship
 built-in, and custom casters extend the `Cast` base (which implements the two-method
-`ColumnCaster` contract). Casting integrates with dirty tracking — including mutable
-value objects — and with bulk `saveAll()`, and has no effect on generated DDL.
+`ColumnCaster` contract). `#[EnumCaster(MyEnum::class)]` maps a scalar column to/from a backed enum
+(see the `$status` field in [Define your records](#1--define-your-records)); on a `ColumnType::Enum`
+column it also derives the `ENUM(...)` value set from the enum's cases. Casting integrates with dirty
+tracking — including mutable value objects — and with bulk `saveAll()`, and has no effect on
+generated DDL — except the `EnumCaster`-derived `ENUM(...)` set just noted.
 
 → See [docs/column-casting.md](docs/column-casting.md) for the full reference: the
 `ColumnCaster` contract, `JsonCastable` value objects, discriminated payloads, auto-attach
@@ -945,14 +970,15 @@ non-atomic caveat as the single-record burn-free path. Throws `AttrecordExceptio
 
 ---
 
-## Eager relation loading
+## Relation loading
 
-Avoids N+1 with a single extra query per relation level:
+Load relations onto an already-fetched set — imperatively, one extra query per relation level, no
+N+1 and no JOINs:
 
 ```php
 // One extra query per level
 $orders = Order::find('`status` = ?', ['pending'])
-    ->with('lines');          // SELECT … WHERE order_id IN (…)
+    ->load('lines');          // SELECT … WHERE order_id IN (…)
 
 foreach ($orders as $order) {
     foreach ($order->lines as $line) {
@@ -961,8 +987,18 @@ foreach ($orders as $order) {
 }
 
 // Dot-notation chains
-$orders->with('lines.product');  // loads lines, then products for those lines
+$orders->load('lines.product');  // loads lines, then products for those lines
+
+// Skip records that already have the relation loaded
+$orders->loadMissing('lines.product');
+
+// The same API is on a single record
+$order->load('lines', 'customer.billing');
 ```
+
+`load()` always (re)fetches; `loadMissing()` loads only where the relation isn't already present —
+and a to-one that resolved to `null` still counts as loaded, so it isn't re-queried. `with()`
+remains as a deprecated alias for `load()` (removed at 1.0).
 
 ---
 
@@ -1026,7 +1062,7 @@ is an FK into a type-lookup table (see [docs/polymorphic-relations.md](docs/poly
 
 ```php
 // Load orders with all their tags — one extra query
-$orders = Order::find('`status` = ?', ['pending'])->with('tags');
+$orders = Order::find('`status` = ?', ['pending'])->load('tags');
 
 foreach ($orders as $order) {
     foreach ($order->tags as $tag) {
@@ -1035,17 +1071,17 @@ foreach ($orders as $order) {
 }
 
 // Load tags with their polymorphic parent — one query per distinct type present
-$tags = Tag::find()->with('tagable');
+$tags = Tag::find()->load('tagable');
 
 foreach ($tags as $tag) {
     // $tag->tagable is an Order or Product depending on tagable_type
 }
 
 // Chains work too: orders → tags → tagable (round-trip)
-$orders->with('tags.tagable');
+$orders->load('tags.tagable');
 ```
 
-`with('tagable')` issues one `IN(…)` query per distinct type value present in the result
+`load('tagable')` issues one `IN(…)` query per distinct type value present in the result
 set — not one query per row.
 
 Tags whose `tagable_type` has no entry in `morphMap` are silently skipped (property stays

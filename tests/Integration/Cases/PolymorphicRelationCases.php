@@ -77,7 +77,7 @@ trait PolymorphicRelationCases
         $this->tagUser($alice, 'priority');
         $this->tagUser($bob, 'standard');
 
-        $users = UserRecord::find()->with('tags');
+        $users = UserRecord::find()->load('tags');
 
         /** @var array<string, UserRecord> $byName */
         $byName = $users->recordsByKey('name');
@@ -88,6 +88,30 @@ trait PolymorphicRelationCases
         $this->assertCount(1, $byName['Bob']->tags);
     }
 
+    public function testLoadMissingOverMorphRelation(): void
+    {
+        $alice = $this->makeUser('Alice');
+        $bob = $this->makeUser('Bob');
+        $this->tagUser($alice, 'vip');
+        $this->tagUser($bob, 'standard');
+
+        $users = UserRecord::find();
+
+        // Preload the morph relation on one user only.
+        $first = $users->first();
+        $this->assertNotNull($first);
+        (new RecordSet([$first]))->load('tags');
+        $firstTags = $first->tags;
+
+        $users->loadMissing('tags');
+
+        // Already-loaded morph relation preserved; the other user's is now loaded too.
+        $this->assertSame($firstTags, $first->tags);
+        foreach ($users as $user) {
+            $this->assertInstanceOf(RecordSet::class, $user->tags);
+        }
+    }
+
     public function testMorphManyDoesNotLeakAcrossTypes(): void
     {
         $alice = $this->makeUser('Alice');
@@ -96,7 +120,7 @@ trait PolymorphicRelationCases
         $this->tagUser($alice, 'user-tag');
         $this->tagPost($post, 'post-tag');
 
-        $users = UserRecord::find()->with('tags');
+        $users = UserRecord::find()->load('tags');
         $alice = $users->first();
         $this->assertNotNull($alice);
 
@@ -110,7 +134,7 @@ trait PolymorphicRelationCases
     {
         $this->makeUser('Alice'); // no tags
 
-        $users = UserRecord::find()->with('tags');
+        $users = UserRecord::find()->load('tags');
         $alice = $users->first();
         $this->assertNotNull($alice);
         $this->assertInstanceOf(RecordSet::class, $alice->tags);
@@ -127,7 +151,7 @@ trait PolymorphicRelationCases
         $this->tagUser($alice, 'alpha');
         $this->tagUser($alice, 'beta');
 
-        $users = UserRecord::find()->with('firstTag');
+        $users = UserRecord::find()->load('firstTag');
         $alice = $users->first();
         $this->assertNotNull($alice);
         $this->assertInstanceOf(TagRecord::class, $alice->firstTag);
@@ -139,7 +163,7 @@ trait PolymorphicRelationCases
     {
         $this->makeUser('Alice'); // no tags
 
-        $users = UserRecord::find()->with('firstTag');
+        $users = UserRecord::find()->load('firstTag');
         $alice = $users->first();
         $this->assertNotNull($alice);
         $this->assertNull($alice->firstTag);
@@ -154,7 +178,7 @@ trait PolymorphicRelationCases
         $alice = $this->makeUser('Alice');
         $this->tagUser($alice, 'vip');
 
-        $tags = TagRecord::find()->with('tagable');
+        $tags = TagRecord::find()->load('tagable');
         $tag = $tags->first();
 
         $this->assertNotNull($tag);
@@ -168,7 +192,7 @@ trait PolymorphicRelationCases
         $post = $this->makePost((int) $alice->id, 'Hello World');
         $this->tagPost($post, 'featured');
 
-        $tags = TagRecord::find()->with('tagable');
+        $tags = TagRecord::find()->load('tagable');
         $tag = $tags->first();
 
         $this->assertNotNull($tag);
@@ -184,7 +208,7 @@ trait PolymorphicRelationCases
         $userTag = $this->tagUser($alice, 'vip');
         $postTag = $this->tagPost($post, 'featured');
 
-        $tags = TagRecord::find()->with('tagable');
+        $tags = TagRecord::find()->load('tagable');
 
         /** @var array<int, TagRecord> $byId */
         $byId = $tags->recordsByKey('id');
@@ -201,7 +225,7 @@ trait PolymorphicRelationCases
             "INSERT INTO attrecord_tags (tagable_type, tagable_id, name) VALUES ('unknown', 1, 'orphan')",
         );
 
-        $tags = TagRecord::find()->with('tagable');
+        $tags = TagRecord::find()->load('tagable');
         $tag = $tags->first();
 
         $this->assertNotNull($tag);
@@ -218,7 +242,7 @@ trait PolymorphicRelationCases
         $this->tagUser($alice, 'vip');
 
         // Load users → tags → tagable (roundtrip back to User).
-        $users = UserRecord::find()->with('tags.tagable');
+        $users = UserRecord::find()->load('tags.tagable');
 
         $user = $users->first();
         $this->assertNotNull($user);

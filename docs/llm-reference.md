@@ -221,9 +221,10 @@ Type notes:
 | `MorphOne` | related table | `?T` | `class`, `morphType`, `morphKey`, `morphValue` |
 | `MorphTo` | this table | union `?T` | `morphType`, `morphKey`, `morphMap` |
 
-Loaded eagerly via `RecordSet::with('relation')` or dot-paths `with('posts.user')`,
-`with('tags.tagable')`. Eager loading is batched (one `IN(…)` query per relation level — no
-N+1). See [polymorphic-relations.md](polymorphic-relations.md).
+Loaded imperatively via `RecordSet::load('relation')`, dot-paths `load('posts.user')`, or several
+paths at once `load('a.b', 'a.c')` (shared prefixes load once). Batched — one `IN(…)` query per
+relation level, no N+1. `loadMissing(...)` is the skip-if-already-loaded variant; `with()` is a
+deprecated alias for `load()`. See [polymorphic-relations.md](polymorphic-relations.md).
 
 ---
 
@@ -259,6 +260,9 @@ Persistence:
 - `updateByUniqueKey(array $fields = []): int` — UPDATE keyed by this record's unique key.
 - `updateByWhere(string|WhereClause $where = '', array $params = [], array $fields = []): int`
 - `reload(): void` — re-fetch by PK, refresh properties + snapshot.
+- `load(string ...$relationPaths): static` / `loadMissing(string ...$relationPaths): static` —
+  single-record relation loading; wraps `$this` in a one-element set and delegates to the
+  `RecordSet` equivalents (same variadic / dot-path / shared-prefix semantics).
 
 Dirty tracking / state:
 - `isDirty(string ...$fields): bool` — any (or named) columns changed since load/save.
@@ -317,7 +321,7 @@ Batch persistence (single SQL per operation — never a loop of queries):
 - `upsertAllByUniqueKey(string $conflictKey): ?SaveResult` — bulk burn-free upsert by unique key.
 - `buildSaveAllSql(bool $force = false): ?UpsertSql` — the SQL the upsert path would run (introspection/testing).
 - `deleteAll(): int` — single `DELETE … WHERE pk IN (…)`.
-- `with(string $relationPath): static` — eager-load a relation (dot-paths supported).
+- `load(string ...$relationPaths): static` — load relations onto the set (dot-paths; multiple paths share prefixes, loaded once). `loadMissing(...)` skips records already having the relation (a to-one that resolved null still counts as loaded). `with(...)` is a deprecated alias for `load()`.
 
 `SaveResult` (readonly): `int $inserted`, `int $updated`, `list<int|string> $insertedIds`,
 `total(): int`. `UpsertSql` (readonly): `string $create`, `string $lock`, `?string $update`.
@@ -616,8 +620,9 @@ Immutable builder; `render(?SqlDialect)` produces dialect-correct SQL, `params()
 values. Static constructors: `where`, `whereIn`, `whereNotIn`, `whereInTuples`,
 `whereNotInTuples`, `whereRaw`, `whereLike`, `whereNotLike`, `whereNot`, `whereBetween`,
 `whereNotBetween`, `whereNone`, `whereAll`, `whereAny`. Instance combinators: `andWhere(...)`,
-`orWhere(...)`. Values accept `scalar|null` and `BinaryParam`. Pattern values for `LIKE` should
-be pre-escaped with `$dialect->escapeLikeWildcards()`. Full grammar:
+`orWhere(...)`. Values accept `scalar|null` and `BinaryParam`; a bound `bool` is normalized to its
+SQL scalar form (`true`→`1`, `false`→`0`) at the `params()` boundary, consistent across drivers.
+Pattern values for `LIKE` should be pre-escaped with `$dialect->escapeLikeWildcards()`. Full grammar:
 [where-clause.md](where-clause.md). `RawSql(string $expression, array $params = [])` carries a
 raw fragment with optional bound params for the WHERE/SET escape hatch.
 
@@ -627,7 +632,7 @@ raw fragment with optional bound params for the WHERE/SET escape hatch.
 
 - **`save()` writes only dirty columns.** A clean `save()` is a no-op (`->_saved === false`)
   unless `force: true`.
-- **Never loop DB calls.** Use `saveAll()` / `deleteAll()` / `with()` / `whereIn()` — each is a
+- **Never loop DB calls.** Use `saveAll()` / `deleteAll()` / `load()` / `whereIn()` — each is a
   single statement. Repository-style methods should be plural by default.
 - **Generated columns are never written** (INSERT or UPDATE) — every engine rejects a value for a
   `GENERATED ALWAYS` column.
