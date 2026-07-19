@@ -343,8 +343,25 @@ Batch persistence (single SQL per operation — never a loop of queries):
     `$allowInTransactionChunking: true`, which chunks the statements inline within the outer
     transaction: smaller statements, still **atomic** (the outer transaction's contract), but the
     lock/undo footprint stays unbounded. No effect outside a transaction.
+- `insertAll(): ?SaveResult` — bulk **insert-only** writer: **one plain `INSERT INTO … VALUES (…), (…)`**
+  covering every record, in a single statement + one transaction. **No upsert semantics** — a
+  duplicate PK raises a DB error (wrapped in `RecordSaveException`), never `INSERT IGNORE` and never a
+  `SELECT … FOR UPDATE`. This is the correct primitive for **append-only, client-minted-PK** tables
+  (ledgers, event logs, outboxes) where a row is written once and a PK collision is a bug to surface
+  loudly, not a row to update — `saveAll()` cannot serve them because a PK-carrying record routes into
+  its keyed-upsert path (which *masks* the collision and takes locks the append never needed). Inserts
+  **all** records (no dirty filter — an appended row is written whole); runs `beforeSave()` +
+  `#[CreatedAt]`/`#[UpdatedAt]` (as new — **every** record is a fresh insert, so `created_at` is stamped
+  even for a minted / non-null PK; do **not** gate this on `PK === null` as `saveAll()` does) +
+  `validate()` per record, then `markClean()` + `afterSave(isNew: true)`. Writes the PK column for minted PKs; auto-increment/generated columns are
+  excluded and, on an auto-increment table, generated ids are back-filled in INSERT order (so the batch
+  must be **homogeneous** — all PK-null on an AI table, or all PK-carrying on a minted-PK table; a mixed
+  AI batch misaligns the back-fill and is unsupported). `updated` in the result is always `0`. Returns
+  `null` for an empty set or when no insertable column carries a value. Replaces a per-row raw
+  `INSERT` loop on immutable-ledger tables with one round-trip **without** inheriting upsert semantics.
 - `upsertAllByUniqueKey(string $conflictKey): ?SaveResult` — bulk burn-free upsert by unique key.
 - `buildSaveAllSql(bool $force = false): ?UpsertSql` — the SQL the upsert path would run (introspection/testing).
+- `buildInsertAllSql(): ?string` — the single plain INSERT `insertAll()` would run (introspection/testing; no hooks/DB).
 - `deleteAll(): int` — single `DELETE … WHERE pk IN (…)`.
 - `load(string ...$relationPaths): static` — load relations onto the set (dot-paths; multiple paths share prefixes, loaded once). `loadMissing(...)` skips records already having the relation (a to-one that resolved null still counts as loaded). `with(...)` is a deprecated alias for `load()`.
 
@@ -658,8 +675,8 @@ raw fragment with optional bound params for the WHERE/SET escape hatch.
 
 - **`save()` writes only dirty columns.** A clean `save()` is a no-op (`->_saved === false`)
   unless `force: true`.
-- **Never loop DB calls.** Use `saveAll()` / `deleteAll()` / `load()` / `whereIn()` — each is a
-  single statement. Repository-style methods should be plural by default.
+- **Never loop DB calls.** Use `saveAll()` / `insertAll()` (append-only, minted-PK) / `deleteAll()` /
+  `load()` / `whereIn()` — each is a single statement. Repository-style methods should be plural by default.
 - **Generated columns are never written** (INSERT or UPDATE) — every engine rejects a value for a
   `GENERATED ALWAYS` column.
 - **Auto-increment PKs are back-filled as `int`** on all engines (PG/SQLite via `RETURNING`,

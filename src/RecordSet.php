@@ -381,6 +381,119 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     }
 
     /**
+     * Bulk **insert-only** writer: one plain `INSERT INTO … VALUES (…), (…)` covering every record
+     * in the set, in a single statement and one transaction. Unlike {@see saveAll()}, it applies
+     * **no upsert semantics** — a duplicate PK raises a DB error (wrapped in RecordSaveException)
+     * rather than being silently ignored or overwritten, and no `SELECT … FOR UPDATE` is taken.
+     *
+     * This is the correct primitive for **append-only, client-minted-PK** tables — ledgers, event
+     * logs, outboxes — where rows are written once and a PK collision is a bug to surface loudly,
+     * not a row to update. saveAll() cannot serve them: a record carrying a PK routes into its
+     * keyed-upsert path (INSERT IGNORE → FOR UPDATE → CASE-UPDATE), which both masks the collision
+     * and takes locks the append never needed.
+     *
+     * Every record is inserted (no dirty filtering — an appended row is written whole); `beforeSave()`,
+     * `#[CreatedAt]`/`#[UpdatedAt]` timestamps (as new), and `validate()` fire per record, then
+     * `markClean()` + `afterSave(isNew: true)` afterwards. The PK column is written for
+     * application-minted PKs; auto-increment and DB-generated columns are excluded and, on an
+     * auto-increment table, generated ids are back-filled onto the records in INSERT order (which
+     * requires the batch to be homogeneous — either all PK-null on an auto-increment table, or all
+     * PK-carrying on a minted-PK table; a mixed batch on an auto-increment table misaligns the
+     * back-fill and is unsupported).
+     *
+     * @return SaveResult|null inserted count (updated is always 0), or null if the set is empty
+     *                         or no insertable column carries a value
+     *
+     * @throws RecordSaveException on DB error (including a duplicate-PK collision)
+     */
+    public function insertAll(): ?SaveResult
+    {
+        if (empty($this->records)) {
+            return null;
+        }
+
+        $records = $this->records;
+        $first = $records[0];
+        $schema = $first::schema();
+        $conn = $first::connection();
+        $dialect = $conn->dialect;
+        $session = $conn->session;
+        $pk = $schema->pk;
+        $pkProp = $schema->pkProp;
+        $pkColumn = $schema->columns[$pk];
+        $pkAutoIncrement = $pkColumn->autoIncrement;
+        $returningSuffix = $dialect->insertReturningSuffix($dialect->quoteIdentifier($pk));
+
+        foreach ($records as $r) {
+            $r->beforeSave();
+            // insertAll always INSERTs (never upserts), so every record is new — stamp #[CreatedAt]
+            // and #[UpdatedAt] as such, regardless of whether the PK is DB-generated or app-minted.
+            $r->applyAutoTimestamps(true);
+            $r->validate();
+        }
+
+        $insertSql = $this->buildBulkInsertSql($records, $schema, $dialect);
+        if (null === $insertSql) {
+            return null;
+        }
+
+        // Reuse runPlan's insert execution (PG RETURNING / MySQL lastInsertId + AI id capture);
+        // upsert stays null so no FOR UPDATE / CASE-UPDATE is ever emitted.
+        $plan = ['insert' => $insertSql, 'upsert' => null];
+        try {
+            $counts = $session->transactional(
+                fn (): array => $this->runPlan($session, $plan, $pk, $pkColumn, $returningSuffix, $pkAutoIncrement),
+            );
+        } catch (\Throwable $e) {
+            throw new RecordSaveException($e->getMessage(), $e);
+        }
+
+        $insertedIds = $counts['insertedIds'];
+
+        // Back-fill DB-generated auto-increment ids onto the (PK-null) records, in INSERT order.
+        // Application-minted PKs yield no insertedIds, so this is a no-op for them.
+        if ($pkAutoIncrement) {
+            $newRecords = array_values(array_filter(
+                $records,
+                static fn (Record $r): bool => null === $r->{$pkProp},
+            ));
+            foreach ($newRecords as $index => $record) {
+                if (array_key_exists($index, $insertedIds)) {
+                    $record->{$pkProp} = $insertedIds[$index];
+                }
+            }
+        }
+
+        foreach ($records as $record) {
+            $record->markClean();
+            $record->afterSave(true);
+        }
+
+        return new SaveResult($counts['inserted'], 0, $insertedIds);
+    }
+
+    /**
+     * Return the single plain INSERT that {@see insertAll()} would execute for the current set,
+     * without touching the DB (test/inspection helper, mirroring {@see buildSaveAllSql()}). Built
+     * from current record state; hooks/timestamps/validation are NOT run. Returns null if the set
+     * is empty or no insertable column carries a value.
+     */
+    public function buildInsertAllSql(): ?string
+    {
+        if (empty($this->records)) {
+            return null;
+        }
+
+        $first = $this->records[0];
+
+        return $this->buildBulkInsertSql(
+            $this->records,
+            $first::schema(),
+            $first::connection()->dialect,
+        );
+    }
+
+    /**
      * Execute one built plan (bulk INSERT + the deadlock-safe 3-step upsert) inside the caller's
      * transaction and report the row counts + any DB-generated insert ids. Shared by the atomic
      * (whole-set) and chunked paths.
@@ -689,6 +802,63 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     }
 
     /**
+     * Build a single plain multi-row `INSERT INTO … VALUES (…), (…)` covering every given record,
+     * writing each record's PK column too (it is a normal, non-auto-increment column for
+     * application-minted PKs). Duplicate-PK collisions are left to surface as a DB error — this is
+     * a plain INSERT, never INSERT IGNORE — which is the correct, loud signal for the append-only
+     * tables {@see insertAll()} targets. Auto-increment and DB-generated columns are excluded (the
+     * DB supplies them); a column is included when it is non-null on at least one record. Returns
+     * null when the set is empty or no insertable column carries a value.
+     *
+     * Shared by {@see buildPlan()} (new/PK-null records) and {@see insertAll()} (all records).
+     *
+     * @param list<Record> $records
+     */
+    private function buildBulkInsertSql(array $records, TableSchema $schema, SqlDialect $dialect): ?string
+    {
+        if (empty($records)) {
+            return null;
+        }
+
+        $candidates = array_filter(
+            $schema->columns,
+            fn ($col) => !$col->autoIncrement && !$col->isGenerated,
+        );
+
+        $presentCols = [];
+        foreach ($records as $record) {
+            foreach ($candidates as $colName => $col) {
+                if (($record->{$col->propertyName} ?? null) !== null) {
+                    $presentCols[$colName] = true;
+                }
+            }
+        }
+        $colNames = array_values(array_filter(
+            array_keys($candidates),
+            fn ($n) => isset($presentCols[$n]),
+        ));
+
+        if (empty($colNames)) {
+            return null;
+        }
+
+        $rows = [];
+        foreach ($records as $record) {
+            $row = [];
+            foreach ($colNames as $colName) {
+                $col = $schema->columns[$colName];
+                $row[] = $dialect->toLiteral(
+                    ColumnSerializer::toDbValue($record->{$col->propertyName} ?? null, $col),
+                    $col,
+                );
+            }
+            $rows[] = $row;
+        }
+
+        return $dialect->buildBulkInsert($schema->tableName, $colNames, $rows);
+    }
+
+    /**
      * Separate dirty records by PK presence and build the SQL plan for each group.
      *
      * @param list<Record> $dirty
@@ -702,45 +872,10 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $noKeyRecords = array_values(array_filter($dirty, fn (Record $r) => null === $r->{$pkProp}));
         $keyedRecords = array_values(array_filter($dirty, fn (Record $r) => null !== $r->{$pkProp}));
 
-        $insert = null;
         $upsert = null;
 
         // Plain INSERT for new (auto-increment PK) records — no upsert semantics needed
-        if (!empty($noKeyRecords)) {
-            $candidates = array_filter(
-                $schema->columns,
-                fn ($col) => !$col->autoIncrement && !$col->isGenerated,
-            );
-
-            $presentCols = [];
-            foreach ($noKeyRecords as $record) {
-                foreach ($candidates as $colName => $col) {
-                    if (($record->{$col->propertyName} ?? null) !== null) {
-                        $presentCols[$colName] = true;
-                    }
-                }
-            }
-            $colNames = array_values(array_filter(
-                array_keys($candidates),
-                fn ($n) => isset($presentCols[$n]),
-            ));
-
-            if (!empty($colNames)) {
-                $rows = [];
-                foreach ($noKeyRecords as $record) {
-                    $row = [];
-                    foreach ($colNames as $colName) {
-                        $col = $schema->columns[$colName];
-                        $row[] = $dialect->toLiteral(
-                            ColumnSerializer::toDbValue($record->{$col->propertyName} ?? null, $col),
-                            $col,
-                        );
-                    }
-                    $rows[] = $row;
-                }
-                $insert = $dialect->buildBulkInsert($schema->tableName, $colNames, $rows);
-            }
-        }
+        $insert = $this->buildBulkInsertSql($noKeyRecords, $schema, $dialect);
 
         // Deadlock-safe 3-step upsert for records with a known PK
         if (!empty($keyedRecords)) {

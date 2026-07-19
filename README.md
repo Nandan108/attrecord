@@ -14,7 +14,7 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
 - **camelCase PHP / snake_case SQL** via per-column `name:` override (no auto-conversion — [decision documented](docs/design-note-no-name-auto-conversion.md))
 - Dirty-tracking — `save()` only writes changed columns
 - Column casting — map columns to value objects / JSON / custom types via `#[Cast]` attributes ([docs](docs/column-casting.md))
-- Bulk upsert via `RecordSet::saveAll()` with a single SQL statement — optionally chunked (`saveAll(chunkSize:)`) for very large, resumable batches
+- Bulk upsert via `RecordSet::saveAll()` with a single SQL statement — optionally chunked (`saveAll(chunkSize:)`) for very large, resumable batches; plus `insertAll()` — a plain insert-only writer for append-only, minted-PK tables (ledgers/outboxes), no upsert semantics
 - Optional automatic retry of transient transaction conflicts (deadlock / lock-wait / serialization / `SQLITE_BUSY`) via the `RetryingDbSession` decorator
 - Relation loading with no N+1 queries — `load()` / `loadMissing()` (variadic, shared-prefix); nine
   relation types incl. **many-to-many** (pivot) and **has-many-through**
@@ -953,6 +953,32 @@ every lock until it commits), so a chunked `saveAll()` nested in a transaction *
 `AttrecordException` by default. Pass `allowInTransactionChunking: true` to acknowledge this and
 chunk anyway: the chunks then run as separate, smaller **statements** within the outer transaction
 — bounding statement size while staying atomic, but leaving the lock/undo footprint unbounded.
+
+### `insertAll()` — plain insert-only writer for append-only tables
+
+`saveAll()` gives a plain multi-row `INSERT` only for PK-*null* records; a record that already
+carries a PK (e.g. a client-minted UUIDv7) routes into the keyed **upsert** path (`INSERT IGNORE` →
+`SELECT … FOR UPDATE` → `CASE`-update). That's the wrong shape for **append-only, minted-PK** tables
+— ledgers, event logs, outboxes — where each row is written once: `INSERT IGNORE` would silently
+swallow a duplicate PK that should surface as a bug (a collision or double-apply), the `CASE`-update
+could overwrite an immutable row, and the `FOR UPDATE` takes locks the append never needs.
+
+`insertAll()` is that missing primitive — **one plain `INSERT INTO … VALUES (…), (…)`** over every
+record in a single statement and transaction, writing the minted PK column, with **no upsert
+semantics**: a duplicate PK raises a DB error (wrapped in `RecordSaveException`).
+
+```php
+// append 3 ledger rows with client-minted UUIDv7 PKs — one INSERT, no upsert, no locks
+$result = (new RecordSet([$e1, $e2, $e3]))->insertAll();
+```
+
+- Inserts **all** records (no dirty filter — an appended row is written whole).
+- Runs the full per-record lifecycle: `beforeSave()`, `#[CreatedAt]`/`#[UpdatedAt]` stamped **as new**
+  (every row is a fresh insert — `created_at` is set even for a minted, non-null PK), `validate()`,
+  then `markClean()` + `afterSave(wasInsert: true)`.
+- The batch must be **homogeneous**: all PK-null on an auto-increment table (ids back-filled in INSERT
+  order), or all PK-carrying on a minted-PK table.
+- Returns `null` for an empty set; `updated` in the `SaveResult` is always `0`.
 
 ### `upsertAllByUniqueKey($conflictKey)` — bulk burn-free upsert
 

@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`RecordSet::insertAll()`** — a plain **insert-only** bulk writer for append-only, minted-PK
+  tables (ledgers, event logs, outboxes): one `INSERT INTO … VALUES (…), (…)` over the whole set in
+  a single transaction, with **no upsert semantics** — a duplicate PK raises a DB error (wrapped in
+  `RecordSaveException`) instead of being silently ignored or overwriting an immutable row, and no
+  `SELECT … FOR UPDATE` locks are taken (unlike a PK-carrying record in `saveAll()`, which routes
+  into the keyed upsert). Runs the full per-record lifecycle, stamping `#[CreatedAt]`/`#[UpdatedAt]`
+  **as new** for every row — including minted, non-null PKs. `buildInsertAllSql()` exposes the SQL
+  for introspection.
+
 ## [0.5.0] - 2026-07-18 — Relations, lifecycle & convenience
 
 Additive across the board — no breaking changes.
