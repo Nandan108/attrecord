@@ -28,7 +28,7 @@ prose and worked examples, and the topic docs in this directory for deep dives
 
 | Namespace | Contents |
 |---|---|
-| `Nandan108\Attrecord` | `Record`, `RecordSet`, `WhereClause`, `RawSql`, `Connection`, `DbSession`, `SqlDialect`, `ColumnSerializer` (internal), `ColumnCaster`, `JsonCastable`, `BinaryParam`, `LockSet`, `Transaction`, `SaveResult`, `UpsertSql`, `NamedPlaceholderSql` (internal) |
+| `Nandan108\Attrecord` | `Record`, `RecordSet`, `WhereClause`, `RawSql`, `Connection`, `DbSession`, `SqlDialect`, `AppendOnly` (marker), `ColumnSerializer` (internal), `ColumnCaster`, `JsonCastable`, `BinaryParam`, `LockSet`, `Transaction`, `SaveResult`, `UpsertSql`, `NamedPlaceholderSql` (internal) |
 | `Nandan108\Attrecord\Attribute` | `Table`, `Column`, `ForeignKey`, `Index`, `UniqueKey`, `Relation`, `LockTier`, `MysqlTableOptions`, `Cast` (abstract base) |
 | `Nandan108\Attrecord\Caster` | `DateTimeCaster`, `EpochCaster`, `JsonCaster`, `EnumCaster` |
 | `Nandan108\Attrecord\Dialect` | `MysqlDialect`, `PgsqlDialect`, `SqliteDialect`, `UpsertJoinBuilder` (trait) |
@@ -368,6 +368,27 @@ Batch persistence (single SQL per operation — never a loop of queries):
 `SaveResult` (readonly): `int $inserted`, `int $updated`, `list<int|string> $insertedIds`,
 `total(): int`. `UpsertSql` (readonly): `string $create`, `string $lock`, `?string $update`.
 
+### `AppendOnly` — write-once Records
+
+`implements Nandan108\Attrecord\AppendOnly` marks a Record whose rows are **write-once** (ledger,
+event log, outbox, audit trail). **Reads are unrestricted** (every finder works normally); the
+**only permitted write is an INSERT**. attrecord enforces this at runtime on every mutation entry
+point — each throws `Exception\AppendOnlyViolationException`:
+
+| Path | AppendOnly |
+|---|---|
+| `insertAll()` | ✅ allowed (the sanctioned bulk-append path) |
+| `save()` on a **new** record (`isNew()`) | ✅ allowed (single-row append) |
+| all finders (`find`, `getOne`, `where…`, aggregates) | ✅ allowed |
+| `save()` on an **existing** record (UPDATE) | ❌ throws |
+| `delete()`, `deleteAll()`, `deleteWhere()` | ❌ throws |
+| `updateWhere()`, `updateByWhere()` | ❌ throws |
+| `saveAll()`, `upsertAllByUniqueKey()` | ❌ throws — insert-vs-upsert is decided per-record at runtime, so neither is a reliable append; use `insertAll()` |
+
+The guard is a class-level check (`is_a(static::class, AppendOnly::class, true)`) plus, for `save()`,
+an `isNew()` check — so the insert path is never blocked. Enforcement lives at the write methods (not
+a static lint), so bulk paths (`saveAll`/`deleteAll`) and instance mutations are covered too.
+
 ---
 
 ## 9. Column casting
@@ -600,6 +621,7 @@ All under `Nandan108\Attrecord\Exception`, extending `AttrecordException` (which
 | `RecordValidationException` | `validate()` rejects the record. |
 | `RecordSaveException` | INSERT/UPDATE fails (wraps the driver error). |
 | `RecordDeleteException` | DELETE fails / no PK. |
+| `AppendOnlyViolationException` | an update/delete is attempted on an `AppendOnly` Record (write-once). |
 | `SchemaException` | invalid attribute metadata at schema build / DDL (missing length, decimal scale, enum values, PG `Set`/`Virtual`, …). |
 | `MissingLockTierException` | `LockSet::acquire()` target lacks `#[LockTier]`. |
 | `LockTierConflictException` | two `LockSet` targets share a tier. |

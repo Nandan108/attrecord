@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord;
 
+use Nandan108\Attrecord\Exception\AppendOnlyViolationException;
 use Nandan108\Attrecord\Exception\AttrecordException;
 use Nandan108\Attrecord\Exception\RecordDeleteException;
 use Nandan108\Attrecord\Exception\RecordNotFoundException;
@@ -602,6 +603,17 @@ abstract class Record
     }
 
     /**
+     * Throw if this Record class is {@see AppendOnly} — its rows are write-once, so the named
+     * update/delete operation is forbidden. Insert paths (insertAll / new-record save) do not call this.
+     */
+    private static function assertNotAppendOnly(string $operation): void
+    {
+        if (is_a(static::class, AppendOnly::class, true)) {
+            throw AppendOnlyViolationException::forOperation(static::class, $operation);
+        }
+    }
+
+    /**
      * Execute a bulk UPDATE on all rows matching a WHERE clause.
      *
      * @api
@@ -618,6 +630,7 @@ abstract class Record
      */
     public static function updateWhere(array $set, string | WhereClause $where = '', array $params = []): int
     {
+        self::assertNotAppendOnly('updateWhere()');
         $schema = static::schema();
         $conn = static::connection();
         $dialect = $conn->dialect;
@@ -679,6 +692,7 @@ abstract class Record
      */
     public static function deleteWhere(string | WhereClause $where, array $params = []): int
     {
+        self::assertNotAppendOnly('deleteWhere()');
         if ($where instanceof WhereClause) {
             $params = $where->params();
             $where = $where->render(static::connection()->dialect);
@@ -788,6 +802,12 @@ abstract class Record
 
     public function save(bool $force = false): static
     {
+        // Append-only rows are write-once: a new-record save (INSERT) is a legitimate append,
+        // but saving an existing record (UPDATE) is forbidden.
+        if (!$this->_isNew && $this instanceof AppendOnly) {
+            throw AppendOnlyViolationException::forOperation(static::class, 'save() on an existing row (UPDATE)');
+        }
+
         $this->beforeSave();
         $this->applyAutoTimestamps($this->_isNew);
         $this->validate();
@@ -895,6 +915,7 @@ abstract class Record
      */
     public function delete(): void
     {
+        self::assertNotAppendOnly('delete()');
         $this->beforeDelete();
 
         $schema = static::schema();
@@ -1237,6 +1258,7 @@ abstract class Record
      */
     public function updateByWhere(string | WhereClause $where = '', array $params = [], array $fields = []): int
     {
+        self::assertNotAppendOnly('updateByWhere()');
         $schema = static::schema();
         $conn = static::connection();
         $dialect = $conn->dialect;

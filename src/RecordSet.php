@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord;
 
 use Nandan108\Attrecord\Enum\RelationType;
+use Nandan108\Attrecord\Exception\AppendOnlyViolationException;
 use Nandan108\Attrecord\Exception\AttrecordException;
 use Nandan108\Attrecord\Exception\RecordSaveException;
 use Nandan108\Attrecord\Schema\ColumnDefinition;
@@ -284,6 +285,11 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         }
 
         $first = $this->records[0];
+        // saveAll() decides insert-vs-upsert per record at runtime, so it cannot be a reliable
+        // append; append-only rows must go through insertAll(), which is insert-only.
+        if ($first instanceof AppendOnly) {
+            throw AppendOnlyViolationException::forOperation($first::class, 'saveAll()');
+        }
         $schema = $first::schema();
         $conn = $first::connection();
         $dialect = $conn->dialect;
@@ -672,6 +678,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         }
 
         $first = $this->records[0];
+        if ($first instanceof AppendOnly) {
+            throw AppendOnlyViolationException::forOperation($first::class, 'upsertAllByUniqueKey()');
+        }
         $schema = $first::schema();
 
         $conflictCols = $schema->uniqueKeys[$conflictKey]
@@ -953,6 +962,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         }
 
         $first = $this->records[0];
+        if ($first instanceof AppendOnly) {
+            throw AppendOnlyViolationException::forOperation($first::class, 'deleteAll()');
+        }
         $schema = $first::schema();
         $pk = $schema->pk;
         $pkProp = $schema->pkProp;
