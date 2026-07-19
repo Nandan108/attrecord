@@ -14,7 +14,7 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
 - **camelCase PHP / snake_case SQL** via per-column `name:` override (no auto-conversion — [decision documented](docs/design-note-no-name-auto-conversion.md))
 - Dirty-tracking — `save()` only writes changed columns
 - Column casting — map columns to value objects / JSON / custom types via `#[Cast]` attributes ([docs](docs/column-casting.md))
-- Bulk upsert via `RecordSet::upsertAll()` with a single SQL statement — optionally chunked (`upsertAll(chunkSize:)`) for very large, resumable batches; plus `insertAll()` — a plain insert-only writer for append-only, minted-PK tables (ledgers/outboxes), no upsert semantics
+- Bulk upsert via `RecordSet::upsertAll()` with a single SQL statement — optionally chunked (`upsertAll(chunkSize:)`) for very large, resumable batches; plus `insertAll()` — a plain insert-only writer for append-only tables (ledgers/outboxes), no upsert semantics
 - Optional automatic retry of transient transaction conflicts (deadlock / lock-wait / serialization / `SQLITE_BUSY`) via the `RetryingDbSession` decorator
 - Relation loading with no N+1 queries — `load()` / `loadMissing()` (variadic, shared-prefix); nine
   relation types incl. **many-to-many** (pivot) and **has-many-through**

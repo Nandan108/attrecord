@@ -348,8 +348,8 @@ Batch persistence (single SQL per operation — never a loop of queries):
 - `insertAll(): ?SaveResult` — bulk **insert-only** writer: **one plain `INSERT INTO … VALUES (…), (…)`**
   covering every record, in a single statement + one transaction. **No upsert semantics** — a
   duplicate PK raises a DB error (wrapped in `RecordSaveException`), never `INSERT IGNORE` and never a
-  `SELECT … FOR UPDATE`. This is the correct primitive for **append-only, client-minted-PK** tables
-  (ledgers, event logs, outboxes) where a row is written once and a PK collision is a bug to surface
+  `SELECT … FOR UPDATE`. This is the correct primitive for **append-only** tables (ledgers, event
+  logs, outboxes) — and the *only* correct one for **client-minted-PK** ones — where a row is written once and a PK collision is a bug to surface
   loudly, not a row to update — `upsertAll()` cannot serve them because a PK-carrying record routes into
   its keyed-upsert path (which *masks* the collision and takes locks the append never needed). Inserts
   **all** records (no dirty filter — an appended row is written whole); runs `beforeSave()` +
@@ -699,7 +699,7 @@ raw fragment with optional bound params for the WHERE/SET escape hatch.
 
 - **`save()` writes only dirty columns.** A clean `save()` is a no-op (`->_saved === false`)
   unless `force: true`.
-- **Never loop DB calls.** Use `upsertAll()` / `insertAll()` (append-only, minted-PK) / `deleteAll()` /
+- **Never loop DB calls.** Use `upsertAll()` / `insertAll()` (append-only) / `deleteAll()` /
   `load()` / `whereIn()` — each is a single statement. Repository-style methods should be plural by default.
 - **Generated columns are never written** (INSERT or UPDATE) — every engine rejects a value for a
   `GENERATED ALWAYS` column.

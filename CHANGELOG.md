@@ -4,18 +4,39 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-07-19 — Append-only writes & bulk-verb naming
 
 ### Added
 
-- **`RecordSet::insertAll()`** — a plain **insert-only** bulk writer for append-only, minted-PK
-  tables (ledgers, event logs, outboxes): one `INSERT INTO … VALUES (…), (…)` over the whole set in
-  a single transaction, with **no upsert semantics** — a duplicate PK raises a DB error (wrapped in
+- **`RecordSet::insertAll()`** — a plain **insert-only** bulk writer for append-only tables
+  (ledgers, event logs, outboxes): one `INSERT INTO … VALUES (…), (…)` over the whole set in a
+  single transaction, with **no upsert semantics** — a duplicate PK raises a DB error (wrapped in
   `RecordSaveException`) instead of being silently ignored or overwriting an immutable row, and no
-  `SELECT … FOR UPDATE` locks are taken (unlike a PK-carrying record in `saveAll()`, which routes
-  into the keyed upsert). Runs the full per-record lifecycle, stamping `#[CreatedAt]`/`#[UpdatedAt]`
-  **as new** for every row — including minted, non-null PKs. `buildInsertAllSql()` exposes the SQL
-  for introspection.
+  `SELECT … FOR UPDATE` locks are taken (unlike a PK-carrying record in `upsertAll()`, which routes
+  into the keyed upsert). Works whether the PK is DB-generated (auto-increment ids are back-filled
+  onto the records in INSERT order) or application-minted; a batch must be homogeneous — all PK-null
+  on an auto-increment table, or all PK-carrying on a minted-PK table. Runs the full per-record
+  lifecycle, stamping `#[CreatedAt]`/`#[UpdatedAt]` **as new** for every row (including minted,
+  non-null PKs). `buildInsertAllSql()` exposes the SQL for introspection.
+- **`AppendOnly` marker interface** — declare a Record write-once (ledgers, event logs, outboxes,
+  audit trails). Reads stay unrestricted; the only permitted write is an INSERT (`insertAll()`, or
+  `save()` on a new record). Every mutating path — `save()` on an existing row, `delete()`,
+  `deleteAll()`, `deleteWhere()`, `updateWhere()`, `updateByWhere()`, `upsertAll()`,
+  `upsertAllByUniqueKey()` — throws `AppendOnlyViolationException`. `upsertAll`/`upsertAllByUniqueKey`
+  are rejected outright (not only when they would upsert): their insert-vs-upsert choice is per-record
+  at runtime, so neither is a reliable append — use `insertAll()`. Enforced at runtime, so bulk and
+  instance paths are both covered.
+
+### Changed
+
+- **`RecordSet::saveAll()` → `upsertAll()`** — renamed so the bulk-write family all name their SQL
+  verb (`deleteAll` / `insertAll` / `upsertAll` / `upsertAllByUniqueKey`); `upsertAll()` also pairs
+  cleanly with `upsertAllByUniqueKey()` (same verb, differing conflict target). What it does is
+  unchanged: plain INSERT for PK-null records, 3-step keyed upsert for PK-carrying ones. Likewise
+  `buildSaveAllSql()` → `buildUpsertAllSql()`. The single-record `save()` is deliberately **not**
+  renamed. **BC:** `saveAll()` and `buildSaveAllSql()` are kept as `@deprecated` forwarding aliases,
+  so existing call sites keep working (consumer psalm will flag `DeprecatedMethod` — migrate to
+  `upsertAll()`).
 
 ## [0.5.0] - 2026-07-18 — Relations, lifecycle & convenience
 
