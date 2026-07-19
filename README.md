@@ -14,7 +14,7 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
 - **camelCase PHP / snake_case SQL** via per-column `name:` override (no auto-conversion — [decision documented](docs/design-note-no-name-auto-conversion.md))
 - Dirty-tracking — `save()` only writes changed columns
 - Column casting — map columns to value objects / JSON / custom types via `#[Cast]` attributes ([docs](docs/column-casting.md))
-- Bulk upsert via `RecordSet::saveAll()` with a single SQL statement — optionally chunked (`saveAll(chunkSize:)`) for very large, resumable batches; plus `insertAll()` — a plain insert-only writer for append-only, minted-PK tables (ledgers/outboxes), no upsert semantics
+- Bulk upsert via `RecordSet::upsertAll()` with a single SQL statement — optionally chunked (`upsertAll(chunkSize:)`) for very large, resumable batches; plus `insertAll()` — a plain insert-only writer for append-only, minted-PK tables (ledgers/outboxes), no upsert semantics
 - Optional automatic retry of transient transaction conflicts (deadlock / lock-wait / serialization / `SQLITE_BUSY`) via the `RetryingDbSession` decorator
 - Relation loading with no N+1 queries — `load()` / `loadMissing()` (variadic, shared-prefix); nine
   relation types incl. **many-to-many** (pivot) and **has-many-through**
@@ -121,7 +121,7 @@ This README is the narrative guide. Deeper references live in [`docs/`](docs/):
 - [where-clause.md](docs/where-clause.md) — the `WhereClause` builder grammar
 - [polymorphic-relations.md](docs/polymorphic-relations.md) — morph relations
 - [arch-concurrency.md](docs/arch-concurrency.md) — production locking model, retryable-error classification, `RetryingDbSession`
-- [arch-bulk-update-scaling.md](docs/arch-bulk-update-scaling.md) — the join-based bulk-`UPDATE` emitter and `saveAll()` chunking rationale
+- [arch-bulk-update-scaling.md](docs/arch-bulk-update-scaling.md) — the join-based bulk-`UPDATE` emitter and `upsertAll()` chunking rationale
 - [design-note-no-name-auto-conversion.md](docs/design-note-no-name-auto-conversion.md) — why no auto snake/camel conversion
 
 ---
@@ -232,7 +232,7 @@ $order->set(['status' => 'confirmed', 'total' => 149.00])->save();
 
 // set() calls validate() by default — pass false to defer validation
 // (useful for test fixtures or staged construction across multiple set() calls).
-// save() / saveAll() will still validate at the boundary.
+// save() / upsertAll() will still validate at the boundary.
 $order->set(['status' => 'confirmed'], validate: false);
 
 // save() always returns $this — check $_saved if you need to know whether a write occurred
@@ -797,7 +797,7 @@ built-in, and custom casters extend the `Cast` base (which implements the two-me
 `ColumnCaster` contract). `#[EnumCaster(MyEnum::class)]` maps a scalar column to/from a backed enum
 (see the `$status` field in [Define your records](#1--define-your-records)); on a `ColumnType::Enum`
 column it also derives the `ENUM(...)` value set from the enum's cases. Casting integrates with dirty
-tracking — including mutable value objects — and with bulk `saveAll()`, and has no effect on
+tracking — including mutable value objects — and with bulk `upsertAll()`, and has no effect on
 generated DDL — except the `EnumCaster`-derived `ENUM(...)` set just noted.
 
 → See [docs/column-casting.md](docs/column-casting.md) for the full reference: the
@@ -841,7 +841,7 @@ class Order extends Record
   at the point of mass assignment.
 - Inside `save()` just after `beforeSave()` — guarantees no invalid row reaches the DB,
   even if a caller bypassed `set()` and assigned properties directly.
-- Inside `RecordSet::saveAll()` in the same loop as `beforeSave()`.
+- Inside `RecordSet::upsertAll()` in the same loop as `beforeSave()`.
 
 Throw `RecordValidationException` (or a subclass) with a human-readable message and
 optional `context` array. The context is stored on the exception for the caller's
@@ -897,7 +897,7 @@ $set = new RecordSet([$line1, $line2, $line3]);
 $set->bulkSet(['updated_by' => $userId]);
 
 // Batch upsert — deadlock-safe 3-step strategy for all dirty records, one atomic transaction
-$result = $set->saveAll();   // ?SaveResult — null when nothing to save
+$result = $set->upsertAll();   // ?SaveResult — null when nothing to save
 
 $result->inserted;      // rows newly written
 $result->updated;       // rows overwritten
@@ -905,20 +905,23 @@ $result->total();       // inserted + updated
 $result->insertedIds;   // list<int|string> — PKs of newly inserted auto-increment records
 
 // Force-save (skip dirty filter) — useful in tests and for re-asserting state
-$set->saveAll(force: true);
+$set->upsertAll(force: true);
 
 // Bulk delete
 $deleted = $set->deleteAll();  // DELETE FROM … WHERE id IN (…)
 ```
 
-**Notes on `saveAll()`:**
+**Notes on `upsertAll()`:**
 
+- Formerly named `saveAll()`, kept as a `@deprecated` forwarding alias — prefer `upsertAll()`.
+- For a **write-once** table (ledger/outbox/event log), use `insertAll()` instead: `upsertAll()`'s
+  keyed path is an upsert (`INSERT IGNORE` + update) and would silently absorb a duplicate PK.
 - Clean records are skipped automatically (pass `force: true` to override).
 - `beforeSave()` and `validate()` run on every dirty record before any SQL is issued.
 - `insertedIds` is populated for new (no-PK) records: via `RETURNING` on PostgreSQL and SQLite,
   or via `lastInsertId()` + sequential range on MySQL/MariaDB. On MySQL/MariaDB clustered setups
   with non-sequential auto-increment, use individual `Record::save()` calls instead.
-- For tables with natural (non-auto-increment) PKs, `saveAll()` performs a true upsert (PKs are
+- For tables with natural (non-auto-increment) PKs, `upsertAll()` performs a true upsert (PKs are
   already set on the PHP objects).
 - The keyed (known-PK) upsert is a single set-based statement — `INSERT IGNORE` → an ordered
   `SELECT … FOR UPDATE` (ascending PK, for a consistent lock order) → one derived-table join that
@@ -930,33 +933,33 @@ $deleted = $set->deleteAll();  // DELETE FROM … WHERE id IN (…)
 `Record::save()` accepts the same `$force` flag — `$order->save(force: true)` writes every
 column regardless of dirty state.
 
-#### Chunked writes — `saveAll(chunkSize:)`
+#### Chunked writes — `upsertAll(chunkSize:)`
 
-By default `saveAll()` runs the whole set in **one transaction** — all-or-nothing. For very large
+By default `upsertAll()` runs the whole set in **one transaction** — all-or-nothing. For very large
 batches, pass an integer `chunkSize` to split the write into that-many-row slices that
 **commit per chunk**, bounding the lock and undo/redo footprint each transaction holds:
 
 ```php
 // 50k rows written 1000 at a time; each 1000-row chunk commits before the next begins
-$set->saveAll(chunkSize: 1000);
+$set->upsertAll(chunkSize: 1000);
 ```
 
 This trades whole-set atomicity for a bounded footprint: a mid-run failure leaves earlier
 chunks **committed**, so the operation must be **resumable**. It is — dirty-tracking makes it so.
-After each chunk commits, its records are marked clean, so simply re-calling `saveAll()` on the
+After each chunk commits, its records are marked clean, so simply re-calling `upsertAll()` on the
 same set skips everything already written and retries only the rest. Keyed (known-PK) records are
 sorted by PK ascending before chunking, so each chunk locks a contiguous ascending range and
 chunks proceed low→high — preserving the global ascending-PK lock-order invariant.
 
 Per-chunk commit is impossible **inside an already-open transaction** (the outer transaction holds
-every lock until it commits), so a chunked `saveAll()` nested in a transaction **throws**
+every lock until it commits), so a chunked `upsertAll()` nested in a transaction **throws**
 `AttrecordException` by default. Pass `allowInTransactionChunking: true` to acknowledge this and
 chunk anyway: the chunks then run as separate, smaller **statements** within the outer transaction
 — bounding statement size while staying atomic, but leaving the lock/undo footprint unbounded.
 
 ### `insertAll()` — plain insert-only writer for append-only tables
 
-`saveAll()` gives a plain multi-row `INSERT` only for PK-*null* records; a record that already
+`upsertAll()` gives a plain multi-row `INSERT` only for PK-*null* records; a record that already
 carries a PK (e.g. a client-minted UUIDv7) routes into the keyed **upsert** path (`INSERT IGNORE` →
 `SELECT … FOR UPDATE` → `CASE`-update). That's the wrong shape for **append-only, minted-PK** tables
 — ledgers, event logs, outboxes — where each row is written once: `INSERT IGNORE` would silently
@@ -992,9 +995,9 @@ $result = (new RecordSet($rows))->upsertAllByUniqueKey('uniq_owner_code');
 ```
 
 One `SELECT … WHERE (conflict cols) IN (…)` resolves the PKs of rows that already exist
-and assigns them onto the matching records; `saveAll()` then routes those through its
+and assigns them onto the matching records; `upsertAll()` then routes those through its
 keyed upsert (PK supplied → no allocation) while genuinely-new records take its plain
-bulk `INSERT` (one id each, none wasted). Returns the same `?SaveResult` as `saveAll()`
+bulk `INSERT` (one id each, none wasted). Returns the same `?SaveResult` as `upsertAll()`
 (`null` for an empty set). Records that already carry a PK are left untouched. Same
 non-atomic caveat as the single-record burn-free path. Throws `AttrecordException` if
 `$conflictKey` isn't a declared `#[UniqueKey]`.
@@ -1272,7 +1275,7 @@ $conn = new Connection(new PdoDbSession($pdo), new SqliteDialect());
 
 The SQLite dialect requires **SQLite >= 3.33** (2020-08), because its bulk upsert uses the
 `UPDATE … FROM` join form introduced in that release. Reading generated PKs back uses
-`RETURNING` (SQLite 3.35+), so a multi-row `saveAll()` returns every inserted id rather than only
+`RETURNING` (SQLite 3.35+), so a multi-row `upsertAll()` returns every inserted id rather than only
 the last rowid.
 
 `Connection`'s constructor runs each of the dialect's `connectionInitStatements()` on the fresh
@@ -1329,7 +1332,7 @@ $conn = new Connection(new RetryingDbSession(new PdoDbSession($pdo)), new PgsqlD
 ```
 
 Every method except `transactional()` delegates verbatim to the wrapped session, so
-`Record::transactional()` and `RecordSet::saveAll()` (which funnel through it) gain retries for
+`Record::transactional()` and `RecordSet::upsertAll()` (which funnel through it) gain retries for
 free. Only the **outermost** transaction is retried; a nested `transactional()` call runs inline
 in the outer one.
 
@@ -1463,7 +1466,7 @@ that has to be remembered everywhere.
 
 `Binary` / `VarBinary` columns hold raw bytes (e.g. an application-minted `BINARY(16)` /
 `BYTEA` UUID primary key). Reads and writes through the normal `save()` / `getOne()` /
-`find()` / `saveAll()` paths handle binary transparently on MySQL, PostgreSQL, and SQLite.
+`find()` / `upsertAll()` paths handle binary transparently on MySQL, PostgreSQL, and SQLite.
 
 The handling is **dialect-gated**, so it's invisible to MySQL consumers: on MySQL/MariaDB,
 binary values bind as ordinary byte strings exactly as any other string (so a custom

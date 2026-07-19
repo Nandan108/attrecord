@@ -14,12 +14,12 @@ final class RecordSetPgsqlTest extends PgsqlIntegrationTestCase
     use RecordSetCases;
 
     /** Backend-specific: the deadlock-safe bulk-upsert SQL uses PostgreSQL ON CONFLICT syntax. */
-    public function testBuildSaveAllSqlGeneratesPgsqlSyntax(): void
+    public function testBuildUpsertAllSqlGeneratesPgsqlSyntax(): void
     {
         $alice = $this->makeUser('Alice');
         $alice->name = 'Alice Updated';
 
-        $upsert = (new RecordSet([$alice]))->buildSaveAllSql();
+        $upsert = (new RecordSet([$alice]))->buildUpsertAllSql();
 
         $this->assertNotNull($upsert);
         $this->assertStringContainsString('INSERT INTO "attrecord_users"', $upsert->create);

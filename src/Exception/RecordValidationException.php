@@ -19,7 +19,7 @@ namespace Nandan108\Attrecord\Exception;
  *   - Inside {@see \Nandan108\Attrecord\Record::save()} just after `beforeSave()` —
  *     belt-and-braces guarantee that no invalid row ever reaches the database, even
  *     if a caller bypassed `set()` and assigned properties directly.
- *   - Inside {@see \Nandan108\Attrecord\RecordSet::saveAll()} in the same loop as
+ *   - Inside {@see \Nandan108\Attrecord\RecordSet::upsertAll()} in the same loop as
  *     `beforeSave()` for the same reason.
  *
  * @api

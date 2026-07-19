@@ -5,13 +5,13 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord;
 
 /**
- * Counts returned by RecordSet::saveAll().
+ * Counts returned by RecordSet::upsertAll().
  *
  * `inserted`    — rows written for the first time (plain INSERT for new records,
  *                 plus INSERT IGNORE / ON CONFLICT DO NOTHING for keyed records
  *                 that did not yet exist in the table).
  * `updated`     — existing rows whose columns were overwritten by the CASE UPDATE step.
- * `insertedIds` — auto-generated PKs for new (no-key) records inserted by saveAll().
+ * `insertedIds` — auto-generated PKs for new (no-key) records inserted by upsertAll().
  *                 Populated via RETURNING on PostgreSQL, or via lastInsertId() + sequential
  *                 range on MySQL/MariaDB. Empty for keyed records (their PKs were already set).
  *

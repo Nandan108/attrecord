@@ -201,7 +201,7 @@ abstract class Record
      * base implementation is a no-op so records without invariants need not override.
      *
      * Called automatically by {@see set()} (when `$validate` is true) and by
-     * {@see save()} and {@see RecordSet::saveAll()} after `beforeSave()`. Throw
+     * {@see save()} and {@see RecordSet::upsertAll()} after `beforeSave()`. Throw
      * {@see RecordValidationException} (or a subclass) on violation.
      *
      * @api
@@ -720,7 +720,7 @@ abstract class Record
     /**
      * Called just before every save (insert or update). Override to set timestamps, defaults, etc.
      *
-     * @internal called by Record::save() and RecordSet::saveAll(); not part of the public API
+     * @internal called by Record::save() and RecordSet::upsertAll(); not part of the public API
      */
     public function beforeSave(): void
     {
@@ -728,7 +728,7 @@ abstract class Record
 
     /**
      * Called after a successful write (INSERT or UPDATE). Not called for a clean save that wrote
-     * nothing. Fired by both {@see save()} and {@see RecordSet::saveAll()} (per record). Override to
+     * nothing. Fired by both {@see save()} and {@see RecordSet::upsertAll()} (per record). Override to
      * dispatch events, invalidate caches, etc.
      *
      * @param bool $wasInsert true if the write was an INSERT (new row), false if an UPDATE
@@ -745,9 +745,9 @@ abstract class Record
      * actually changes another column (a clean update does not bump it). No-op when neither
      * attribute is declared.
      *
-     * @internal called by save() and RecordSet::saveAll()
+     * @internal called by save() and RecordSet::upsertAll()
      *
-     * @psalm-suppress PossiblyUnusedMethod called by RecordSet::saveAll()
+     * @psalm-suppress PossiblyUnusedMethod called by RecordSet::upsertAll()
      */
     public function applyAutoTimestamps(bool $isInsert): void
     {
@@ -1545,7 +1545,7 @@ abstract class Record
 
     /**
      * Mark this record as clean — updates the snapshot from current property values.
-     * Called after RecordSet::saveAll() so dirty tracking reflects the written state.
+     * Called after RecordSet::upsertAll() so dirty tracking reflects the written state.
      *
      * @internal
      */

@@ -14,7 +14,7 @@ use PHPUnit\Framework\TestCase;
 /**
  * Covers the `Record::validate()` hook + its interaction with `Record::set()`.
  *
- * Save-path validation (triggered by `Record::save()` and `RecordSet::saveAll()`) is
+ * Save-path validation (triggered by `Record::save()` and `RecordSet::upsertAll()`) is
  * covered indirectly by the integration tests that exercise those paths.
  */
 final class RecordValidateTest extends TestCase

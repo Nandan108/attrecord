@@ -282,13 +282,13 @@ final class ColumnCastingTest extends TestCase
     }
 
     #[Test]
-    public function bulkSaveAllEmitsCastLiteral(): void
+    public function bulkUpsertAllEmitsCastLiteral(): void
     {
         $set = new \Nandan108\Attrecord\RecordSet([
             CastingRecord::newWith(['meta' => ['n' => 1]]),
             CastingRecord::newWith(['meta' => ['n' => 2]]),
         ]);
-        $set->saveAll();
+        $set->upsertAll();
 
         // String literals escape the JSON quotes in MySQL dialect output.
         $insert = $this->session->allCalls()[0]['sql'];

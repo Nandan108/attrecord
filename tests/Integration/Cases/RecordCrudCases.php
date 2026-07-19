@@ -371,7 +371,7 @@ trait RecordCrudCases
         }
 
         $found = UserRecord::find();
-        $found->bulkSet(['email' => 'shared@example.com'])->saveAll();
+        $found->bulkSet(['email' => 'shared@example.com'])->upsertAll();
 
         $reloaded = UserRecord::find();
         foreach ($reloaded as $r) {

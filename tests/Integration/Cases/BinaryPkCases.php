@@ -62,7 +62,7 @@ trait BinaryPkCases
         $this->assertSame('app-minted', $reloaded->name);
     }
 
-    public function testBulkSaveAllPreservesApplicationMintedIds(): void
+    public function testBulkUpsertAllPreservesApplicationMintedIds(): void
     {
         $uuids = [
             random_bytes(16),
@@ -79,7 +79,7 @@ trait BinaryPkCases
         }
         $set = new RecordSet($records);
 
-        $set->saveAll();
+        $set->upsertAll();
 
         // Each record keeps its application-minted ID; nothing is overwritten by
         // lastInsertId() arithmetic.
@@ -154,7 +154,7 @@ trait BinaryPkCases
         $set = new RecordSet([$collision, $other]);
 
         // A duplicate PK must surface as an error (append-only semantics), never be silently
-        // ignored or update the existing row the way saveAll()'s keyed-upsert path would.
+        // ignored or update the existing row the way upsertAll()'s keyed-upsert path would.
         $threw = false;
         try {
             $set->insertAll();

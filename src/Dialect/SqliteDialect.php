@@ -104,7 +104,7 @@ final class SqliteDialect implements SqlDialect
     public function insertReturningSuffix(string $quotedPkColumn): string
     {
         // Use RETURNING (SQLite 3.35+) rather than lastInsertId(): for a multi-row INSERT SQLite
-        // returns the *last* rowid, which would break RecordSet::saveAll()'s first-id-based range
+        // returns the *last* rowid, which would break RecordSet::upsertAll()'s first-id-based range
         // back-fill. RETURNING yields every generated id directly.
         return "RETURNING {$quotedPkColumn}";
     }

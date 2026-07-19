@@ -18,7 +18,7 @@ use Nandan108\Attrecord\Tests\Fixtures\UserRecord;
 use Nandan108\Attrecord\WhereClause;
 
 /**
- * Shared RecordSet cases (saveAll batch insert/upsert, deleteAll, with() eager loading,
+ * Shared RecordSet cases (upsertAll batch insert/upsert, deleteAll, with() eager loading,
  * ArrayAccess/Iterator/Countable), run against both MySQL and PostgreSQL.
  *
  * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
@@ -86,10 +86,10 @@ trait RecordSetCases
     }
 
     // -----------------------------------------------------------------
-    // saveAll — batch insert
+    // upsertAll — batch insert
     // -----------------------------------------------------------------
 
-    public function testSaveAllInsertsNewRecords(): void
+    public function testUpsertAllInsertsNewRecords(): void
     {
         $u1 = new UserRecord();
         $u1->name = 'Alice';
@@ -99,7 +99,7 @@ trait RecordSetCases
         $u3->name = 'Charlie';
 
         $set = new RecordSet([$u1, $u2, $u3]);
-        $result = $set->saveAll();
+        $result = $set->upsertAll();
 
         $this->assertNotNull($result);
         $this->assertSame(3, $result->inserted);
@@ -108,7 +108,7 @@ trait RecordSetCases
         $this->assertCount(3, $result->insertedIds);
         $this->assertSame([1, 2, 3], $result->insertedIds);
 
-        // saveAll() back-fills the generated auto-increment ids onto the records (like
+        // upsertAll() back-fills the generated auto-increment ids onto the records (like
         // save() does), in insertion order, as ints, and leaves them clean.
         $this->assertSame(1, $u1->id);
         $this->assertSame(2, $u2->id);
@@ -118,7 +118,21 @@ trait RecordSetCases
         $this->assertFalse($u3->isDirty());
     }
 
-    public function testSaveAllUpsertSkipsGeneratedColumns(): void
+    public function testDeprecatedSaveAllAliasDelegatesToUpsertAll(): void
+    {
+        $u = new UserRecord();
+        $u->name = 'AliasUser';
+
+        /** @psalm-suppress DeprecatedMethod — asserting the deprecated alias forwards to upsertAll() */
+        $result = (new RecordSet([$u]))->saveAll();
+
+        $this->assertNotNull($result);
+        $this->assertSame(1, $result->inserted);
+        $this->assertNotNull($u->id);
+        $this->assertNotNull(UserRecord::getOne($u->id));
+    }
+
+    public function testUpsertAllUpsertSkipsGeneratedColumns(): void
     {
         // Regression: a keyed (existing) record carries its DB-generated column hydrated from a
         // prior load. The bulk upsert must NOT write that column back — both MySQL (error 1906)
@@ -138,7 +152,7 @@ trait RecordSetCases
 
         // Bulk upsert of the keyed record after touching a writable column must succeed.
         $loaded->value = 'after';
-        $result = (new RecordSet([$loaded]))->saveAll();
+        $result = (new RecordSet([$loaded]))->upsertAll();
         $this->assertNotNull($result);
         $this->assertSame(1, $result->updated);
 
@@ -148,7 +162,7 @@ trait RecordSetCases
         $this->assertSame(7, $reloaded->scope_key, 'generated column still reflects its expression');
     }
 
-    public function testSaveAllUpsertClearsANullableColumnToNull(): void
+    public function testUpsertAllUpsertClearsANullableColumnToNull(): void
     {
         // Regression: clearing a nullable column back to null on a keyed record must persist. The upsert
         // column list previously included only non-null values, so a value cleared to null was absent
@@ -164,7 +178,7 @@ trait RecordSetCases
         $this->assertSame(3, $loaded->scope_id);
 
         $loaded->scope_id = null;
-        $result = (new RecordSet([$loaded]))->saveAll();
+        $result = (new RecordSet([$loaded]))->upsertAll();
         $this->assertNotNull($result);
         $this->assertSame(1, $result->updated);
 
@@ -174,10 +188,10 @@ trait RecordSetCases
         $this->assertSame(0, $reloaded->scope_key, 'the generated column reflects the now-null source');
     }
 
-    public function testSaveAllUpsertDoesNotClobberFieldsAnotherRecordSent(): void
+    public function testUpsertAllUpsertDoesNotClobberFieldsAnotherRecordSent(): void
     {
         // The controller shape: two DB rows, then a heterogeneous payload built as PARTIAL keyed
-        // records — each carrying a DIFFERENT subset of fields, no prior load. saveAll() must update
+        // records — each carrying a DIFFERENT subset of fields, no prior load. upsertAll() must update
         // each row's own fields and leave untouched any column that row never sent, even when a
         // *sibling* record in the same batch did send it (which pulls it into the batch column set).
         $a = new UserRecord();
@@ -200,7 +214,7 @@ trait RecordSetCases
         $pb->id = $b->id;
         $pb->name = 'Bob2';                  // B changes name only (email/active never sent)
 
-        (new RecordSet([$pa, $pb]))->saveAll();
+        (new RecordSet([$pa, $pb]))->upsertAll();
 
         $ra = UserRecord::getOne((int) $a->id);
         $rb = UserRecord::getOne((int) $b->id);
@@ -218,7 +232,7 @@ trait RecordSetCases
         $this->assertFalse($rb->active, 'B.active must survive — B never sent it');
     }
 
-    public function testSaveAllChunkedInsertsUpdatesAndBackfillsAcrossChunks(): void
+    public function testUpsertAllChunkedInsertsUpdatesAndBackfillsAcrossChunks(): void
     {
         // Seed two rows to update later.
         $a = new UserRecord();
@@ -249,7 +263,7 @@ trait RecordSetCases
         $pb->id = $b->id;
         $pb->name = 'Bob2';                 // B changes name only
 
-        $result = (new RecordSet([...$new, $pa, $pb]))->saveAll(chunkSize: 2);
+        $result = (new RecordSet([...$new, $pa, $pb]))->upsertAll(chunkSize: 2);
 
         $this->assertNotNull($result);
         $this->assertSame(3, $result->inserted);
@@ -276,7 +290,7 @@ trait RecordSetCases
         $this->assertSame(5, UserRecord::countWhere('id > 0'));
     }
 
-    public function testSaveAllChunkedInsideOpenTransactionThrows(): void
+    public function testUpsertAllChunkedInsideOpenTransactionThrows(): void
     {
         // Per-chunk commit can't bound the footprint inside an outer transaction, so it's rejected
         // rather than silently degrading to atomic (which would defeat the reason chunkSize was passed).
@@ -285,11 +299,11 @@ trait RecordSetCases
 
         $this->expectException(AttrecordException::class);
         UserRecord::transactional(static function () use ($u): void {
-            (new RecordSet([$u]))->saveAll(chunkSize: 1);
+            (new RecordSet([$u]))->upsertAll(chunkSize: 1);
         });
     }
 
-    public function testSaveAllChunkedInsideTransactionWithFlagIsAtomic(): void
+    public function testUpsertAllChunkedInsideTransactionWithFlagIsAtomic(): void
     {
         // With allowInTransactionChunking, the chunks run as separate statements inline in the outer
         // transaction — bounded statement size, still atomic. A committed outer txn persists all…
@@ -298,7 +312,7 @@ trait RecordSetCases
         $c2 = new UserRecord();
         $c2->name = 'C2';
         UserRecord::transactional(static function () use ($c1, $c2): void {
-            (new RecordSet([$c1, $c2]))->saveAll(chunkSize: 1, allowInTransactionChunking: true);
+            (new RecordSet([$c1, $c2]))->upsertAll(chunkSize: 1, allowInTransactionChunking: true);
         });
         $this->assertSame(2, UserRecord::countWhere('id > 0'), 'committed outer txn persists every chunk');
 
@@ -309,7 +323,7 @@ trait RecordSetCases
                 $r1->name = 'R1';
                 $r2 = new UserRecord();
                 $r2->name = 'R2';
-                (new RecordSet([$r1, $r2]))->saveAll(chunkSize: 1, allowInTransactionChunking: true);
+                (new RecordSet([$r1, $r2]))->upsertAll(chunkSize: 1, allowInTransactionChunking: true);
                 throw new \RuntimeException('force rollback');
             });
         } catch (\RuntimeException) {
@@ -317,7 +331,7 @@ trait RecordSetCases
         $this->assertSame(2, UserRecord::countWhere('id > 0'), 'rolled-back outer txn persists nothing');
     }
 
-    public function testSaveAllMarksRecordsClean(): void
+    public function testUpsertAllMarksRecordsClean(): void
     {
         $u1 = new UserRecord();
         $u1->name = 'Alice';
@@ -325,21 +339,21 @@ trait RecordSetCases
         $u2->name = 'Bob';
 
         $set = new RecordSet([$u1, $u2]);
-        $set->saveAll();
+        $set->upsertAll();
 
         $this->assertFalse($u1->isDirty());
         $this->assertFalse($u2->isDirty());
     }
 
-    public function testSaveAllReturnsNullWhenAllClean(): void
+    public function testUpsertAllReturnsNullWhenAllClean(): void
     {
         $u = $this->makeUser('Alice');
         $set = new RecordSet([$u]);
 
-        $this->assertNull($set->saveAll());
+        $this->assertNull($set->upsertAll());
     }
 
-    public function testSaveAllSkipsCleanRecords(): void
+    public function testUpsertAllSkipsCleanRecords(): void
     {
         $u1 = $this->makeUser('Alice');
         $u2 = new UserRecord();
@@ -347,13 +361,13 @@ trait RecordSetCases
 
         // Only u2 is dirty; u1 is persisted and clean.
         $set = new RecordSet([$u1, $u2]);
-        $set->saveAll();
+        $set->upsertAll();
 
-        // Total: Alice (from makeUser) + Bob (from saveAll) = 2.
+        // Total: Alice (from makeUser) + Bob (from upsertAll) = 2.
         $this->assertSame(2, UserRecord::countWhere('id > 0'));
     }
 
-    public function testSaveAllUpsertsKeyedRecords(): void
+    public function testUpsertAllUpsertsKeyedRecords(): void
     {
         $alice = $this->makeUser('Alice');
         $bob = $this->makeUser('Bob');
@@ -362,7 +376,7 @@ trait RecordSetCases
         $bob->name = 'Bob Updated';
 
         $set = new RecordSet([$alice, $bob]);
-        $result = $set->saveAll();
+        $result = $set->upsertAll();
 
         $this->assertNotNull($result);
         $this->assertSame(0, $result->inserted); // rows already existed — INSERT IGNORE skipped them
@@ -372,10 +386,10 @@ trait RecordSetCases
         $this->assertSame('Bob Updated', UserRecord::getOne((int) $bob->id)?->name);
     }
 
-    public function testSaveAllEmptySetReturnsNull(): void
+    public function testUpsertAllEmptySetReturnsNull(): void
     {
         $set = new RecordSet([]);
-        $this->assertNull($set->saveAll());
+        $this->assertNull($set->upsertAll());
     }
 
     // -----------------------------------------------------------------
@@ -828,11 +842,11 @@ trait RecordSetCases
         UserRecord::sumWhere('not_a_column');
     }
 
-    public function testSaveAllWithForceWritesCleanRecords(): void
+    public function testUpsertAllWithForceWritesCleanRecords(): void
     {
         $u = $this->makeUser('Once');
-        // Clean (just saved) — force makes saveAll write it anyway.
-        $result = (new RecordSet([$u]))->saveAll(force: true);
+        // Clean (just saved) — force makes upsertAll write it anyway.
+        $result = (new RecordSet([$u]))->upsertAll(force: true);
         $this->assertNotNull($result);
     }
 
@@ -929,7 +943,7 @@ trait RecordSetCases
         $this->assertSame($updatedAtInsert, $rec->updated_at, 'a clean save must not bump updated_at');
     }
 
-    public function testSaveAllSetsTimestamps(): void
+    public function testUpsertAllSetsTimestamps(): void
     {
         $set = new RecordSet([
             (function (): TimestampedRecord {
@@ -945,7 +959,7 @@ trait RecordSetCases
                 return $r;
             })(),
         ]);
-        $set->saveAll();
+        $set->upsertAll();
 
         foreach ($set as $r) {
             $this->assertInstanceOf(\DateTimeImmutable::class, $r->created_at);
@@ -1006,13 +1020,13 @@ trait RecordSetCases
         $this->assertContains('afterLoad', $loaded->hookLog);
     }
 
-    public function testSaveAllFiresAfterSavePerRecord(): void
+    public function testUpsertAllFiresAfterSavePerRecord(): void
     {
         $a = new TimestampedRecord();
         $a->name = 'a';
         $b = new TimestampedRecord();
         $b->name = 'b';
-        (new RecordSet([$a, $b]))->saveAll();
+        (new RecordSet([$a, $b]))->upsertAll();
 
         $this->assertTrue($a->lastAfterSaveWasInsert);
         $this->assertTrue($b->lastAfterSaveWasInsert);

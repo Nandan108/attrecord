@@ -224,7 +224,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * Apply the same attribute bulk-assignment to every record in the set.
      *
      * Useful for stamping a shared field (e.g. updated_at, updated_by_actor_id)
-     * across all records before a saveAll() call.
+     * across all records before a upsertAll() call.
      *
      * @param array<string, mixed> $attrs
      *
@@ -240,7 +240,19 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     }
 
     /**
-     * Save all dirty records using a deadlock-safe bulk strategy:
+     * @deprecated Renamed to {@see upsertAll()} — the verb-precise name (its keyed path upserts),
+     *             consistent with {@see upsertAllByUniqueKey()} and {@see insertAll()}. This alias
+     *             forwards verbatim; migrate call sites and it will be removed.
+     *
+     * @codeCoverageIgnore
+     */
+    public function saveAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false): ?SaveResult
+    {
+        return $this->upsertAll($force, $chunkSize, $allowInTransactionChunking);
+    }
+
+    /**
+     * Bulk **upsert** every dirty record in the set using a deadlock-safe strategy:
      *
      *  - New records (PK null): plain INSERT INTO … VALUES (…), (…)
      *  - Keyed records (PK set): 3-step pattern inside a transaction —
@@ -248,22 +260,12 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      *      2. SELECT pk … ORDER BY pk ASC FOR UPDATE  — deterministic lock order
      *      3. UPDATE … SET col = CASE pk WHEN … END  — applies changes
      *
-     * Notes:
-     *  - Clean (unchanged) records are skipped automatically.
-     *  - New records' auto-generated PKs are NOT assigned back to the PHP objects.
-     *    Use Record::save() when you need the new PK.
-     *  - After a successful call, all dirty records are marked clean.
+     * Clean (unchanged) records are skipped; after a successful call all dirty records are marked
+     * clean. New records' auto-increment PKs are back-filled onto the objects. For a **write-once**
+     * table use {@see insertAll()} instead — this method's keyed path upserts (INSERT IGNORE +
+     * update), which silently absorbs a duplicate-PK collision.
      *
-     * @param bool $force If true, save all records regardless of dirty state (useful for testing);
-     *
-     * @return SaveResult|null SaveResult with inserted/updated counts, or null if nothing to save
-     *
-     * @throws RecordSaveException on DB error
-     */
-    /**
-     * Bulk insert/upsert every record in the set (deadlock-safe 3-step upsert for keyed rows).
-     *
-     * @param bool     $force                      save even records that dirty-tracking reports as clean
+     * @param bool     $force                      upsert even records that dirty-tracking reports as clean
      * @param int|null $chunkSize                  when non-null, split the write into $chunkSize-row transactions that
      *                                             **commit independently** — bounds the lock/undo footprint for very
      *                                             large batches, at the cost of whole-set atomicity (a mid-run failure
@@ -277,18 +279,22 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      *                                             outer transaction — bounding statement size while staying **atomic**
      *                                             (the outer transaction's contract), with the lock/undo footprint left
      *                                             unbounded. No effect outside a transaction.
+     *
+     * @return SaveResult|null inserted/updated counts, or null if nothing was dirty
+     *
+     * @throws RecordSaveException on DB error
      */
-    public function saveAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false): ?SaveResult
+    public function upsertAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false): ?SaveResult
     {
         if (empty($this->records)) {
             return null;
         }
 
         $first = $this->records[0];
-        // saveAll() decides insert-vs-upsert per record at runtime, so it cannot be a reliable
+        // upsertAll() decides insert-vs-upsert per record at runtime, so it cannot be a reliable
         // append; append-only rows must go through insertAll(), which is insert-only.
         if ($first instanceof AppendOnly) {
-            throw AppendOnlyViolationException::forOperation($first::class, 'saveAll()');
+            throw AppendOnlyViolationException::forOperation($first::class, 'upsertAll()');
         }
         $schema = $first::schema();
         $conn = $first::connection();
@@ -325,10 +331,10 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                 // footprint stays unbounded. Fail loud rather than silently degrade to atomic;
                 // $allowInTransactionChunking is the explicit acknowledgement to chunk anyway.
                 throw new AttrecordException(
-                    'saveAll(chunkSize:) commits each chunk independently to bound the lock/undo '
+                    'upsertAll(chunkSize:) commits each chunk independently to bound the lock/undo '
                     .'footprint, which cannot happen inside an open transaction. Pass '
                     .'allowInTransactionChunking: true to chunk statements within the outer '
-                    .'transaction anyway (atomic, but the footprint stays unbounded), call saveAll() '
+                    .'transaction anyway (atomic, but the footprint stays unbounded), call upsertAll() '
                     .'without chunkSize for a single atomic statement, or run the chunked write '
                     .'outside the transaction.',
                 );
@@ -336,7 +342,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
             // When nested (with the flag), each chunk's transactional() runs inline in the outer
             // transaction — chunked statements, still atomic, footprint unbounded.
-            return $this->saveAllChunked($dirtyRecords, $chunkSize, $session, $schema, $dialect, $pk, $pkProp, $pkColumn, $returningSuffix, $pkAutoIncrement);
+            return $this->upsertAllChunked($dirtyRecords, $chunkSize, $session, $schema, $dialect, $pk, $pkProp, $pkColumn, $returningSuffix, $pkAutoIncrement);
         }
 
         // Default: the whole set in ONE transaction — all-or-nothing.
@@ -388,13 +394,13 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
     /**
      * Bulk **insert-only** writer: one plain `INSERT INTO … VALUES (…), (…)` covering every record
-     * in the set, in a single statement and one transaction. Unlike {@see saveAll()}, it applies
+     * in the set, in a single statement and one transaction. Unlike {@see upsertAll()}, it applies
      * **no upsert semantics** — a duplicate PK raises a DB error (wrapped in RecordSaveException)
      * rather than being silently ignored or overwritten, and no `SELECT … FOR UPDATE` is taken.
      *
      * This is the correct primitive for **append-only, client-minted-PK** tables — ledgers, event
      * logs, outboxes — where rows are written once and a PK collision is a bug to surface loudly,
-     * not a row to update. saveAll() cannot serve them: a record carrying a PK routes into its
+     * not a row to update. upsertAll() cannot serve them: a record carrying a PK routes into its
      * keyed-upsert path (INSERT IGNORE → FOR UPDATE → CASE-UPDATE), which both masks the collision
      * and takes locks the append never needed.
      *
@@ -480,7 +486,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
     /**
      * Return the single plain INSERT that {@see insertAll()} would execute for the current set,
-     * without touching the DB (test/inspection helper, mirroring {@see buildSaveAllSql()}). Built
+     * without touching the DB (test/inspection helper, mirroring {@see buildUpsertAllSql()}). Built
      * from current record state; hooks/timestamps/validation are NOT run. Returns null if the set
      * is empty or no insertable column carries a value.
      */
@@ -558,7 +564,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     }
 
     /**
-     * Chunked upsert with per-chunk commit (opt-in via {@see saveAll()}'s `$chunkSize`). Bounds the
+     * Chunked upsert with per-chunk commit (opt-in via {@see upsertAll()}'s `$chunkSize`). Bounds the
      * lock/undo footprint at `$chunkSize` rows per transaction; **not** all-or-nothing — a failure
      * part-way leaves already-committed chunks in place, so the operation must be safe to resume.
      *
@@ -570,7 +576,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      *
      * @param list<Record> $dirtyRecords already beforeSave()'d and validate()'d
      */
-    private function saveAllChunked(array $dirtyRecords, int $chunkSize, DbSession $session, TableSchema $schema, SqlDialect $dialect, string $pk, string $pkProp, ColumnDefinition $pkColumn, string $returningSuffix, bool $pkAutoIncrement): SaveResult
+    private function upsertAllChunked(array $dirtyRecords, int $chunkSize, DbSession $session, TableSchema $schema, SqlDialect $dialect, string $pk, string $pkProp, ColumnDefinition $pkColumn, string $returningSuffix, bool $pkAutoIncrement): SaveResult
     {
         if ($chunkSize < 1) {
             $chunkSize = \count($dirtyRecords);
@@ -657,14 +663,14 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * the rows that already exist.
      *
      * One `SELECT … WHERE (conflict cols) IN (…)` resolves the PKs of existing rows; those
-     * records get their PK set so {@see saveAll()} routes them through its keyed-upsert (which
+     * records get their PK set so {@see upsertAll()} routes them through its keyed-upsert (which
      * supplies the PK, so MySQL allocates no auto-increment value), while genuinely-new records
-     * (PK still null) go through saveAll's plain bulk INSERT (one AI value each, none wasted).
+     * (PK still null) go through upsertAll's plain bulk INSERT (one AI value each, none wasted).
      * Net: the loop-free, burn-free counterpart of an `INSERT … ON DUPLICATE KEY UPDATE` batch.
      *
      * Records that already carry a PK are left untouched (already keyed). The SELECT-then-write
      * is not atomic — a concurrent insert of the same conflict tuple would fall back to
-     * saveAll's INSERT-IGNORE path (one burned id) — acceptable for the low-concurrency
+     * upsertAll's INSERT-IGNORE path (one burned id) — acceptable for the low-concurrency
      * registry/config writes this targets.
      *
      * @param string $conflictKey name of a #[UniqueKey] declared on the record class
@@ -690,12 +696,12 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
         $this->resolveExistingPksByUniqueKey($schema, $conflictCols);
 
-        return $this->saveAll();
+        return $this->upsertAll();
     }
 
     /**
      * For each PK-less record whose conflict-key columns are all set, look up the existing
-     * row's PK (one batched `IN` query) and assign it, so a subsequent {@see saveAll()} updates
+     * row's PK (one batched `IN` query) and assign it, so a subsequent {@see upsertAll()} updates
      * rather than inserts. In-memory pairing; no per-record query.
      *
      * @param list<string> $conflictCols
@@ -714,7 +720,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
         foreach ($this->records as $record) {
             if (null !== $record->{$pkProp}) {
-                continue; // already keyed → saveAll handles it directly
+                continue; // already keyed → upsertAll handles it directly
             }
             $values = [];
             $allSet = true;
@@ -779,14 +785,24 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     }
 
     /**
-     * Return the upsert plan that saveAll() would execute for keyed (known-PK) records,
+     * @deprecated Renamed to {@see buildUpsertAllSql()} alongside {@see upsertAll()}. Forwards verbatim.
+     *
+     * @codeCoverageIgnore
+     */
+    public function buildSaveAllSql(bool $force = false): ?UpsertSql
+    {
+        return $this->buildUpsertAllSql($force);
+    }
+
+    /**
+     * Return the upsert plan that {@see upsertAll()} would execute for keyed (known-PK) records,
      * without touching the DB. Returns null if there are no dirty keyed records.
      *
      * Useful for test assertions on the generated SQL.
-     * New records (PK null) produce a plain INSERT executed separately by saveAll();
-     * use CapturingDbSession + saveAll() to inspect that statement.
+     * New records (PK null) produce a plain INSERT executed separately by upsertAll();
+     * use CapturingDbSession + upsertAll() to inspect that statement.
      */
-    public function buildSaveAllSql(bool $force = false): ?UpsertSql
+    public function buildUpsertAllSql(bool $force = false): ?UpsertSql
     {
         if (empty($this->records)) {
             return null;

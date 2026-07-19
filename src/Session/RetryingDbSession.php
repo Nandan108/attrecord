@@ -17,7 +17,7 @@ use Nandan108\Attrecord\DbSession;
  * ```
  *
  * Every method except {@see transactional()} delegates verbatim to the wrapped session, so
- * `Record::transactional()` and `RecordSet::saveAll()` gain retries automatically (they funnel
+ * `Record::transactional()` and `RecordSet::upsertAll()` gain retries automatically (they funnel
  * through `transactional()`). Nested transactional() calls run inline — only the outermost is
  * retried.
  *

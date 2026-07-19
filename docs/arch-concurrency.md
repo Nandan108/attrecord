@@ -147,7 +147,7 @@ Why a decorator (vs. baking retry into each session or into `Record::transaction
 
 - **Zero cost if unused** — don't wrap, don't pay; fully deletable for a minimal vendored copy.
   This is the "prunable / power-to-weight" requirement made literal.
-- **No API churn** — `Record::transactional()` and `RecordSet::saveAll()`'s internal
+- **No API churn** — `Record::transactional()` and `RecordSet::upsertAll()`'s internal
   `session->transactional()` gain retry automatically, because they already funnel through
   `transactional()`. The decorator intercepts once.
 - **Nesting composes** — inner `transactional()` calls see `inTransaction() === true` and run
@@ -208,7 +208,7 @@ interface SqlDialect {
   `INSERT … ON CONFLICT(cols) DO UPDATE SET x = excluded.x`, with no lock step.
 
 **Decision (D-1):** make `UpsertSql::$lock` **nullable** (like `$update`) and have
-`RecordSet::saveAll()` skip a null lock step. This lets any dialect do a single-statement upsert
+`RecordSet::upsertAll()` skip a null lock step. This lets any dialect do a single-statement upsert
 where safe (SQLite always; potentially an opt-in fast path for MySQL/PG small batches later).
 
 ## 6. Prunability / power-to-weight
@@ -285,5 +285,5 @@ belong in the library" test passing in practice.
 6. ✅ CHANGELOG entries under `[Unreleased]` (become `0.2.0` at release).
 
 Follow-on (post-0.2.0, tracked elsewhere): the multi-mask **join** upsert (`docs/arch-bulk-update-scaling.md`)
-and chunked `saveAll()` also landed in this release; and InvFlux's own session migration (§8) is
+and chunked `upsertAll()` also landed in this release; and InvFlux's own session migration (§8) is
 still owed when InvFlux adopts 0.2.0.

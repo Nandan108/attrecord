@@ -124,12 +124,22 @@ trait AppendOnlyCases
         $r->updateByWhere(WhereClause::match(['id' => 70]));
     }
 
-    public function testSaveAllThrows(): void
+    public function testUpsertAllThrows(): void
     {
         $a = new AppendOnlyLedgerRecord();
         $a->id = 80;
         $a->name = 'sa';
         $this->expectException(AppendOnlyViolationException::class);
+        (new RecordSet([$a]))->upsertAll();
+    }
+
+    public function testDeprecatedSaveAllAliasAlsoThrows(): void
+    {
+        $a = new AppendOnlyLedgerRecord();
+        $a->id = 81;
+        $a->name = 'sa-alias';
+        $this->expectException(AppendOnlyViolationException::class);
+        /** @psalm-suppress DeprecatedMethod — asserting the deprecated alias still enforces the guard */
         (new RecordSet([$a]))->saveAll();
     }
 

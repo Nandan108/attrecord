@@ -234,7 +234,7 @@ side already has a fully-formed value that knows how to serialize itself.
 ## Interaction with dirty tracking & bulk save
 
 Casting flows through the same single serialization funnel as every other write path
-(`save`, `updateWhere`, the unique-key/where update helpers, and bulk `saveAll`), so it
+(`save`, `updateWhere`, the unique-key/where update helpers, and bulk `upsertAll`), so it
 works uniformly with the rest of attrecord:
 
 - **Dirty tracking just works**, including for mutable value objects. Because attrecord
@@ -243,7 +243,7 @@ works uniformly with the rest of attrecord:
   falsely dirty — even for native `JSON` columns, whose stored bytes the database
   normalizes (key order, whitespace): the snapshot is taken from attrecord's own
   canonical encoding on both sides.
-- **Bulk `saveAll()`** applies casters on its literal-building path too, so casted
+- **Bulk `upsertAll()`** applies casters on its literal-building path too, so casted
   columns serialize identically whether saved individually or in a batch.
 
 ---

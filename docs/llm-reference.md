@@ -140,7 +140,7 @@ column to a single-column key.
 
 Auto-managed timestamps, typed `?\DateTimeImmutable`. `#[CreatedAt]` is set on INSERT only;
 `#[UpdatedAt]` is set on INSERT and bumped on UPDATE. At most one of each per Record. Applied in
-`save()`/`saveAll()` (bumped only when another column actually changed) **and** the bulk-UPDATE paths
+`save()`/`upsertAll()` (bumped only when another column actually changed) **and** the bulk-UPDATE paths
 `updateWhere()` / `updateByWhere()` / `updateByUniqueKey()` — in all cases unless the caller sets the
 column explicitly.
 
@@ -271,7 +271,7 @@ Construction / mutation:
 
 Lifecycle hooks (override; empty by default):
 - `beforeSave(): void` / `afterSave(bool $wasInsert): void` — around INSERT/UPDATE. `afterSave`
-  fires only on an actual write (single `save()` and per record in `saveAll()`), not a clean no-op.
+  fires only on an actual write (single `save()` and per record in `upsertAll()`), not a clean no-op.
 - `beforeDelete(): void` / `afterDelete(): void` — around single `delete()` (bulk `deleteAll()` skips them).
 - `afterLoad(): void` — after each hydration from a DB row.
 
@@ -320,15 +320,17 @@ Access / shaping:
 - `bulkSet(array $attrs): static` — assign attrs to every record (stages dirty); returns `$this`.
 
 Batch persistence (single SQL per operation — never a loop of queries):
-- `saveAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false): ?SaveResult`
-  — plain bulk `INSERT` for PK-null records; deadlock-safe 3-step upsert for keyed records
+- `upsertAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false): ?SaveResult`
+  (was `saveAll()` — kept as a `@deprecated` forwarding alias) — plain bulk `INSERT` for PK-null
+  records; deadlock-safe 3-step upsert for keyed records
   (INSERT-IGNORE/ON-CONFLICT-DO-NOTHING → `SELECT … FOR UPDATE` ascending-PK → join-based
   `UPDATE`). Back-fills auto-increment PKs onto new records (PG/SQLite via `RETURNING`, MySQL via
   `lastInsertId()` + sequential range). Returns `null` if nothing was dirty. `force: true` saves
   clean records too. **Runs the full per-record lifecycle — `beforeSave()` then `validate()` are
   called on every dirty record before the write** (exactly like `save()`), so it is *not* a raw
-  CASE-UPDATE that bypasses Record hooks: a per-row `save()` loop can be replaced by one `saveAll()`
-  with no loss of validation or timestamp-stamping. **Chunking:**
+  CASE-UPDATE that bypasses Record hooks: a per-row `save()` loop can be replaced by one `upsertAll()`
+  with no loss of validation or timestamp-stamping. For a **write-once** table use `insertAll()` —
+  `upsertAll`'s keyed path silently absorbs a duplicate PK. **Chunking:**
   - `$chunkSize === null` (default) — the whole set runs in **one transaction**, all-or-nothing
     (unchanged v0.1 behaviour).
   - `$chunkSize` int — split the write into `$chunkSize`-row slices that **commit independently**,
@@ -348,11 +350,11 @@ Batch persistence (single SQL per operation — never a loop of queries):
   duplicate PK raises a DB error (wrapped in `RecordSaveException`), never `INSERT IGNORE` and never a
   `SELECT … FOR UPDATE`. This is the correct primitive for **append-only, client-minted-PK** tables
   (ledgers, event logs, outboxes) where a row is written once and a PK collision is a bug to surface
-  loudly, not a row to update — `saveAll()` cannot serve them because a PK-carrying record routes into
+  loudly, not a row to update — `upsertAll()` cannot serve them because a PK-carrying record routes into
   its keyed-upsert path (which *masks* the collision and takes locks the append never needed). Inserts
   **all** records (no dirty filter — an appended row is written whole); runs `beforeSave()` +
   `#[CreatedAt]`/`#[UpdatedAt]` (as new — **every** record is a fresh insert, so `created_at` is stamped
-  even for a minted / non-null PK; do **not** gate this on `PK === null` as `saveAll()` does) +
+  even for a minted / non-null PK; do **not** gate this on `PK === null` as `upsertAll()` does) +
   `validate()` per record, then `markClean()` + `afterSave(isNew: true)`. Writes the PK column for minted PKs; auto-increment/generated columns are
   excluded and, on an auto-increment table, generated ids are back-filled in INSERT order (so the batch
   must be **homogeneous** — all PK-null on an AI table, or all PK-carrying on a minted-PK table; a mixed
@@ -360,7 +362,7 @@ Batch persistence (single SQL per operation — never a loop of queries):
   `null` for an empty set or when no insertable column carries a value. Replaces a per-row raw
   `INSERT` loop on immutable-ledger tables with one round-trip **without** inheriting upsert semantics.
 - `upsertAllByUniqueKey(string $conflictKey): ?SaveResult` — bulk burn-free upsert by unique key.
-- `buildSaveAllSql(bool $force = false): ?UpsertSql` — the SQL the upsert path would run (introspection/testing).
+- `buildUpsertAllSql(bool $force = false): ?UpsertSql` — the SQL the upsert path would run (introspection/testing); `buildSaveAllSql()` is a deprecated alias.
 - `buildInsertAllSql(): ?string` — the single plain INSERT `insertAll()` would run (introspection/testing; no hooks/DB).
 - `deleteAll(): int` — single `DELETE … WHERE pk IN (…)`.
 - `load(string ...$relationPaths): static` — load relations onto the set (dot-paths; multiple paths share prefixes, loaded once). `loadMissing(...)` skips records already having the relation (a to-one that resolved null still counts as loaded). `with(...)` is a deprecated alias for `load()`.
@@ -383,11 +385,11 @@ point — each throws `Exception\AppendOnlyViolationException`:
 | `save()` on an **existing** record (UPDATE) | ❌ throws |
 | `delete()`, `deleteAll()`, `deleteWhere()` | ❌ throws |
 | `updateWhere()`, `updateByWhere()` | ❌ throws |
-| `saveAll()`, `upsertAllByUniqueKey()` | ❌ throws — insert-vs-upsert is decided per-record at runtime, so neither is a reliable append; use `insertAll()` |
+| `upsertAll()` (and its deprecated `saveAll()` alias), `upsertAllByUniqueKey()` | ❌ throws — insert-vs-upsert is decided per-record at runtime, so neither is a reliable append; use `insertAll()` |
 
 The guard is a class-level check (`is_a(static::class, AppendOnly::class, true)`) plus, for `save()`,
 an `isNew()` check — so the insert path is never blocked. Enforcement lives at the write methods (not
-a static lint), so bulk paths (`saveAll`/`deleteAll`) and instance mutations are covered too.
+a static lint), so bulk paths (`upsertAll`/`deleteAll`) and instance mutations are covered too.
 
 ---
 
@@ -446,7 +448,7 @@ scalars is unaffected:
 
 **When you must wrap manually:** an ad-hoc `WhereClause` predicate on a binary column has no
 column metadata, so on PostgreSQL pass `new BinaryParam($bytes)` as the value. PK lookups
-(`getOne`, `delete`) and column writes (`save`, `saveAll`) wrap for you. On MySQL, a plain byte
+(`getOne`, `delete`) and column writes (`save`, `upsertAll`) wrap for you. On MySQL, a plain byte
 string works and wrapping is unnecessary (but harmless).
 
 ---
@@ -604,7 +606,7 @@ Semantics:
   DB).
 - Every other `DbSession` method (`exec`, `fetchAll`, `fetchOne`, `fetchScalar`, `lastInsertId`,
   `withAdvisoryLock`, `inTransaction`, `isDuplicateKeyError`, `isRetryableTransactionError`)
-  **delegates verbatim** to `$inner`. So `Record::transactional()` and `RecordSet::saveAll()`
+  **delegates verbatim** to `$inner`. So `Record::transactional()` and `RecordSet::upsertAll()`
   (which funnel through `transactional()`) gain retries automatically.
 
 ---
@@ -697,7 +699,7 @@ raw fragment with optional bound params for the WHERE/SET escape hatch.
 
 - **`save()` writes only dirty columns.** A clean `save()` is a no-op (`->_saved === false`)
   unless `force: true`.
-- **Never loop DB calls.** Use `saveAll()` / `insertAll()` (append-only, minted-PK) / `deleteAll()` /
+- **Never loop DB calls.** Use `upsertAll()` / `insertAll()` (append-only, minted-PK) / `deleteAll()` /
   `load()` / `whereIn()` — each is a single statement. Repository-style methods should be plural by default.
 - **Generated columns are never written** (INSERT or UPDATE) — every engine rejects a value for a
   `GENERATED ALWAYS` column.

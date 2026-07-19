@@ -10,7 +10,7 @@ use Nandan108\Attrecord\Schema\TableSchema;
 /**
  * Strategy for dialect-specific SQL generation.
  *
- * Used only in RecordSet::saveAll() where values are embedded directly in the SQL string.
+ * Used only in RecordSet::upsertAll() where values are embedded directly in the SQL string.
  * Single-record save() uses parameterised queries through DbSession instead.
  *
  * @api

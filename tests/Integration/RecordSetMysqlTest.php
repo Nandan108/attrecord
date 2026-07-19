@@ -14,12 +14,12 @@ final class RecordSetMysqlTest extends IntegrationTestCase
     use RecordSetCases;
 
     /** Backend-specific: the deadlock-safe bulk-upsert SQL uses MySQL syntax. */
-    public function testBuildSaveAllSqlGeneratesMysqlSyntax(): void
+    public function testBuildUpsertAllSqlGeneratesMysqlSyntax(): void
     {
         $alice = $this->makeUser('Alice');
         $alice->name = 'Alice Updated';
 
-        $upsert = (new RecordSet([$alice]))->buildSaveAllSql();
+        $upsert = (new RecordSet([$alice]))->buildUpsertAllSql();
 
         $this->assertNotNull($upsert);
         $this->assertStringContainsString('INSERT IGNORE INTO `attrecord_users`', $upsert->create);

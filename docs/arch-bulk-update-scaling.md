@@ -1,6 +1,6 @@
-# Design: large-batch `saveAll()` scaling — join-based UPDATE
+# Design: large-batch `upsertAll()` scaling — join-based UPDATE
 
-> **Status:** IMPLEMENTED in v0.2.0. Both halves are built: opt-in chunking (`saveAll(chunkSize:)`)
+> **Status:** IMPLEMENTED in v0.2.0. Both halves are built: opt-in chunking (`upsertAll(chunkSize:)`)
 > and the single multi-mask join emitter (`UpsertJoinBuilder`, replacing the CASE UPDATE in all three
 > dialects). This document is retained as the design rationale.
 > **Depends on:** the per-row dirty-scoping contract landed in v0.1.3
@@ -9,7 +9,7 @@
 
 ## 1. Problem
 
-`RecordSet::saveAll()` emits **one** statement set for the whole record set (no chunking), and its
+`RecordSet::upsertAll()` emits **one** statement set for the whole record set (no chunking), and its
 UPDATE step (step 3 of the deadlock-safe upsert) is a per-column `CASE`:
 
 ```sql
@@ -45,12 +45,12 @@ before chunking** — otherwise chunk A could lock pk 5 while chunk B (another t
 pk 3 then 5, re-introducing lock-order inversion across chunks. Sort → chunk → each chunk locks a
 contiguous ascending PK range. Chunk size configurable (default TBD — see §6).
 
-**Transaction scope — DECIDED.** `saveAll()` is currently **atomic** (whole set in one transaction).
+**Transaction scope — DECIDED.** `upsertAll()` is currently **atomic** (whole set in one transaction).
 Chunking to bound the lock/undo footprint (limit 2) *requires* committing per chunk, which drops
 whole-set atomicity — so the two are one decision, controlled by a **single argument**:
 
 ```php
-saveAll(bool $force = false, ?int $chunkSize = null): ?SaveResult
+upsertAll(bool $force = false, ?int $chunkSize = null): ?SaveResult
 ```
 
 - **`$chunkSize === null` (default)** — today's behaviour exactly: one atomic transaction, un-chunked,
@@ -63,8 +63,8 @@ saveAll(bool $force = false, ?int $chunkSize = null): ?SaveResult
     is physically impossible when an outer `transactional()` is active — the outer transaction holds
     every lock until *it* commits, so nested chunks would silently accumulate into it and the
     footprint benefit would vanish. Rather than degrade silently (reproducing the very lock/undo
-    blowup the caller chunked to avoid), `saveAll(chunkSize:)` throws an `AttrecordException` when
-    `$session->inTransaction()`. For a bulk write inside a transaction, call `saveAll()` without
+    blowup the caller chunked to avoid), `upsertAll(chunkSize:)` throws an `AttrecordException` when
+    `$session->inTransaction()`. For a bulk write inside a transaction, call `upsertAll()` without
     `$chunkSize` (single atomic statement), move it outside, or pass **`allowInTransactionChunking:
     true`** to opt into the chunked-but-atomic mode below.
 
@@ -73,7 +73,7 @@ The chunk-size argument's *presence* is the opt-in; a separate `chunkCommit` fla
 
 **Third mode — "chunk statements but keep one atomic transaction" — supported via
 `allowInTransactionChunking: true`.** This is the only way to atomically write a batch too large for
-a single SQL statement. It falls out for free: a chunked `saveAll` called *inside* an outer
+a single SQL statement. It falls out for free: a chunked `upsertAll` called *inside* an outer
 `transactional()` has each chunk's `transactional()` run **inline** (attrecord's sessions defer
 commit to the outermost call), so the chunks execute as separate, smaller statements within the one
 outer transaction — atomic, bounded statement size, footprint unbounded. Since the default rejects
