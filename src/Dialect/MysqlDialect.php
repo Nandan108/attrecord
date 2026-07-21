@@ -122,6 +122,12 @@ final class MysqlDialect implements SqlDialect
     }
 
     #[\Override]
+    public function supportsReturning(): bool
+    {
+        return false;
+    }
+
+    #[\Override]
     public function forUpdateClause(): string
     {
         return 'FOR UPDATE';

@@ -800,7 +800,25 @@ abstract class Record
         ];
     }
 
-    public function save(bool $force = false): static
+    /**
+     * @param list<string>|null      $ignoreColumns Column names to drop from the write. Purely
+     *                                              subtractive: on INSERT an omitted column lets its DB
+     *                                              default fire (nullable or not); on UPDATE it is left
+     *                                              out of the SET (untouched). `null`/`[]` = ignore
+     *                                              nothing. An unknown column name throws SchemaException.
+     * @param bool|list<string>|null $readBack      After the write, re-read column(s) from the DB and
+     *                                              hydrate this record so values it omitted (fired DB
+     *                                              defaults, generated columns) reflect their stored form
+     *                                              and the record reads back clean. `true` re-reads the
+     *                                              whole row (fires afterLoad()); `false` never; a
+     *                                              `list<string>` re-reads exactly those columns (targeted
+     *                                              patch, no afterLoad; unknown name throws
+     *                                              SchemaException); `null` = auto — read back the ignored
+     *                                              nullable-with-default column(s) plus any generated
+     *                                              column, and nothing on a plain save (so it costs
+     *                                              nothing on the default path).
+     */
+    public function save(bool $force = false, ?array $ignoreColumns = null, bool | array | null $readBack = null): static
     {
         // Append-only rows are write-once: a new-record save (INSERT) is a legitimate append,
         // but saving an existing record (UPDATE) is forbidden.
@@ -818,9 +836,27 @@ abstract class Record
         $session = $conn->session;
         $wasInsert = $this->_isNew;
 
+        // Validate the (column-name) ignore list up front so a typo fails loudly rather than
+        // silently writing a column the caller meant to drop.
+        $ignore = [];
+        foreach ($ignoreColumns ?? [] as $ignoredName) {
+            if (!isset($schema->columns[$ignoredName])) {
+                throw new SchemaException(
+                    sprintf('save(ignoreColumns:): unknown column "%s" on %s.', $ignoredName, static::class),
+                );
+            }
+            $ignore[$ignoredName] = true;
+        }
+
+        // Resolve (and validate) the read-back mode up front, so a bad explicit list throws before
+        // the write rather than after it; the 'auto' set is computed post-write from $writtenCols.
+        $readBackMode = self::resolveReadBackMode($readBack, $schema, static::class);
+
         $colNames = [];
         $setParts = [];
         $params = [];
+        /** @var array<string, true> $writtenCols columns this write actually emits (for auto read-back) */
+        $writtenCols = [];
         $bindBinaryAsLob = $dialect->bindsBinaryAsLob();
 
         foreach ($schema->columns as $colName => $col) {
@@ -828,6 +864,12 @@ abstract class Record
             // assigned by the DB on INSERT, and database-generated columns are computed
             // by the DB on every write (their PHP property is read-only).
             if ($col->autoIncrement || $col->isGenerated) {
+                continue;
+            }
+
+            // Caller-requested drop: subtract this column from the write. On INSERT its DB default
+            // fires; on UPDATE it stays out of the SET (untouched).
+            if (isset($ignore[$colName])) {
                 continue;
             }
 
@@ -859,6 +901,7 @@ abstract class Record
             $colNames[] = $qcol;
             $setParts[] = "{$qcol} = ?";
             $params[] = ColumnSerializer::toParam($value, $col, $bindBinaryAsLob);
+            $writtenCols[$colName] = true;
         }
 
         if (empty($colNames)) {
@@ -872,22 +915,38 @@ abstract class Record
         $pkProp = $schema->pkProp;
         $qpk = $dialect->quoteIdentifier($pk);
 
+        // Resolve the read-back columns now (auto uses the just-built $writtenCols), so a supporting
+        // dialect can fold them into the write's RETURNING clause rather than a second round-trip.
+        $readBackCols = 'auto' === $readBackMode
+            ? self::autoReadBackColumns($schema, $writtenCols, $wasInsert)
+            : $readBackMode;
+        $wantReadBack = null !== $readBackCols && [] !== $readBackCols;
+        $canReturn = $dialect->supportsReturning();
+        // Unquoted columns to fold into RETURNING: a targeted list, or every column for 'all'.
+        $returnCols = 'all' === $readBackCols
+            ? array_keys($schema->columns)
+            : (is_array($readBackCols) ? $readBackCols : []);
+
+        $returnedRow = null;
         try {
             if ($this->_isNew) {
                 $cols = implode(', ', $colNames);
                 $placeholders = implode(', ', array_fill(0, count($colNames), '?'));
                 $insertSql = "INSERT INTO {$qt} ({$cols}) VALUES ({$placeholders})";
-                $suffix = $dialect->insertReturningSuffix($qpk);
-                if ('' !== $suffix) {
+                if ($canReturn) {
+                    // PG/SQLite: one round-trip returns the generated PK plus any folded read-back
+                    // columns (a generated column returns its computed value).
+                    $names = array_values(array_unique([$pk, ...$returnCols]));
+                    $returning = 'RETURNING '.implode(', ', array_map($dialect->quoteIdentifier(...), $names));
                     /** @psalm-suppress MixedArgumentTypeCoercion */
-                    $row = $session->fetchOne("{$insertSql} {$suffix}", $params);
+                    $returnedRow = $session->fetchOne("{$insertSql} {$returning}", $params);
                     /** @psalm-suppress MixedAssignment, MixedArgument */
-                    $rawPk = $row[$pk]
+                    $rawPk = $returnedRow[$pk]
                         ?? throw new RecordSaveException('INSERT did not return a generated key.');
                     // Cast the returned key through the serializer: PostgreSQL returns a bigint
                     // PK as a string and a bytea PK as a stream resource — fromDb() normalises
                     // both to the property's PHP type (int / raw bytes).
-                    $this->{$pkProp} = ColumnSerializer::fromDb($rawPk, $schema->columns[$pk], $row ?? []);
+                    $this->{$pkProp} = ColumnSerializer::fromDb($rawPk, $schema->columns[$pk], $returnedRow ?? []);
                 } else {
                     /** @psalm-suppress MixedArgumentTypeCoercion */
                     $session->exec($insertSql, $params);
@@ -903,9 +962,16 @@ abstract class Record
             } else {
                 // Route the PK through the serializer so a binary PK is wrapped for binding.
                 $params[] = ColumnSerializer::toParam($this->{$pkProp} ?? null, $schema->columns[$pk], $bindBinaryAsLob);
-                $sql = "UPDATE {$qt} SET ".implode(', ', $setParts)." WHERE {$qpk} = ?";
-                /** @psalm-suppress MixedArgumentTypeCoercion */
-                $session->exec($sql, $params);
+                $updateSql = "UPDATE {$qt} SET ".implode(', ', $setParts)." WHERE {$qpk} = ?";
+                if ($canReturn && $wantReadBack) {
+                    // Fold the read-back into UPDATE … RETURNING (PG/SQLite) — no separate SELECT.
+                    $returning = 'RETURNING '.implode(', ', array_map($dialect->quoteIdentifier(...), $returnCols));
+                    /** @psalm-suppress MixedArgumentTypeCoercion */
+                    $returnedRow = $session->fetchOne("{$updateSql} {$returning}", $params);
+                } else {
+                    /** @psalm-suppress MixedArgumentTypeCoercion */
+                    $session->exec($updateSql, $params);
+                }
             }
         } catch (RecordSaveException $e) {
             throw $e;
@@ -917,7 +983,100 @@ abstract class Record
         $this->_saved = true;
         $this->afterSave($wasInsert);
 
+        if ($wantReadBack) {
+            // Prefer the row RETURNING already handed us; otherwise (MySQL/MariaDB) a scoped SELECT.
+            $row = $returnedRow;
+            if (null === $row && !$canReturn) {
+                /** @psalm-suppress MixedArgumentTypeCoercion */
+                $row = $session->fetchOne(
+                    self::buildSelectSql($schema->tableName, $pk, false),
+                    [ColumnSerializer::toParam($this->{$pkProp} ?? null, $schema->columns[$pk], $bindBinaryAsLob)],
+                );
+            }
+            if (null !== $row) {
+                if ('all' === $readBackCols) {
+                    $this->hydrateFromRow($row);
+                } else {
+                    /** @var list<string> $readBackCols */
+                    $this->patchColumnsFromRow($row, $readBackCols);
+                }
+            }
+        }
+
         return $this;
+    }
+
+    /**
+     * Resolve the read-back *mode* for {@see save()} and the bulk writers, validating an explicit
+     * column list up front (before the write). Explicit forms win; `null` defers to auto:
+     *
+     *  - `false`        → `null`   (skip — no read-back)
+     *  - `true`         → `'all'`  (re-read the whole row via {@see hydrateFromRow()}; fires afterLoad())
+     *  - `list<string>` → those columns (validated; unknown name throws SchemaException); `[]` → `null`
+     *  - `null`         → `'auto'` — resolved post-write by {@see autoReadBackColumns()} from the
+     *                     columns actually written
+     *
+     * @internal shared with {@see RecordSet::insertAll()} / {@see RecordSet::upsertAll()}
+     *
+     * @param bool|list<string>|null $readBack
+     *
+     * @return 'all'|'auto'|list<string>|null
+     *
+     * @throws SchemaException when an explicit column list names a column not on the record
+     */
+    public static function resolveReadBackMode(bool | array | null $readBack, TableSchema $schema, string $recordClass): string | array | null
+    {
+        if (false === $readBack) {
+            return null;
+        }
+        if (true === $readBack) {
+            return 'all';
+        }
+        if (is_array($readBack)) {
+            foreach ($readBack as $name) {
+                if (!isset($schema->columns[$name])) {
+                    throw new SchemaException(sprintf('readBack: unknown column "%s" on %s.', $name, $recordClass));
+                }
+            }
+
+            return [] === $readBack ? null : $readBack;
+        }
+
+        return 'auto';
+    }
+
+    /**
+     * The columns auto read-back should refresh, given the columns a write actually wrote: every
+     * column attrecord's own write decisions left diverged from the in-memory value. On INSERT that
+     * is each omitted column the DB populates from a `default`/`defaultExpr` (an ignored column, or a
+     * NOT-NULL null-with-default omitted by the insert rule); on any write it is the generated columns
+     * a written column feeds into (see {@see TableSchema::generatedColumnsAffectedBy()}). Empty when
+     * nothing diverged, so auto is a no-op on a write that populated no DB-side value.
+     *
+     * @internal shared with the bulk writers
+     *
+     * @param array<string, true> $writtenCols columns this write actually wrote
+     *
+     * @return list<string>
+     */
+    public static function autoReadBackColumns(TableSchema $schema, array $writtenCols, bool $wasInsert): array
+    {
+        $cols = [];
+        if ($wasInsert) {
+            foreach ($schema->columns as $name => $col) {
+                if (isset($writtenCols[$name]) || $col->autoIncrement || $col->isGenerated) {
+                    continue;
+                }
+                if (null !== $col->default || null !== $col->defaultExpr) {
+                    $cols[$name] = true;
+                }
+            }
+        }
+        foreach ($schema->generatedColumnsAffectedBy($writtenCols) as $generatedName) {
+            $cols[$generatedName] = true;
+        }
+
+        return array_keys($cols);
     }
 
     /**
@@ -1528,6 +1687,34 @@ abstract class Record
 
         $this->_isNew = false;
         $this->afterLoad();
+    }
+
+    /**
+     * Patch a subset of columns onto this record from a raw DB row — updates each named column's
+     * property AND its dirty-snapshot entry (so it reads back clean) while touching nothing else,
+     * and does NOT fire afterLoad(). This is the targeted post-write read-back primitive; contrast
+     * {@see hydrateFromRow()}, which reloads the whole row and fires afterLoad().
+     *
+     * @param array<string, scalar|null> $row
+     * @param list<string>               $colNames
+     *
+     * @internal used by RecordSet's bulk read-back and save()'s read-back
+     */
+    public function patchColumnsFromRow(array $row, array $colNames): void
+    {
+        $schema = static::schema();
+
+        foreach ($colNames as $colName) {
+            $col = $schema->columns[$colName];
+            $raw = $row[$colName] ?? null;
+            /** @psalm-suppress MixedAssignment */
+            $value = ColumnSerializer::fromDb($raw, $col, $row);
+            $this->{$col->propertyName} = $value;
+            // Snapshot the same way hydrateFromRow() does (canonical form for casted/binary columns).
+            $this->_snapshot[$colName] = (null !== $col->caster || $col->isBinary)
+                ? ColumnSerializer::toSnapshotString($value, $col)
+                : (null !== $raw ? (string) $raw : null);
+        }
     }
 
     /**

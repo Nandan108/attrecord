@@ -90,6 +90,11 @@ final class RecordingInitDialect implements SqlDialect
         return $quotedPkColumn;
     }
 
+    public function supportsReturning(): bool
+    {
+        return false;
+    }
+
     /**
      * @param list<string>       $columnNames
      * @param list<list<string>> $rows

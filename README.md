@@ -46,12 +46,12 @@ attrecord's *typed, schema-authoring, contention-hardened* design diverges from 
 | Pattern | Active Record | Active Record | Data Mapper (identity map + unit of work) | Active Record |
 | Framework coupling | Standalone, framework-agnostic | Standalone, framework-agnostic | Standalone (Symfony-friendly) | Laravel-native (standalone via `illuminate/database`) |
 | Runtime dependencies | **None** | **None** (PDO ext) | Several (DBAL, …) | `illuminate/*` |
-| Install footprint (`vendor/`) | **1 package · ~300 KB** | 1 package · ~280 KB | ~22 packages · ~1.6 MB | ~26 packages · ~2.3 MB |
+| Install footprint (`vendor/`) | **1 package · ~370 KB** | 1 package · ~280 KB | ~22 packages · ~1.6 MB | ~26 packages · ~2.3 MB |
 | Schema mapping | PHP 8 attributes only | **Introspected from the live DB** (no code mapping) | Attributes / XML / YAML | Conventions (schema lives in migrations, not the model) |
 | Column access / typing | **Typed properties** (psalm-checked) | Dynamic `__get`/`__set` (magic) | Typed properties | Dynamic `$attributes` (magic) |
 | Schema changes | Emits `CREATE TABLE` from attributes; forward migrations via a planned opt-in add-on (not in core) | None — the DB *is* the source; no DDL/migrations | `doctrine/migrations` | Laravel migrations |
 | Query building | Finders + immutable `WhereClause` + `RawSql` | Dynamic finders + string conditions (`find_by_x`) | DQL + QueryBuilder | Fluent query builder |
-| Relations | Imperative `load()` / `loadMissing()`; incl. polymorphic, **many-to-many**, **has-many-through**; no lazy graph / identity map | `has_many`/`belongs_to`/HABTM/`through` + eager loading | Full graph: lazy loading, identity map, UoW | Full: lazy + eager, rich relationship set |
+| Relations | has-many / belongs-to / has-one, polymorphic, many-to-many, has-many-through; **imperative** batched eager loading (`load()` / `loadMissing()`, no N+1) — no lazy graph, identity map, or UoW | `has_many` / `belongs_to` / HABTM / `through` + eager loading | Full graph: lazy loading, identity map, UoW | Full: lazy + eager, rich relationship set |
 | Backends | MySQL/MariaDB, PostgreSQL, SQLite | MySQL, PostgreSQL, SQLite | Many (via DBAL) | MySQL, PostgreSQL, SQLite, SQL Server |
 | Driver / session layer | Pluggable `DbSession`: PDO, **mysqli, wpdb** + retry decorator | **PDO only** | DBAL | PDO |
 | Bulk writes | First-class: deadlock-safe multi-mask upsert, per-chunk-commit chunking, burn-free upsert | None (row-at-a-time `save()`) | Batch inserts; bulk `UPDATE`/`DELETE` via DQL | `upsert()` / bulk `insert()` |
@@ -60,7 +60,7 @@ attrecord's *typed, schema-authoring, contention-hardened* design diverges from 
 
 <sub>attrecord and php-activerecord ship as a **single package with zero runtime dependencies**
 (php-activerecord needs a PDO driver extension); their figures are shipped source — attrecord `src/`
-≈ 300 KB at v0.3.0 (only ~130 KB is code; the rest is docblocks), php-activerecord `lib/` ≈ 280 KB.
+≈ 370 KB at v0.7.0 (only ~160 KB is code; the rest is docblocks), php-activerecord `lib/` ≈ 280 KB.
 Doctrine and Eloquent figures are a full `composer require --prefer-dist` install **including their
 dependency trees** (`doctrine/orm`, `illuminate/database`); counts and sizes vary by version.</sub>
 

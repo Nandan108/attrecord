@@ -4,6 +4,49 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-07-21 — Selective write read-back
+
+### Added
+
+- **`ignoreColumns` on the write paths** — a **subtractive** column-name denylist: the listed
+  columns are dropped from the generated statement. On **INSERT** their DB default fires — this is
+  the only way to reach a **nullable** column's default (a nullable column is otherwise always
+  written as its `null`). On **UPDATE** they stay out of the `SET`, so a column can be preserved or
+  an `#[UpdatedAt]` bump skipped. `null` / `[]` ignore nothing (unchanged behavior); an unknown
+  column name throws `SchemaException`. Added to:
+  - `Record::save(bool $force = false, ?array $ignoreColumns = null)`
+  - `RecordSet::insertAll(?array $ignoreColumns = null)` — dropped from the bulk INSERT column list.
+  - `RecordSet::upsertAll(..., ?array $ignoreColumns = null)` — dropped from both the plain-INSERT
+    branch and the keyed-upsert membership / `SET` (the introspection helpers
+    `buildInsertAllSql()` / `buildUpsertAllSql()` take it too).
+
+  The single/bulk **unique-key** upsert paths (`upsertByUniqueKey()` / `upsertAllByUniqueKey()`) are
+  unchanged.
+- **`readBack` on the write paths** — `save(..., bool|list<string>|null $readBack = null)`,
+  `insertAll(..., $readBack)`, `upsertAll(..., $readBack)`. After the write, re-read column(s) and
+  re-hydrate the record(s) so values the write omitted — an ignored column whose DB default fired, or
+  a generated column — reflect their stored form and the record reads back **clean** (fixes both
+  properties and the dirty-snapshot). Without it, dropping a defaulted column leaves the record
+  marked clean while its in-memory value diverges from the DB, so a later plain `save()` could
+  clobber the default. Forms: **`true`** reloads the whole row (via `hydrateFromRow()`, fires
+  `afterLoad()`); **`false`** never; a **`list<string>`** reads back exactly those columns — a
+  targeted patch (no `afterLoad`; unknown name throws `SchemaException`), for naming a
+  trigger-populated column auto can't infer; **`null` = auto** reads back every column attrecord's
+  own write left diverged — on INSERT each omitted default-bearing column whose DB default fired (an
+  ignored one, or a NOT-NULL null-with-default dropped by the insert rule), and on any write the
+  **generated** columns a written column feeds into (found by scanning each generated column's
+  expression for the column names it references, transitively) — and **nothing** when nothing
+  diverged, so it costs nothing on that path. This closes the divergence the NOT-NULL-default insert
+  rule introduced in 0.6.1 (record clean but its in-memory value stale) by default, without a
+  read-back on writes that populated no DB-side value. `save()` re-reads by PK; the bulk writers use a
+  single batched `IN` query (ascending-PK, binary-safe), never a per-row loop.
+- **`save()` folds its read-back into the write's `RETURNING` clause** on dialects that support it
+  (PostgreSQL, SQLite), scoped to exactly the diverged columns (`… RETURNING <pk>, <cols>` on INSERT;
+  `UPDATE … RETURNING <cols>`) — the value comes back in the **same round-trip**, no separate SELECT.
+  MySQL/MariaDB (no `UPDATE … RETURNING`) fall back to the scoped `SELECT`. New dialect capability
+  `SqlDialect::supportsReturning()`. The bulk writers still use their single batched read-back
+  `SELECT` (folding it into the multi-step keyed upsert is left for later).
+
 ## [0.6.1] - 2026-07-21
 
 ### Fixed

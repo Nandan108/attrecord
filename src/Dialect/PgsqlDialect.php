@@ -99,6 +99,12 @@ final class PgsqlDialect implements SqlDialect
     }
 
     #[\Override]
+    public function supportsReturning(): bool
+    {
+        return true;
+    }
+
+    #[\Override]
     public function forUpdateClause(): string
     {
         return 'FOR UPDATE';

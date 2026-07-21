@@ -276,15 +276,42 @@ Lifecycle hooks (override; empty by default):
 - `afterLoad(): void` — after each hydration from a DB row.
 
 Persistence:
-- `save(bool $force = false): static` — INSERT if new, else UPDATE of **dirty** columns only.
-  Returns `$this`; `->_saved` (bool) reflects whether a write occurred. `force` writes even if clean.
+- `save(bool $force = false, ?array $ignoreColumns = null, bool|list<string>|null $readBack = null): static` — INSERT
+  if new, else UPDATE of **dirty** columns only. Returns `$this`; `->_saved` (bool) reflects whether
+  a write occurred. `force` writes even if clean.
   **Insert / DB-default rule:** on INSERT, a **NOT-NULL** column left `null` that declares a `default`
   or `defaultExpr` is **omitted** from the statement so the DB default fires — never emitted as an
   explicit `NULL` (which would violate the constraint; a caller cannot have meant it). A **nullable**
-  column is left alone: its `null` is written, because there `null` may genuinely mean "store NULL"
-  rather than "use the default". `upsertAll()`/`insertAll()` behave the same (an all-null column is
-  dropped from the bulk column list), so the DB default fires there too. The value is **not**
-  back-filled onto the in-memory record — re-read to observe it.
+  column is written as `NULL` by default (its `null` is taken as "store NULL"). `upsertAll()` /
+  `insertAll()` behave the same for NOT-NULL columns (an all-null column is dropped from the bulk
+  column list). The value is **not** back-filled onto the in-memory record — re-read to observe it.
+  **`ignoreColumns`** (column names) is **subtractive** — drop these from the write: on INSERT their
+  DB default fires (this is the *only* way to reach a **nullable** column's default), on UPDATE they
+  stay out of the `SET` (untouched, so you can preserve a field or skip an `#[UpdatedAt]` bump).
+  `null`/`[]` = ignore nothing; an unknown column name throws `SchemaException`. Also accepted by the
+  bulk writers `RecordSet::insertAll(?array $ignoreColumns)` and
+  `upsertAll(..., ?array $ignoreColumns)` (same subtractive semantics — dropped from both the bulk
+  INSERT and the keyed-upsert membership/`SET`). Not taken by the single/bulk **unique-key** upsert
+  paths (`upsertByUniqueKey()` / `upsertAllByUniqueKey()`).
+  **`readBack`** (`bool|list<string>|null`) closes the divergence a dropped-defaulted column would
+  otherwise leave (record marked clean, but its in-memory value ≠ the DB's fired default — a later
+  plain `save()` could clobber it) by re-reading after the write. Forms: **`true`** = reload the
+  whole row via `hydrateFromRow()` (fixes properties **and** snapshot; fires `afterLoad()`);
+  **`false`** = never; **`list<string>`** = read back exactly those columns — a *targeted patch*
+  (updates only those properties + their snapshot, no `afterLoad`; unknown name throws
+  `SchemaException`) — use it to name a trigger-populated column auto can't infer;
+  **`null` = auto** = every column attrecord's *own* write decisions left diverged: on INSERT each
+  **omitted default-bearing** column (an ignored one, or a NOT-NULL null-with-default dropped by the
+  insert rule) whose DB default fired; and on any write the **generated** columns a written column
+  feeds into — determined by scanning each generated column's expression for the (known) column names
+  it references, transitively (`TableSchema::generatedColumnsAffectedBy()`). So on INSERT every
+  generated column refreshes; on UPDATE only those whose source changed. Auto reads back **nothing**
+  when nothing diverged (a plain write that populated no DB-side value), so it costs nothing on that
+  path. **`save()` folds the read-back into the write's `RETURNING`** (scoped to the diverged columns)
+  on PostgreSQL/SQLite (`SqlDialect::supportsReturning()`) — same round-trip, no separate query — and
+  falls back to a scoped `SELECT` on MySQL/MariaDB. `insertAll()`/`upsertAll()` use **one batched `IN`
+  query** for the read-back (ascending-PK, binary-safe), never a per-row loop. Same
+  `bool|list<string>|null $readBack` argument on `insertAll()` / `upsertAll()`.
 - `delete(): void` — DELETE by PK; marks record new again.
 - `upsertByUniqueKey(string $conflictKey, array $updateColumns, bool $preserveAutoIncrement = false): void`
   — single-row upsert on a unique key. `preserveAutoIncrement: true` uses a SELECT-then-write
@@ -327,7 +354,7 @@ Access / shaping:
 - `bulkSet(array $attrs): static` — assign attrs to every record (stages dirty); returns `$this`.
 
 Batch persistence (single SQL per operation — never a loop of queries):
-- `upsertAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false): ?SaveResult`
+- `upsertAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false, ?array $ignoreColumns = null, bool|list<string>|null $readBack = null): ?SaveResult`
   (was `saveAll()` — kept as a `@deprecated` forwarding alias) — plain bulk `INSERT` for PK-null
   records; deadlock-safe 3-step upsert for keyed records
   (INSERT-IGNORE/ON-CONFLICT-DO-NOTHING → `SELECT … FOR UPDATE` ascending-PK → join-based
@@ -352,7 +379,7 @@ Batch persistence (single SQL per operation — never a loop of queries):
     `$allowInTransactionChunking: true`, which chunks the statements inline within the outer
     transaction: smaller statements, still **atomic** (the outer transaction's contract), but the
     lock/undo footprint stays unbounded. No effect outside a transaction.
-- `insertAll(): ?SaveResult` — bulk **insert-only** writer: **one plain `INSERT INTO … VALUES (…), (…)`**
+- `insertAll(?array $ignoreColumns = null, bool|list<string>|null $readBack = null): ?SaveResult` — bulk **insert-only** writer: **one plain `INSERT INTO … VALUES (…), (…)`**
   covering every record, in a single statement + one transaction. **No upsert semantics** — a
   duplicate PK raises a DB error (wrapped in `RecordSaveException`), never `INSERT IGNORE` and never a
   `SELECT … FOR UPDATE`. This is the correct primitive for **append-only** tables (ledgers, event

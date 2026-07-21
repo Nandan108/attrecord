@@ -110,6 +110,13 @@ final class SqliteDialect implements SqlDialect
     }
 
     #[\Override]
+    public function supportsReturning(): bool
+    {
+        // SQLite 3.35+ supports RETURNING on INSERT and UPDATE.
+        return true;
+    }
+
+    #[\Override]
     public function forUpdateClause(): string
     {
         // SQLite serializes writers at the database level — there is no per-row lock clause.

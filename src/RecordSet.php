@@ -8,6 +8,7 @@ use Nandan108\Attrecord\Enum\RelationType;
 use Nandan108\Attrecord\Exception\AppendOnlyViolationException;
 use Nandan108\Attrecord\Exception\AttrecordException;
 use Nandan108\Attrecord\Exception\RecordSaveException;
+use Nandan108\Attrecord\Exception\SchemaException;
 use Nandan108\Attrecord\Schema\ColumnDefinition;
 use Nandan108\Attrecord\Schema\RelationDefinition;
 use Nandan108\Attrecord\Schema\TableSchema;
@@ -265,26 +266,34 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * table use {@see insertAll()} instead — this method's keyed path upserts (INSERT IGNORE +
      * update), which silently absorbs a duplicate-PK collision.
      *
-     * @param bool     $force                      upsert even records that dirty-tracking reports as clean
-     * @param int|null $chunkSize                  when non-null, split the write into $chunkSize-row transactions that
-     *                                             **commit independently** — bounds the lock/undo footprint for very
-     *                                             large batches, at the cost of whole-set atomicity (a mid-run failure
-     *                                             leaves earlier chunks committed, so the operation must be resumable).
-     *                                             When null (default) the whole set runs in ONE transaction, all-or-nothing.
-     * @param bool     $allowInTransactionChunking when a chunked write is issued *inside* an open
-     *                                             transaction, per-chunk commit is impossible (the outer transaction
-     *                                             holds every lock until it commits) and would silently leave the
-     *                                             footprint unbounded, so it is rejected by default. Pass true to chunk
-     *                                             anyway: the chunks run as separate, smaller statements within the
-     *                                             outer transaction — bounding statement size while staying **atomic**
-     *                                             (the outer transaction's contract), with the lock/undo footprint left
-     *                                             unbounded. No effect outside a transaction.
+     * @param bool                   $force                      upsert even records that dirty-tracking reports as clean
+     * @param int|null               $chunkSize                  when non-null, split the write into $chunkSize-row transactions that
+     *                                                           **commit independently** — bounds the lock/undo footprint for very
+     *                                                           large batches, at the cost of whole-set atomicity (a mid-run failure
+     *                                                           leaves earlier chunks committed, so the operation must be resumable).
+     *                                                           When null (default) the whole set runs in ONE transaction, all-or-nothing.
+     * @param bool                   $allowInTransactionChunking when a chunked write is issued *inside* an open
+     *                                                           transaction, per-chunk commit is impossible (the outer transaction
+     *                                                           holds every lock until it commits) and would silently leave the
+     *                                                           footprint unbounded, so it is rejected by default. Pass true to chunk
+     *                                                           anyway: the chunks run as separate, smaller statements within the
+     *                                                           outer transaction — bounding statement size while staying **atomic**
+     *                                                           (the outer transaction's contract), with the lock/undo footprint left
+     *                                                           unbounded. No effect outside a transaction.
+     * @param list<string>|null      $ignoreColumns              column names to drop from the write: an ignored column is left out of
+     *                                                           the INSERT (its DB default fires) and out of the UPDATE SET (kept as
+     *                                                           stored). `null`/`[]` ignore nothing. Unknown name throws SchemaException.
+     * @param bool|list<string>|null $readBack                   re-read the written rows and hydrate them in place (see
+     *                                                           {@see Record::save()}); `true` full row, `false` never, a
+     *                                                           `list<string>` those columns, `null` = auto (ignored
+     *                                                           nullable-with-default + generated). One batched `IN` query, not per row.
      *
      * @return SaveResult|null inserted/updated counts, or null if nothing was dirty
      *
      * @throws RecordSaveException on DB error
+     * @throws SchemaException     when $ignoreColumns or $readBack names a column not on the record
      */
-    public function upsertAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false): ?SaveResult
+    public function upsertAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false, ?array $ignoreColumns = null, bool | array | null $readBack = null): ?SaveResult
     {
         if (empty($this->records)) {
             return null;
@@ -297,6 +306,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             throw AppendOnlyViolationException::forOperation($first::class, 'upsertAll()');
         }
         $schema = $first::schema();
+        $ignore = self::buildIgnoreSet($ignoreColumns, $schema, $first::class, 'upsertAll');
+        // Validate the read-back mode up front; the 'auto' set is computed post-write.
+        $readBackMode = Record::resolveReadBackMode($readBack, $schema, $first::class);
         $conn = $first::connection();
         $dialect = $conn->dialect;
         $session = $conn->session;
@@ -314,14 +326,39 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             return null;
         }
 
+        // Columns actually changed on the UPDATE (keyed) records — captured before markClean() wipes
+        // dirty state — so auto read-back can tell which generated columns those updates recompute.
+        /** @var array<string, true> $updateDirty */
+        $updateDirty = [];
         foreach ($dirtyRecords as $r) {
             $r->beforeSave();
             /** @psalm-suppress MixedPropertyFetch */
-            $r->applyAutoTimestamps(null === $r->{$pkProp});
+            $isInsert = null === $r->{$pkProp};
+            $r->applyAutoTimestamps($isInsert);
             $r->validate();
+            if (!$isInsert) {
+                foreach ($r->dirtyFields() as $dirtyCol => $_ignored) {
+                    if (!isset($ignore[$dirtyCol])) {
+                        $updateDirty[$dirtyCol] = true;
+                    }
+                }
+            }
         }
 
         $dirtyRecords = array_values($dirtyRecords);
+
+        // New (PK-null) records, captured BEFORE the write back-fills their ids — needed both for the
+        // id back-fill (atomic path) and to compute the auto read-back set for either path.
+        /** @var list<Record> $insertedRecords */
+        $insertedRecords = array_values(array_filter(
+            $dirtyRecords,
+            static fn (Record $r): bool => null === $r->{$pkProp},
+        ));
+
+        // Resolve the read-back columns now, while insert/update state is still known.
+        $readBackCols = 'auto' === $readBackMode
+            ? $this->bulkAutoReadBackColumns($insertedRecords, $updateDirty, $schema, $ignore)
+            : $readBackMode;
 
         // Opt-in chunked path: many independent transactions, bounded footprint, not atomic.
         if (null !== $chunkSize) {
@@ -342,19 +379,17 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
             // When nested (with the flag), each chunk's transactional() runs inline in the outer
             // transaction — chunked statements, still atomic, footprint unbounded.
-            return $this->upsertAllChunked($dirtyRecords, $chunkSize, $session, $schema, $dialect, $pk, $pkProp, $pkColumn, $returningSuffix, $pkAutoIncrement);
+            $chunkedResult = $this->upsertAllChunked($dirtyRecords, $chunkSize, $session, $schema, $dialect, $pk, $pkProp, $pkColumn, $returningSuffix, $pkAutoIncrement, $ignore);
+            if (null !== $readBackCols && [] !== $readBackCols) {
+                $this->readBackAll($dirtyRecords, $session, $schema, $dialect, $pk, $pkProp, $readBackCols);
+            }
+
+            return $chunkedResult;
         }
 
-        // Default: the whole set in ONE transaction — all-or-nothing.
-        // New (auto-increment) records in the exact order buildPlan() will INSERT them, so the
-        // DB-generated ids can be written back onto the right objects afterwards.
-        /** @var list<Record> $insertedRecords */
-        $insertedRecords = array_values(array_filter(
-            $dirtyRecords,
-            static fn (Record $r): bool => null === $r->{$pkProp},
-        ));
-
-        $plan = $this->buildPlan($dirtyRecords, $schema, $dialect);
+        // Default: the whole set in ONE transaction — all-or-nothing. $insertedRecords (above) is in
+        // the exact order buildPlan() will INSERT, so DB-generated ids back-fill onto the right objects.
+        $plan = $this->buildPlan($dirtyRecords, $schema, $dialect, $ignore);
         if (null === $plan['insert'] && null === $plan['upsert']) {
             return null;
         }
@@ -389,7 +424,39 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             $record->afterSave(isset($insertedSet[spl_object_id($record)]));
         }
 
+        if (null !== $readBackCols && [] !== $readBackCols) {
+            $this->readBackAll($dirtyRecords, $session, $schema, $dialect, $pk, $pkProp, $readBackCols);
+        }
+
         return new SaveResult($counts['inserted'], $counts['updated'], $insertedIds);
+    }
+
+    /**
+     * The auto read-back columns for a bulk write: from the newly-inserted records, the omitted
+     * default + generated columns (via {@see Record::autoReadBackColumns()} over their written set);
+     * unioned with the generated columns the UPDATE (keyed) records' changed columns recompute.
+     * Empty when nothing diverged, so auto stays a no-op on a pure update of plain columns.
+     *
+     * @param list<Record>        $insertedRecords the PK-null records (captured before the write)
+     * @param array<string, true> $updateDirty     columns changed by the keyed (UPDATE) records
+     * @param array<string, true> $ignore
+     *
+     * @return list<string>
+     */
+    private function bulkAutoReadBackColumns(array $insertedRecords, array $updateDirty, TableSchema $schema, array $ignore): array
+    {
+        $cols = [];
+        if (!empty($insertedRecords)) {
+            $insertWritten = $this->bulkInsertWrittenColumns($insertedRecords, $schema, $ignore);
+            foreach (Record::autoReadBackColumns($schema, $insertWritten, true) as $c) {
+                $cols[$c] = true;
+            }
+        }
+        foreach ($schema->generatedColumnsAffectedBy($updateDirty) as $c) {
+            $cols[$c] = true;
+        }
+
+        return array_keys($cols);
     }
 
     /**
@@ -413,12 +480,20 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * PK-carrying on a minted-PK table; a mixed batch on an auto-increment table misaligns the
      * back-fill and is unsupported).
      *
+     * @param list<string>|null      $ignoreColumns column names to drop from the INSERT so their DB
+     *                                              default fires; unknown name throws SchemaException
+     * @param bool|list<string>|null $readBack      re-read the inserted rows and hydrate them (see
+     *                                              {@see Record::save()}); `true` full row, `false` never,
+     *                                              a `list<string>` those columns, `null` = auto (ignored
+     *                                              nullable-with-default + generated columns)
+     *
      * @return SaveResult|null inserted count (updated is always 0), or null if the set is empty
      *                         or no insertable column carries a value
      *
      * @throws RecordSaveException on DB error (including a duplicate-PK collision)
+     * @throws SchemaException     when $ignoreColumns or $readBack names a column not on the record
      */
-    public function insertAll(): ?SaveResult
+    public function insertAll(?array $ignoreColumns = null, bool | array | null $readBack = null): ?SaveResult
     {
         if (empty($this->records)) {
             return null;
@@ -427,6 +502,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $records = $this->records;
         $first = $records[0];
         $schema = $first::schema();
+        $ignore = self::buildIgnoreSet($ignoreColumns, $schema, $first::class, 'insertAll');
+        // Validate the read-back mode up front; the 'auto' set is computed post-write.
+        $readBackMode = Record::resolveReadBackMode($readBack, $schema, $first::class);
         $conn = $first::connection();
         $dialect = $conn->dialect;
         $session = $conn->session;
@@ -444,7 +522,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             $r->validate();
         }
 
-        $insertSql = $this->buildBulkInsertSql($records, $schema, $dialect);
+        $insertSql = $this->buildBulkInsertSql($records, $schema, $dialect, $ignore);
         if (null === $insertSql) {
             return null;
         }
@@ -481,6 +559,13 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             $record->afterSave(true);
         }
 
+        $readBackCols = 'auto' === $readBackMode
+            ? Record::autoReadBackColumns($schema, $this->bulkInsertWrittenColumns($records, $schema, $ignore), true)
+            : $readBackMode;
+        if (null !== $readBackCols && [] !== $readBackCols) {
+            $this->readBackAll($records, $session, $schema, $dialect, $pk, $pkProp, $readBackCols);
+        }
+
         return new SaveResult($counts['inserted'], 0, $insertedIds);
     }
 
@@ -489,19 +574,23 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * without touching the DB (test/inspection helper, mirroring {@see buildUpsertAllSql()}). Built
      * from current record state; hooks/timestamps/validation are NOT run. Returns null if the set
      * is empty or no insertable column carries a value.
+     *
+     * @param list<string>|null $ignoreColumns column names to drop from the INSERT
      */
-    public function buildInsertAllSql(): ?string
+    public function buildInsertAllSql(?array $ignoreColumns = null): ?string
     {
         if (empty($this->records)) {
             return null;
         }
 
         $first = $this->records[0];
+        $schema = $first::schema();
 
         return $this->buildBulkInsertSql(
             $this->records,
-            $first::schema(),
+            $schema,
             $first::connection()->dialect,
+            self::buildIgnoreSet($ignoreColumns, $schema, $first::class, 'insertAll'),
         );
     }
 
@@ -574,9 +663,10 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * docs/arch-concurrency.md). Assumes the PK's PHP sort order matches the database's `ORDER BY`
      * (true for integer and binary PKs).
      *
-     * @param list<Record> $dirtyRecords already beforeSave()'d and validate()'d
+     * @param list<Record>        $dirtyRecords already beforeSave()'d and validate()'d
+     * @param array<string, true> $ignore       column names to drop from the write
      */
-    private function upsertAllChunked(array $dirtyRecords, int $chunkSize, DbSession $session, TableSchema $schema, SqlDialect $dialect, string $pk, string $pkProp, ColumnDefinition $pkColumn, string $returningSuffix, bool $pkAutoIncrement): SaveResult
+    private function upsertAllChunked(array $dirtyRecords, int $chunkSize, DbSession $session, TableSchema $schema, SqlDialect $dialect, string $pk, string $pkProp, ColumnDefinition $pkColumn, string $returningSuffix, bool $pkAutoIncrement, array $ignore = []): SaveResult
     {
         if ($chunkSize < 1) {
             $chunkSize = \count($dirtyRecords);
@@ -617,7 +707,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                 }
             }
 
-            $plan = $this->buildPlan($chunk, $schema, $dialect);
+            $plan = $this->buildPlan($chunk, $schema, $dialect, $ignore);
             if (null === $plan['insert'] && null === $plan['upsert']) {
                 continue;
             }
@@ -801,8 +891,10 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * Useful for test assertions on the generated SQL.
      * New records (PK null) produce a plain INSERT executed separately by upsertAll();
      * use CapturingDbSession + upsertAll() to inspect that statement.
+     *
+     * @param list<string>|null $ignoreColumns column names to drop from the write
      */
-    public function buildUpsertAllSql(bool $force = false): ?UpsertSql
+    public function buildUpsertAllSql(bool $force = false, ?array $ignoreColumns = null): ?UpsertSql
     {
         if (empty($this->records)) {
             return null;
@@ -821,9 +913,113 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             return null;
         }
 
-        $plan = $this->buildPlan($dirty, $schema, $conn->dialect);
+        $ignore = self::buildIgnoreSet($ignoreColumns, $schema, $first::class, 'upsertAll');
+        $plan = $this->buildPlan($dirty, $schema, $conn->dialect, $ignore);
 
         return $plan['upsert'];
+    }
+
+    /**
+     * Validate a caller-supplied column-name ignore list against the schema and return it as a
+     * lookup set. Mirrors `Record::save(ignoreColumns:)` — an unknown name throws up front so a
+     * typo fails loudly rather than silently writing a column the caller meant to drop.
+     *
+     * @param list<string>|null $ignoreColumns
+     *
+     * @return array<string, true>
+     */
+    private static function buildIgnoreSet(?array $ignoreColumns, TableSchema $schema, string $recordClass, string $method): array
+    {
+        $ignore = [];
+        foreach ($ignoreColumns ?? [] as $name) {
+            if (!isset($schema->columns[$name])) {
+                throw new SchemaException(
+                    sprintf('%s(ignoreColumns:): unknown column "%s" on %s.', $method, $name, $recordClass),
+                );
+            }
+            $ignore[$name] = true;
+        }
+
+        return $ignore;
+    }
+
+    /**
+     * Re-read the given (already-written, PK-carrying) records from the DB in one `IN` query and
+     * hydrate them in place, so columns the write omitted — an ignored column whose DB default
+     * fired, plus DB-generated columns — reflect their stored values and the records read back
+     * clean (fires afterLoad() per record). Records are matched to rows by **ascending-PK order**
+     * (same ordering the chunked path uses), which also sidesteps PostgreSQL's single-read bytea
+     * stream (the PK is never consumed before hydrateFromRow()).
+     *
+     * @param list<Record>       $records
+     * @param 'all'|list<string> $rbCols  'all' = full-row reload; a list = patch only those columns
+     */
+    private function readBackAll(array $records, DbSession $session, TableSchema $schema, SqlDialect $dialect, string $pk, string $pkProp, string | array $rbCols): void
+    {
+        $pkCol = $schema->columns[$pk];
+        $withPk = array_values(array_filter($records, static fn (Record $r): bool => null !== $r->{$pkProp}));
+        if (empty($withPk)) {
+            return;
+        }
+        // Ascending-PK order to zip 1:1 with the `ORDER BY pk ASC` rows below (mirrors
+        // upsertAllChunked()'s ordering assumption: PHP PK sort == the database's).
+        /** @psalm-suppress MixedArgument */
+        usort($withPk, static fn (Record $a, Record $b): int => $a->{$pkProp} <=> $b->{$pkProp});
+
+        $bindBinaryAsLob = $dialect->bindsBinaryAsLob();
+        $params = array_map(
+            static fn (Record $r): mixed => ColumnSerializer::toParam($r->{$pkProp}, $pkCol, $bindBinaryAsLob),
+            $withPk,
+        );
+        $qt = $dialect->quoteIdentifier($schema->tableName);
+        $qpk = $dialect->quoteIdentifier($pk);
+        $placeholders = implode(', ', array_fill(0, count($params), '?'));
+
+        /** @psalm-suppress MixedArgumentTypeCoercion */
+        $rows = $session->fetchAll("SELECT * FROM {$qt} WHERE {$qpk} IN ({$placeholders}) ORDER BY {$qpk} ASC", $params);
+
+        foreach ($rows as $i => $row) {
+            if (isset($withPk[$i])) {
+                /** @psalm-suppress MixedArgument */
+                if ('all' === $rbCols) {
+                    $withPk[$i]->hydrateFromRow($row);
+                } else {
+                    $withPk[$i]->patchColumnsFromRow($row, $rbCols);
+                }
+            }
+        }
+    }
+
+    /**
+     * The columns a bulk INSERT of these records actually writes: non-auto-increment, non-generated,
+     * non-ignored columns that carry a non-null value on at least one record (an all-null column is
+     * dropped so its DB default fires). Key order follows the schema. Shared by
+     * {@see buildBulkInsertSql()} and the auto read-back computation.
+     *
+     * @param list<Record>        $records
+     * @param array<string, true> $ignore
+     *
+     * @return array<string, true>
+     */
+    private function bulkInsertWrittenColumns(array $records, TableSchema $schema, array $ignore): array
+    {
+        $candidates = array_filter(
+            $schema->columns,
+            fn ($col) => !$col->autoIncrement && !$col->isGenerated,
+        );
+        $candidates = array_diff_key($candidates, $ignore);
+
+        $present = [];
+        foreach ($candidates as $colName => $col) {
+            foreach ($records as $record) {
+                if (($record->{$col->propertyName} ?? null) !== null) {
+                    $present[$colName] = true;
+                    break;
+                }
+            }
+        }
+
+        return $present;
     }
 
     /**
@@ -837,31 +1033,17 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      *
      * Shared by {@see buildPlan()} (new/PK-null records) and {@see insertAll()} (all records).
      *
-     * @param list<Record> $records
+     * @param list<Record>        $records
+     * @param array<string, true> $ignore  column names to drop from the INSERT (their DB default fires)
      */
-    private function buildBulkInsertSql(array $records, TableSchema $schema, SqlDialect $dialect): ?string
+    private function buildBulkInsertSql(array $records, TableSchema $schema, SqlDialect $dialect, array $ignore = []): ?string
     {
         if (empty($records)) {
             return null;
         }
 
-        $candidates = array_filter(
-            $schema->columns,
-            fn ($col) => !$col->autoIncrement && !$col->isGenerated,
-        );
-
-        $presentCols = [];
-        foreach ($records as $record) {
-            foreach ($candidates as $colName => $col) {
-                if (($record->{$col->propertyName} ?? null) !== null) {
-                    $presentCols[$colName] = true;
-                }
-            }
-        }
-        $colNames = array_values(array_filter(
-            array_keys($candidates),
-            fn ($n) => isset($presentCols[$n]),
-        ));
+        $presentCols = $this->bulkInsertWrittenColumns($records, $schema, $ignore);
+        $colNames = array_keys($presentCols);
 
         if (empty($colNames)) {
             return null;
@@ -886,11 +1068,13 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     /**
      * Separate dirty records by PK presence and build the SQL plan for each group.
      *
-     * @param list<Record> $dirty
+     * @param list<Record>        $dirty
+     * @param array<string, true> $ignore column names to drop from the write (INSERT default fires;
+     *                                    UPDATE leaves the column untouched)
      *
      * @return array{insert: ?string, upsert: ?UpsertSql}
      */
-    private function buildPlan(array $dirty, TableSchema $schema, SqlDialect $dialect): array
+    private function buildPlan(array $dirty, TableSchema $schema, SqlDialect $dialect, array $ignore = []): array
     {
         $pk = $schema->pk;
         $pkProp = $schema->pkProp;
@@ -900,7 +1084,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $upsert = null;
 
         // Plain INSERT for new (auto-increment PK) records — no upsert semantics needed
-        $insert = $this->buildBulkInsertSql($noKeyRecords, $schema, $dialect);
+        $insert = $this->buildBulkInsertSql($noKeyRecords, $schema, $dialect, $ignore);
 
         // Deadlock-safe 3-step upsert for records with a known PK
         if (!empty($keyedRecords)) {
@@ -915,7 +1099,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             foreach ($keyedRecords as $ri => $record) {
                 $recordDirty[$ri] = $dirty = $record->dirtyFields();
                 foreach ($schema->columns as $colName => $col) {
-                    if ($col->isGenerated) {
+                    // Generated columns are DB-computed; ignored columns are caller-dropped. The PK
+                    // is never dropped here (it seeds $presentCols above) so the upsert stays keyed.
+                    if ($col->isGenerated || isset($ignore[$colName])) {
                         continue;
                     }
                     $isDirty = isset($dirty[$colName]);

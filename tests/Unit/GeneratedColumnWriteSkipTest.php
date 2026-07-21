@@ -44,7 +44,7 @@ final class GeneratedColumnWriteSkipTest extends TestCase
         $record->scope_id = 42;
         $record->scope_key = 99; // would-be tampered value — must not reach the DB
         $record->value = 'sku-1';
-        $record->save();
+        $record->save(readBack: false); // isolate the write SQL; skip the generated-column read-back SELECT
 
         $sql = (string) $this->session->lastSql();
 
@@ -64,7 +64,7 @@ final class GeneratedColumnWriteSkipTest extends TestCase
         ]);
         $record->scope_id = 100;
         $record->value = 'sku-2';
-        $record->save();
+        $record->save(readBack: false); // isolate the write SQL; skip the generated-column read-back SELECT
 
         $sql = (string) $this->session->lastSql();
 
@@ -72,5 +72,46 @@ final class GeneratedColumnWriteSkipTest extends TestCase
         $this->assertStringContainsString('`scope_id` = ?', $sql);
         $this->assertStringContainsString('`value` = ?', $sql);
         $this->assertStringNotContainsString('`scope_key` = ?', $sql);
+    }
+
+    public function testUpdateOfNonSourceColumnIssuesNoReadBack(): void
+    {
+        $record = DdlGeneratedColumnRecord::hydrateFromArray([
+            'id'        => 7,
+            'scope_id'  => 42,
+            'scope_key' => 42,
+            'value'     => 'sku-1',
+        ]);
+        $this->session->reset();
+
+        // scope_key = COALESCE(scope_id, 0); this UPDATE touches only `value`, so no generated
+        // column is affected → auto read-back resolves to an empty set → no trailing SELECT.
+        $record->value = 'sku-2';
+        $record->save();
+
+        $sqls = array_map(static fn (array $c): string => $c['sql'], $this->session->allCalls());
+        $this->assertCount(1, $sqls, 'only the UPDATE runs — no read-back SELECT');
+        $this->assertStringContainsString('UPDATE `attrecord_gen_col`', $sqls[0]);
+    }
+
+    public function testUpdateOfSourceColumnIssuesReadBack(): void
+    {
+        $record = DdlGeneratedColumnRecord::hydrateFromArray([
+            'id'        => 7,
+            'scope_id'  => 42,
+            'scope_key' => 42,
+            'value'     => 'sku-1',
+        ]);
+        $this->session->reset();
+
+        // Updating scope_id (a dependency of the generated scope_key) recomputes it, so the UPDATE
+        // is followed by a read-back SELECT.
+        $record->scope_id = 100;
+        $record->save();
+
+        $sqls = array_map(static fn (array $c): string => $c['sql'], $this->session->allCalls());
+        $this->assertCount(2, $sqls, 'UPDATE then a read-back SELECT for the affected generated column');
+        $this->assertStringContainsString('UPDATE `attrecord_gen_col`', $sqls[0]);
+        $this->assertStringContainsString('SELECT', $sqls[1]);
     }
 }

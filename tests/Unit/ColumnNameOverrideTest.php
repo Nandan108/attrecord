@@ -122,7 +122,7 @@ final class ColumnNameOverrideTest extends TestCase
         $record = new ColumnNameOverrideRecord();
         $record->customerId = 7;
         $record->externalRef = 'WOO-1';
-        $record->save();
+        $record->save(readBack: false); // isolate the write SQL; created_at's default would trigger a read-back SELECT
 
         $sql = (string) $this->session->lastSql();
 

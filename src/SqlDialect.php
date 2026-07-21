@@ -78,6 +78,14 @@ interface SqlDialect
     public function insertReturningSuffix(string $quotedPkColumn): string;
 
     /**
+     * Whether this engine supports a `RETURNING` clause on INSERT **and** UPDATE, letting a write
+     * fold its read-back (fired defaults, generated columns) into the write statement instead of a
+     * separate SELECT. True for PostgreSQL and SQLite (3.35+); false for MySQL/MariaDB, which have no
+     * `RETURNING` (MariaDB has it for INSERT/DELETE only, not UPDATE — so it stays on the SELECT path).
+     */
+    public function supportsReturning(): bool;
+
+    /**
      * The row-locking clause for a `SELECT … FOR UPDATE` read.
      *
      * Return `'FOR UPDATE'` for engines with row-level pessimistic locking (MySQL/MariaDB,

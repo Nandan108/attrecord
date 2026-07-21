@@ -37,9 +37,23 @@ final class CapturingDbSession implements DbSession
 
     private int $transactionDepth = 0;
 
+    /** @var list<array<string, scalar|null>|null> canned rows returned by fetchOne(), in order */
+    private array $fetchOneQueue = [];
+
     public function setNextInsertId(int $id): void
     {
         $this->nextInsertId = $id;
+    }
+
+    /**
+     * Enqueue a row for the next fetchOne() call (e.g. a RETURNING/SELECT read-back row). Calls
+     * beyond the queue return null, as before.
+     *
+     * @param array<string, scalar|null>|null $row
+     */
+    public function queueFetchOne(?array $row): void
+    {
+        $this->fetchOneQueue[] = $row;
     }
 
     // -----------------------------------------------------------------
@@ -98,7 +112,7 @@ final class CapturingDbSession implements DbSession
     {
         $this->record($sql, $params);
 
-        return null;
+        return [] === $this->fetchOneQueue ? null : array_shift($this->fetchOneQueue);
     }
 
     #[\Override]

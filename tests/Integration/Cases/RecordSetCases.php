@@ -50,6 +50,16 @@ trait RecordSetCases
         return $u;
     }
 
+    /**
+     * Read a column property dynamically so psalm can't narrow it to the literal last assigned —
+     * the value is mutated in place by a read-back (save()/insertAll()/upsertAll()), which psalm
+     * does not model.
+     */
+    private static function propValue(object $record, string $name): mixed
+    {
+        return $record->{$name};
+    }
+
     private function makePost(int $userId, string $title): PostRecord
     {
         $p = new PostRecord();
@@ -969,6 +979,279 @@ trait RecordSetCases
             $reloaded->note,
             'nullable-with-default column stores the explicit NULL, not the default',
         );
+    }
+
+    public function testSaveIgnoreColumnsLetsNullableDefaultFireOnInsert(): void
+    {
+        // save(ignoreColumns:) drops a column from the INSERT so its DB default fires — even for a
+        // *nullable* column, and even when the property holds a value (the ignore wins).
+        $rec = new InsertDefaultRecord();
+        $rec->status = 'shipped';               // non-ignored → still written verbatim
+        $rec->note = 'should-be-dropped';       // ignored → the DB default takes its place
+        $rec->save(ignoreColumns: ['note']);
+
+        $this->assertNotNull($rec->id);
+        $reloaded = InsertDefaultRecord::getOne($rec->id);
+        $this->assertNotNull($reloaded);
+        $this->assertSame('shipped', $reloaded->status, 'non-ignored column is written normally');
+        $this->assertSame('fallback', $reloaded->note, 'ignored nullable column took its DB default');
+    }
+
+    public function testSaveIgnoreColumnsLeavesColumnUntouchedOnUpdate(): void
+    {
+        $rec = new InsertDefaultRecord();
+        $rec->status = 'a';
+        $rec->note = 'original';
+        $rec->save();
+        $this->assertNotNull($rec->id);
+        $id = $rec->id;
+
+        $rec->status = 'b';
+        $rec->note = 'changed';                  // dirty, but ignored on this save
+        $rec->save(ignoreColumns: ['note']);
+
+        $reloaded = InsertDefaultRecord::getOne($id);
+        $this->assertNotNull($reloaded);
+        $this->assertSame('b', $reloaded->status, 'non-ignored dirty column is updated');
+        $this->assertSame('original', $reloaded->note, 'ignored column is left untouched — keeps its stored value');
+    }
+
+    public function testSaveIgnoreColumnsRejectsUnknownColumn(): void
+    {
+        $this->expectException(\Nandan108\Attrecord\Exception\SchemaException::class);
+        $rec = new InsertDefaultRecord();
+        $rec->save(ignoreColumns: ['no_such_column']);
+    }
+
+    public function testInsertAllIgnoreColumnsLetsNullableDefaultFire(): void
+    {
+        $r1 = new InsertDefaultRecord();
+        $r1->status = 'a';
+        $r1->note = 'x';                         // ignored → default fires
+        $r2 = new InsertDefaultRecord();
+        $r2->status = 'b';
+        $r2->note = 'y';                         // ignored → default fires
+
+        (new RecordSet([$r1, $r2]))->insertAll(ignoreColumns: ['note']);
+
+        $this->assertNotNull($r1->id);
+        $reloaded = InsertDefaultRecord::getOne($r1->id);
+        $this->assertNotNull($reloaded);
+        $this->assertSame('a', $reloaded->status, 'non-ignored column written verbatim');
+        $this->assertSame('fallback', $reloaded->note, 'ignored nullable column took its DB default');
+    }
+
+    public function testUpsertAllIgnoreColumnsLetsNullableDefaultFireOnInsert(): void
+    {
+        // Plain-INSERT branch of upsertAll (PK-null record).
+        $r = new InsertDefaultRecord();
+        $r->status = 'a';
+        $r->note = 'x';
+        (new RecordSet([$r]))->upsertAll(ignoreColumns: ['note']);
+
+        $this->assertNotNull($r->id);
+        $reloaded = InsertDefaultRecord::getOne($r->id);
+        $this->assertNotNull($reloaded);
+        $this->assertSame('fallback', $reloaded->note, 'ignored column took its DB default on the insert path');
+    }
+
+    public function testUpsertAllIgnoreColumnsLeavesColumnUntouchedOnKeyedUpdate(): void
+    {
+        // Keyed-upsert branch of upsertAll (PK-carrying record): an ignored dirty column is dropped
+        // from both the INSERT membership and the UPDATE SET, so it keeps its stored value.
+        $r = new InsertDefaultRecord();
+        $r->status = 'a';
+        $r->note = 'original';
+        $r->save();
+        $this->assertNotNull($r->id);
+        $id = $r->id;
+
+        $r->status = 'b';
+        $r->note = 'changed';                    // dirty, but ignored on this upsert
+        (new RecordSet([$r]))->upsertAll(ignoreColumns: ['note']);
+
+        $reloaded = InsertDefaultRecord::getOne($id);
+        $this->assertNotNull($reloaded);
+        $this->assertSame('b', $reloaded->status, 'non-ignored dirty column updated');
+        $this->assertSame('original', $reloaded->note, 'ignored column untouched on the keyed-upsert path');
+    }
+
+    public function testInsertAllIgnoreColumnsRejectsUnknownColumn(): void
+    {
+        $this->expectException(\Nandan108\Attrecord\Exception\SchemaException::class);
+        $r = new InsertDefaultRecord();
+        $r->status = 'a';
+        (new RecordSet([$r]))->insertAll(ignoreColumns: ['no_such_column']);
+    }
+
+    public function testSaveAutoReadBackHealsIgnoredNullableDefault(): void
+    {
+        // readBack defaults to null (auto): ignoring the nullable-with-default `note` triggers a
+        // read-back, so the in-memory value reflects the fired DB default and the record is clean.
+        $rec = new InsertDefaultRecord();
+        $rec->status = 'a';
+        $rec->note = 'dropped';
+        $rec->save(ignoreColumns: ['note']);
+
+        $this->assertSame('fallback', self::propValue($rec, 'note'), 'auto read-back healed the in-memory value from the DB default');
+        $this->assertFalse($rec->isDirty(), 'record reads back clean after the auto read-back');
+    }
+
+    public function testSaveAutoReadBackHealsOmittedNotNullDefaultOnPlainSave(): void
+    {
+        // The v0.6.1 gap, now closed: a plain save() that omits a NOT-NULL default (created_at left
+        // null → the insert rule drops it → DB fills now()) auto-heals the in-memory value, so the
+        // record reflects the DB and reads back clean — no ignoreColumns needed.
+        $rec = new InsertDefaultRecord();
+        $rec->status = 'a';                       // created_at left null → DB default fires
+        $rec->save();
+
+        $this->assertNotNull($rec->id);
+        $this->assertInstanceOf(
+            \DateTimeImmutable::class,
+            self::propValue($rec, 'created_at'),
+            'auto read-back healed the omitted NOT-NULL default on a plain save',
+        );
+        $this->assertFalse($rec->isDirty());
+    }
+
+    public function testSaveAutoReadBackIsNoOpWhenNothingDiverged(): void
+    {
+        // Every DB-populated column is provided, and there is no generated column → auto has nothing
+        // to read back → the record is already clean and untouched (no needless work on the hot path).
+        $rec = new InsertDefaultRecord();
+        $rec->status = 'a';
+        $rec->note = 'set';
+        $rec->created_at = new \DateTimeImmutable('2021-01-01T00:00:00Z');
+        $rec->save();
+
+        $this->assertNotNull($rec->id);
+        $this->assertSame('set', self::propValue($rec, 'note'), 'in-memory value untouched (no read-back needed)');
+        $this->assertFalse($rec->isDirty());
+    }
+
+    public function testSaveReadBackFalseSkipsHealing(): void
+    {
+        $rec = new InsertDefaultRecord();
+        $rec->status = 'a';
+        $rec->save(ignoreColumns: ['note'], readBack: false);
+
+        $this->assertNull($rec->note, 'readBack:false leaves the in-memory value untouched');
+        $this->assertNotNull($rec->id);
+        $reloaded = InsertDefaultRecord::getOne($rec->id);
+        $this->assertNotNull($reloaded);
+        $this->assertSame('fallback', $reloaded->note, 'the DB default still fired');
+    }
+
+    public function testSaveReadBackTrueRefreshesOmittedNotNullDefault(): void
+    {
+        // Explicit readBack:true refreshes even without an ignored column — the NOT-NULL `created_at`
+        // default (omitted by the insert rule) is read back onto the record.
+        $rec = new InsertDefaultRecord();
+        $rec->status = 'a';                       // created_at left null → omitted → DB default fires
+        $rec->save(readBack: true);
+
+        $this->assertInstanceOf(
+            \DateTimeImmutable::class,
+            $rec->created_at,
+            'readBack:true hydrated the omitted NOT-NULL default in memory',
+        );
+        $this->assertFalse($rec->isDirty());
+    }
+
+    public function testInsertAllAutoReadBackHealsIgnoredNullableDefault(): void
+    {
+        $r1 = new InsertDefaultRecord();
+        $r1->status = 'a';
+        $r1->note = 'x';
+        $r2 = new InsertDefaultRecord();
+        $r2->status = 'b';
+        $r2->note = 'y';
+
+        (new RecordSet([$r1, $r2]))->insertAll(ignoreColumns: ['note']);
+
+        $this->assertSame('fallback', self::propValue($r1, 'note'), 'auto read-back healed r1 in memory');
+        $this->assertSame('fallback', self::propValue($r2, 'note'), 'auto read-back healed r2 in memory');
+        $this->assertFalse($r1->isDirty());
+        $this->assertFalse($r2->isDirty());
+    }
+
+    public function testUpsertAllAutoReadBackHealsIgnoredNullableDefault(): void
+    {
+        $r = new InsertDefaultRecord();
+        $r->status = 'a';
+        $r->note = 'x';
+        (new RecordSet([$r]))->upsertAll(ignoreColumns: ['note']);
+
+        $this->assertSame('fallback', self::propValue($r, 'note'), 'auto read-back healed the in-memory value on the bulk path');
+        $this->assertFalse($r->isDirty());
+    }
+
+    public function testSaveReadBackExplicitListReadsOnlyNamedColumns(): void
+    {
+        // Both note (ignored nullable-default) and created_at (NOT-NULL default omitted by the insert
+        // rule) diverge from memory; read back only note. note is healed from its DB default;
+        // created_at is NOT in the list, so it stays null in memory even though the DB stored now().
+        $rec = new InsertDefaultRecord();
+        $rec->status = 'a';                       // written, so the INSERT has a column
+        $rec->note = 'x';
+        $rec->save(ignoreColumns: ['note'], readBack: ['note']);
+
+        $this->assertSame('fallback', self::propValue($rec, 'note'), 'listed column read back from the DB default');
+        $this->assertNull(self::propValue($rec, 'created_at'), 'unlisted omitted column is not read back (stays null in memory)');
+
+        $this->assertNotNull($rec->id);
+        $reloaded = InsertDefaultRecord::getOne($rec->id);
+        $this->assertNotNull($reloaded);
+        $this->assertInstanceOf(\DateTimeImmutable::class, $reloaded->created_at, 'the DB did store the created_at default');
+    }
+
+    public function testSaveReadBackUnknownColumnThrows(): void
+    {
+        $this->expectException(\Nandan108\Attrecord\Exception\SchemaException::class);
+        $rec = new InsertDefaultRecord();
+        $rec->status = 'a';
+        $rec->save(readBack: ['no_such_col']);
+    }
+
+    public function testInsertAllReadBackExplicitList(): void
+    {
+        $r = new InsertDefaultRecord();
+        $r->status = 'a';
+        $r->note = 'x';
+        (new RecordSet([$r]))->insertAll(ignoreColumns: ['note'], readBack: ['note']);
+
+        $this->assertSame('fallback', self::propValue($r, 'note'), 'explicit-list read-back healed the bulk-inserted row');
+    }
+
+    public function testAutoReadBackRefreshesGeneratedColumnOnInsert(): void
+    {
+        // scope_key is STORED as COALESCE(scope_id, 0); the dependency scan links it to scope_id, so
+        // an insert that writes scope_id auto-reads-back the recomputed generated value.
+        $rec = new DdlGeneratedColumnRecord();
+        $rec->scope_id = 7;
+        $rec->value = 'x';
+        $rec->save();
+
+        $this->assertSame(7, self::propValue($rec, 'scope_key'), 'generated column healed in memory on insert');
+        $this->assertFalse($rec->isDirty());
+    }
+
+    public function testAutoReadBackRefreshesGeneratedColumnWhenSourceUpdated(): void
+    {
+        $rec = new DdlGeneratedColumnRecord();
+        $rec->scope_id = 1;
+        $rec->value = 'x';
+        $rec->save();
+        $this->assertSame(1, self::propValue($rec, 'scope_key'));
+
+        // Updating scope_id (a dependency of scope_key) recomputes the generated column: auto reads
+        // it back so the in-memory value tracks the DB.
+        $rec->scope_id = 5;
+        $rec->save();
+
+        $this->assertSame(5, self::propValue($rec, 'scope_key'), 'generated column refreshed after its source changed');
+        $this->assertFalse($rec->isDirty());
     }
 
     public function testUpsertAllSetsTimestamps(): void

@@ -112,6 +112,82 @@ final class TableSchema
         $this->pkProp = $columns[$pk]->propertyName;
     }
 
+    /** @var array<string, list<string>>|null memoized: generated column → the columns its expression references */
+    private ?array $_generatedDeps = null;
+
+    /**
+     * Map each generated column to the schema columns its `generatedAs` expression references. Rather
+     * than parse SQL, scan the expression for the (finite, known) column names as identifier tokens —
+     * over-inclusion is safe (a spurious dep just reads a column back needlessly), a *miss* would
+     * leave a stale value, so the match is deliberately generous.
+     *
+     * @return array<string, list<string>>
+     */
+    private function generatedDeps(): array
+    {
+        if (null !== $this->_generatedDeps) {
+            return $this->_generatedDeps;
+        }
+
+        $names = array_keys($this->columns);
+        $deps = [];
+        foreach ($this->columns as $name => $col) {
+            if (!$col->isGenerated || null === $col->generatedAs) {
+                continue;
+            }
+            $expr = $col->generatedAs;
+            $refs = [];
+            foreach ($names as $cand) {
+                if ($cand === $name) {
+                    continue;
+                }
+                if (1 === preg_match('/(?<![A-Za-z0-9_])'.preg_quote($cand, '/').'(?![A-Za-z0-9_])/i', $expr)) {
+                    $refs[] = $cand;
+                }
+            }
+            $deps[$name] = $refs;
+        }
+
+        return $this->_generatedDeps = $deps;
+    }
+
+    /**
+     * Given the columns a write actually wrote, return the generated columns whose value may have
+     * changed — those whose expression references a written column, transitively through other
+     * generated columns. On INSERT every non-generated column is written, so all generated columns
+     * are returned; on UPDATE only the ones a changed column feeds into.
+     *
+     * @param array<string, true> $writtenCols
+     *
+     * @return list<string>
+     */
+    public function generatedColumnsAffectedBy(array $writtenCols): array
+    {
+        $deps = $this->generatedDeps();
+        if ([] === $deps) {
+            return [];
+        }
+
+        $affected = [];
+        do {
+            $changed = false;
+            foreach ($deps as $gen => $srcs) {
+                if (isset($affected[$gen])) {
+                    continue;
+                }
+                foreach ($srcs as $src) {
+                    if (isset($writtenCols[$src]) || isset($affected[$src])) {
+                        $affected[$gen] = true;
+                        $changed = true;
+                        break;
+                    }
+                }
+            }
+        } while ($changed);
+
+        return array_keys($affected);
+    }
+
     /** @var array<class-string, self> */
     private static array $cache = [];
 
