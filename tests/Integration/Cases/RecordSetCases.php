@@ -10,6 +10,7 @@ use Nandan108\Attrecord\Exception\RecordNotFoundException;
 use Nandan108\Attrecord\RecordSet;
 use Nandan108\Attrecord\Tests\Fixtures\CommentRecord;
 use Nandan108\Attrecord\Tests\Fixtures\DdlGeneratedColumnRecord;
+use Nandan108\Attrecord\Tests\Fixtures\InsertDefaultRecord;
 use Nandan108\Attrecord\Tests\Fixtures\PostRecord;
 use Nandan108\Attrecord\Tests\Fixtures\PostTagPivot;
 use Nandan108\Attrecord\Tests\Fixtures\TagRecord;
@@ -32,6 +33,7 @@ trait RecordSetCases
             UserRecord::class,
             PostRecord::class,
             DdlGeneratedColumnRecord::class,
+            InsertDefaultRecord::class,
             TimestampedRecord::class,
             TagRecord::class,
             CommentRecord::class,
@@ -941,6 +943,32 @@ trait RecordSetCases
         $rec->save(); // nothing changed → clean no-op
 
         $this->assertSame($updatedAtInsert, $rec->updated_at, 'a clean save must not bump updated_at');
+    }
+
+    public function testInsertLetsDbDefaultFireForNotNullColumnLeftNull(): void
+    {
+        // A NOT-NULL column left null on INSERT must be omitted so its DB default fires — emitting
+        // an explicit NULL would violate the constraint (there is no legitimate "insert NULL into a
+        // NOT-NULL column"). Before the fix, this save() threw. `note` is the control: it is
+        // nullable-with-default, so its explicit null means "store NULL", not "use the default".
+        $rec = new InsertDefaultRecord();
+        $rec->note = null; // left null on purpose (nullable + default 'fallback')
+        $rec->save();
+
+        $this->assertNotNull($rec->id, 'insert succeeded and back-filled the auto-increment PK');
+
+        $reloaded = InsertDefaultRecord::getOne($rec->id);
+        $this->assertNotNull($reloaded);
+        $this->assertSame('pending', $reloaded->status, 'NOT-NULL literal default fired');
+        $this->assertInstanceOf(
+            \DateTimeImmutable::class,
+            $reloaded->created_at,
+            'NOT-NULL defaultExpr (CURRENT_TIMESTAMP) fired',
+        );
+        $this->assertNull(
+            $reloaded->note,
+            'nullable-with-default column stores the explicit NULL, not the default',
+        );
     }
 
     public function testUpsertAllSetsTimestamps(): void

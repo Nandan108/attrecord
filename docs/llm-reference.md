@@ -125,8 +125,8 @@ All attributes are `readonly`. Param order below matches the constructor.
 | `length` | `?int` | `null` | `VarChar`/`Char`/`Binary`/`VarBinary`/`Bit`. Required for `VarChar`/`Char` at DDL build. |
 | `precision` | `?int` | `null` | `Decimal`: total digits (required, with `scale`). `DateTime`/`Timestamp`: fractional-seconds 0–6 (optional). |
 | `scale` | `?int` | `null` | `Decimal` scale (required); forbidden elsewhere. |
-| `default` | `int\|float\|string\|bool\|null` | `null` | Literal DEFAULT (DDL). Mutually exclusive with `defaultExpr`. |
-| `defaultExpr` | `?string` | `null` | Raw SQL DEFAULT expression (e.g. `'CURRENT_TIMESTAMP'`). |
+| `default` | `int\|float\|string\|bool\|null` | `null` | Literal DEFAULT (DDL). Mutually exclusive with `defaultExpr`. On INSERT a **NOT-NULL** column left `null` is omitted so this default fires (see note below); a **nullable** column with a default still writes its `null` (null means NULL, not "use the default"). |
+| `defaultExpr` | `?string` | `null` | Raw SQL DEFAULT expression (e.g. `'CURRENT_TIMESTAMP'`). Same insert-omission rule as `default`. |
 | `onUpdate` | `?string` | `null` | Raw SQL `ON UPDATE` (MySQL DDL only; ignored by PG). |
 | `comment` | `?string` | `null` | Column comment (DDL). |
 | `enumValues` | `?list<string>` | `null` | Required for `Enum`/`Set`. |
@@ -278,6 +278,13 @@ Lifecycle hooks (override; empty by default):
 Persistence:
 - `save(bool $force = false): static` — INSERT if new, else UPDATE of **dirty** columns only.
   Returns `$this`; `->_saved` (bool) reflects whether a write occurred. `force` writes even if clean.
+  **Insert / DB-default rule:** on INSERT, a **NOT-NULL** column left `null` that declares a `default`
+  or `defaultExpr` is **omitted** from the statement so the DB default fires — never emitted as an
+  explicit `NULL` (which would violate the constraint; a caller cannot have meant it). A **nullable**
+  column is left alone: its `null` is written, because there `null` may genuinely mean "store NULL"
+  rather than "use the default". `upsertAll()`/`insertAll()` behave the same (an all-null column is
+  dropped from the bulk column list), so the DB default fires there too. The value is **not**
+  back-filled onto the in-memory record — re-read to observe it.
 - `delete(): void` — DELETE by PK; marks record new again.
 - `upsertByUniqueKey(string $conflictKey, array $updateColumns, bool $preserveAutoIncrement = false): void`
   — single-row upsert on a unique key. `preserveAutoIncrement: true` uses a SELECT-then-write

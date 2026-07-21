@@ -834,6 +834,20 @@ abstract class Record
             /** @psalm-suppress MixedAssignment */
             $value = $this->{$col->propertyName} ?? null;
 
+            // On INSERT, omit a NOT NULL column left null when it declares a DB default, so the
+            // default fires (e.g. `recorded_at DEFAULT CURRENT_TIMESTAMP(6)`). Emitting an explicit
+            // NULL here would only violate the NOT NULL constraint, so the caller can't have meant
+            // it. Nullable-with-default columns are deliberately left alone: there, a null value
+            // may genuinely mean "store NULL" rather than "use the default".
+            if (
+                $this->_isNew
+                && null === $value
+                && !$col->nullable
+                && (null !== $col->default || null !== $col->defaultExpr)
+            ) {
+                continue;
+            }
+
             if (!$force && !$this->_isNew) {
                 $snapshot = ColumnSerializer::toSnapshotString($value, $col);
                 if ($snapshot === ($this->_snapshot[$colName] ?? null)) {

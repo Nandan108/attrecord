@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-07-21
+
+### Fixed
+
+- **`save()` now lets a DB default fire for a NOT-NULL column left null on INSERT.** Previously an
+  INSERT emitted every non-generated column, so a NOT-NULL column with a `default` / `defaultExpr`
+  (e.g. `recorded_at DEFAULT CURRENT_TIMESTAMP`) left `null` was written as an explicit `NULL` —
+  which raised a NOT-NULL violation and made the DB default unreachable through the ORM. Such a
+  column is now **omitted** from the INSERT so its default takes effect. A **nullable** column with a
+  default is deliberately left alone (its `null` is still written — `null` may mean "store NULL", not
+  "use the default"). This aligns single-record `save()` with the bulk `upsertAll()` / `insertAll()`
+  paths, which already drop an all-null column from the statement.
+
 ## [0.6.0] - 2026-07-19 — Append-only writes & bulk-verb naming
 
 ### Added
