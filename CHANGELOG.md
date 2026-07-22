@@ -4,6 +4,38 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-07-22 — Optimistic locking
+
+### Added
+
+- **`#[Version]` — optimistic locking.** Marks an integer column as the record's version, so a
+  concurrent write is **detected** rather than silently lost. attrecord seeds it to `1` on INSERT;
+  every single-record `save()` UPDATE then emits `SET … <ver> = <ver> + 1 … WHERE pk = ? AND
+  <ver> = ?` against the value the record was loaded with, and raises the new
+  **`OptimisticLockException`** (carrying `recordClass`, `id`, `expectedVersion`) when no row matches
+  — because another writer moved the row on, or deleted it. On success the in-memory value is bumped
+  to match. At most one per Record; must be an integer column and must not be generated.
+
+  This covers the conflicts `SELECT … FOR UPDATE` cannot: a pessimistic lock only holds *within one
+  transaction*, so it does nothing when the read and the write happen in **different requests** (load
+  a form, submit it minutes later). Detection is free on both write paths — affected-rows on MySQL,
+  and "no row returned" on the PostgreSQL/SQLite `RETURNING` path added in 0.7.0. And because the
+  UPDATE always increments the version, a matched row always genuinely changes, so MySQL's
+  changed-rows (rather than matched-rows) reporting cannot masquerade as a false conflict.
+
+- **Version handling on the bulk paths.** `insertAll()` and `upsertAll()` seed the version on new
+  records. The set-based updates — `updateWhere()` / `updateByWhere()` / `updateByUniqueKey()` —
+  **bump** it (alongside the existing `#[UpdatedAt]` injection), unless the caller sets the column
+  explicitly. They cannot *guard*, since they match rows by predicate rather than from loaded state
+  and so have no per-row expected value; but bumping is essential — leaving the version untouched
+  would let a stale holder's guarded write match afterwards and clobber the update.
+
+  **Not yet covered:** the keyed **bulk upsert** (`upsertAll()`'s CASE-UPDATE, and therefore
+  `upsertAllByUniqueKey()` and the chunked path) neither guards nor bumps. Doing so needs a per-row
+  `(pk, version)` row-constructor predicate plus a way to report *which* rows lost, and is deferred to
+  a follow-up. Use `save()` where the guard matters. (Doctrine's optimistic locking is likewise
+  per-entity only.)
+
 ## [0.7.0] - 2026-07-21 — Selective write read-back
 
 ### Added

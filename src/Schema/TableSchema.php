@@ -15,6 +15,7 @@ use Nandan108\Attrecord\Attribute\Relation;
 use Nandan108\Attrecord\Attribute\Table;
 use Nandan108\Attrecord\Attribute\UniqueKey;
 use Nandan108\Attrecord\Attribute\UpdatedAt;
+use Nandan108\Attrecord\Attribute\Version;
 use Nandan108\Attrecord\Caster\EnumCaster;
 use Nandan108\Attrecord\Caster\JsonCaster;
 use Nandan108\Attrecord\ColumnCaster;
@@ -99,6 +100,8 @@ final class TableSchema
         public readonly ?string $createdAtColumn = null,
         /** Column name auto-set to now on INSERT + dirty UPDATE ({@see UpdatedAt}), or null. */
         public readonly ?string $updatedAtColumn = null,
+        /** Integer column carrying the optimistic-locking version ({@see Version}), or null. */
+        public readonly ?string $versionColumn = null,
     ) {
         $this->columns = $columns;
         $this->relations = $relations;
@@ -224,6 +227,7 @@ final class TableSchema
         $columns = [];
         $createdAtColumn = null;
         $updatedAtColumn = null;
+        $versionColumn = null;
         /** @var array<string, RelationDefinition> $relations */
         $relations = [];
         /** @var array<string, \ReflectionProperty> $reflProperties */
@@ -396,6 +400,25 @@ final class TableSchema
                     }
                 }
 
+                if (!empty($prop->getAttributes(Version::class))) {
+                    if (!$col->isInteger) {
+                        throw new SchemaException(sprintf(
+                            '%s::$%s: #[Version] requires an integer column (the version is incremented on every UPDATE).',
+                            $class,
+                            $propName,
+                        ));
+                    }
+                    if ($col->isGenerated) {
+                        throw new SchemaException(sprintf(
+                            '%s::$%s: #[Version] cannot be a generated column — attrecord increments it itself.',
+                            $class,
+                            $propName,
+                        ));
+                    }
+                    null === $versionColumn || throw new SchemaException(sprintf('%s: at most one #[Version] column (already on "%s").', $class, $versionColumn));
+                    $versionColumn = $colName;
+                }
+
                 $columns[$colName] = $col;
                 $reflProperties[$colName] = $prop;
                 continue;
@@ -519,6 +542,7 @@ final class TableSchema
             mysqlOptions: $mysqlOptions,
             createdAtColumn: $createdAtColumn,
             updatedAtColumn: $updatedAtColumn,
+            versionColumn: $versionColumn,
         );
     }
 

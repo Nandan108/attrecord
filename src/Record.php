@@ -6,6 +6,7 @@ namespace Nandan108\Attrecord;
 
 use Nandan108\Attrecord\Exception\AppendOnlyViolationException;
 use Nandan108\Attrecord\Exception\AttrecordException;
+use Nandan108\Attrecord\Exception\OptimisticLockException;
 use Nandan108\Attrecord\Exception\RecordDeleteException;
 use Nandan108\Attrecord\Exception\RecordNotFoundException;
 use Nandan108\Attrecord\Exception\RecordSaveException;
@@ -669,6 +670,10 @@ abstract class Record
             $setParams[] = $ts[1];
         }
 
+        if (null !== ($ver = self::autoVersionAssignment($schema, $dialect, $set))) {
+            $setParts[] = $ver;
+        }
+
         $qt = $dialect->quoteIdentifier($schema->tableName);
         $sql = 'UPDATE '.$qt.' SET '.implode(', ', $setParts);
         if ('' !== $normWhere) {
@@ -801,6 +806,45 @@ abstract class Record
     }
 
     /**
+     * SET fragment incrementing the optimistic-locking version on a **set-based** UPDATE, or null
+     * when the record has no `#[Version]` column or the caller set it explicitly.
+     *
+     * A set-based update cannot *guard* on a version — it matches rows by predicate, not from loaded
+     * state, so there is no per-row expected value to compare. It must still **bump** it: leaving the
+     * version untouched would let a stale holder's guarded write match afterwards and silently
+     * clobber this update, which is exactly what the version exists to prevent.
+     *
+     * Returns a bare expression (no bound parameter), so callers append it to the SET list only.
+     *
+     * @param array<string, mixed> $setCols columns the caller is already setting
+     */
+    private static function autoVersionAssignment(TableSchema $schema, SqlDialect $dialect, array $setCols): ?string
+    {
+        $col = $schema->versionColumn;
+        if (null === $col || \array_key_exists($col, $setCols)) {
+            return null;
+        }
+        $quoted = $dialect->quoteIdentifier($col);
+
+        return "{$quoted} = {$quoted} + 1";
+    }
+
+    /**
+     * Seed the optimistic-locking version on a record about to be INSERTed, so the stored value is
+     * deterministic and matches memory without relying on a DDL default. No-op when the record has no
+     * `#[Version]` column, or when the caller already set one.
+     *
+     * @internal called by save() and by the bulk insert paths
+     */
+    public function seedVersionForInsert(): void
+    {
+        $schema = static::schema();
+        if (null !== ($col = $schema->versionColumn)) {
+            $this->{$schema->columns[$col]->propertyName} ??= 1;
+        }
+    }
+
+    /**
      * @param list<string>|null      $ignoreColumns Column names to drop from the write. Purely
      *                                              subtractive: on INSERT an omitted column lets its DB
      *                                              default fire (nullable or not); on UPDATE it is left
@@ -852,6 +896,19 @@ abstract class Record
         // the write rather than after it; the 'auto' set is computed post-write from $writtenCols.
         $readBackMode = self::resolveReadBackMode($readBack, $schema, static::class);
 
+        // Optimistic locking: seed a new record's version so the stored value is deterministic and
+        // matches memory, and capture the loaded value to guard the UPDATE with.
+        $versionCol = $schema->versionColumn;
+        $expectedVersion = null;
+        if (null !== $versionCol) {
+            if ($this->_isNew) {
+                $this->seedVersionForInsert();
+            } else {
+                /** @psalm-suppress MixedAssignment */
+                $expectedVersion = (int) ($this->{$schema->columns[$versionCol]->propertyName} ?? 0);
+            }
+        }
+
         $colNames = [];
         $setParts = [];
         $params = [];
@@ -870,6 +927,13 @@ abstract class Record
             // Caller-requested drop: subtract this column from the write. On INSERT its DB default
             // fires; on UPDATE it stays out of the SET (untouched).
             if (isset($ignore[$colName])) {
+                continue;
+            }
+
+            // The optimistic-locking version is attrecord's to manage: on UPDATE it is emitted as a
+            // `= <col> + 1` expression alongside a `<col> = <loaded value>` guard (below), never as a
+            // caller-supplied literal. On INSERT it is written normally, seeded just above.
+            if (!$this->_isNew && $colName === $schema->versionColumn) {
                 continue;
             }
 
@@ -960,20 +1024,46 @@ abstract class Record
                 }
                 $this->_isNew = false;
             } else {
+                $versionGuard = '';
+                /** @psalm-suppress MixedAssignment */
+                $rawPkForLock = $this->{$pkProp} ?? '';
+                $lockId = \is_int($rawPkForLock) || \is_string($rawPkForLock) ? $rawPkForLock : '';
+                if (null !== $versionCol) {
+                    // Bump as an expression (never a caller literal) and guard on the loaded value.
+                    // The bump also guarantees a matched row genuinely changes, so MySQL's
+                    // changed-rows reporting cannot masquerade as a version conflict.
+                    $qver = $dialect->quoteIdentifier($versionCol);
+                    $setParts[] = "{$qver} = {$qver} + 1";
+                    $versionGuard = " AND {$qver} = ?";
+                }
                 // Route the PK through the serializer so a binary PK is wrapped for binding.
                 $params[] = ColumnSerializer::toParam($this->{$pkProp} ?? null, $schema->columns[$pk], $bindBinaryAsLob);
-                $updateSql = "UPDATE {$qt} SET ".implode(', ', $setParts)." WHERE {$qpk} = ?";
+                if (null !== $versionCol) {
+                    $params[] = $expectedVersion;
+                }
+                $updateSql = "UPDATE {$qt} SET ".implode(', ', $setParts)." WHERE {$qpk} = ?{$versionGuard}";
                 if ($canReturn && $wantReadBack) {
                     // Fold the read-back into UPDATE … RETURNING (PG/SQLite) — no separate SELECT.
                     $returning = 'RETURNING '.implode(', ', array_map($dialect->quoteIdentifier(...), $returnCols));
                     /** @psalm-suppress MixedArgumentTypeCoercion */
                     $returnedRow = $session->fetchOne("{$updateSql} {$returning}", $params);
+                    // No row came back: with a version guard that means the guard failed.
+                    if (null !== $versionCol && null === $returnedRow) {
+                        throw new OptimisticLockException(static::class, $lockId, (int) $expectedVersion);
+                    }
                 } else {
                     /** @psalm-suppress MixedArgumentTypeCoercion */
-                    $session->exec($updateSql, $params);
+                    $affected = $session->exec($updateSql, $params);
+                    if (null !== $versionCol && 0 === $affected) {
+                        throw new OptimisticLockException(static::class, $lockId, (int) $expectedVersion);
+                    }
+                }
+                if (null !== $versionCol) {
+                    // The write succeeded, so the stored version is now one past what we guarded on.
+                    $this->{$schema->columns[$versionCol]->propertyName} = (int) $expectedVersion + 1;
                 }
             }
-        } catch (RecordSaveException $e) {
+        } catch (RecordSaveException | OptimisticLockException $e) {
             throw $e;
         } catch (\Throwable $e) {
             throw new RecordSaveException($e->getMessage(), $e);
@@ -1390,6 +1480,10 @@ abstract class Record
             $setParams[] = $ts[1];
         }
 
+        if (null !== ($ver = self::autoVersionAssignment($schema, $dialect, $setCols))) {
+            $setParts[] = $ver;
+        }
+
         $qt = $dialect->quoteIdentifier($schema->tableName);
         $sql = 'UPDATE '.$qt.' SET '.implode(', ', $setParts).' WHERE '.implode(' AND ', $whereParts);
         /** @psalm-suppress MixedArgumentTypeCoercion */
@@ -1483,6 +1577,10 @@ abstract class Record
         if (null !== ($ts = self::autoUpdatedAtAssignment($schema, $dialect, $setCols))) {
             $setParts[] = $ts[0];
             $setParams[] = $ts[1];
+        }
+
+        if (null !== ($ver = self::autoVersionAssignment($schema, $dialect, $setCols))) {
+            $setParts[] = $ver;
         }
 
         $qt = $dialect->quoteIdentifier($schema->tableName);

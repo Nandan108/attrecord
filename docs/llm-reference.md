@@ -144,6 +144,26 @@ Auto-managed timestamps, typed `?\DateTimeImmutable`. `#[CreatedAt]` is set on I
 `updateWhere()` / `updateByWhere()` / `updateByUniqueKey()` — in all cases unless the caller sets the
 column explicitly.
 
+### `#[Version]` (property-level, on an integer column)
+
+Optimistic-locking version — *detects* a concurrent write instead of preventing it. Seeded to `1` on
+INSERT; every single-record `save()` UPDATE then emits `SET … <ver> = <ver> + 1 … WHERE pk = ? AND
+<ver> = ?` using the value the record was loaded with, and throws `OptimisticLockException` when no
+row matches (another writer moved it on, or deleted it). The in-memory value is bumped on success.
+
+This is the tool for conflicts `SELECT … FOR UPDATE` cannot cover: a pessimistic lock only holds
+*within one transaction*, so it is useless when read and write happen in **different requests**. At
+most one per Record; must be an integer column and must not be generated.
+
+Because the UPDATE always increments the version, a matched row always genuinely changes — so MySQL's
+changed-rows (rather than matched-rows) reporting cannot produce a false conflict.
+
+**Set-based updates** (`updateWhere()` / `updateByWhere()` / `updateByUniqueKey()`) cannot *guard* —
+they match by predicate, not from loaded state — but they still **bump** the version, so a stale
+holder's guarded write is correctly locked out afterwards. `insertAll()` / `upsertAll()` seed new
+records. The **keyed bulk upsert does not yet guard or bump** (per-row version predicates); use
+`save()` where the guard matters.
+
 ### `#[UniqueKey]` / `#[Index]`
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -658,6 +678,7 @@ All under `Nandan108\Attrecord\Exception`, extending `AttrecordException` (which
 | `RecordSaveException` | INSERT/UPDATE fails (wraps the driver error). |
 | `RecordDeleteException` | DELETE fails / no PK. |
 | `AppendOnlyViolationException` | an update/delete is attempted on an `AppendOnly` Record (write-once). |
+| `OptimisticLockException` | a `#[Version]`-guarded UPDATE matched no row — the record was changed or deleted by another writer since it was loaded. Carries `recordClass`, `id`, `expectedVersion`. |
 | `SchemaException` | invalid attribute metadata at schema build / DDL (missing length, decimal scale, enum values, PG `Set`/`Virtual`, …). |
 | `MissingLockTierException` | `LockSet::acquire()` target lacks `#[LockTier]`. |
 | `LockTierConflictException` | two `LockSet` targets share a tier. |

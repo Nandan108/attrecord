@@ -335,6 +335,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             /** @psalm-suppress MixedPropertyFetch */
             $isInsert = null === $r->{$pkProp};
             $r->applyAutoTimestamps($isInsert);
+            if ($isInsert) {
+                $r->seedVersionForInsert();
+            }
             $r->validate();
             if (!$isInsert) {
                 foreach ($r->dirtyFields() as $dirtyCol => $_ignored) {
@@ -519,6 +522,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             // insertAll always INSERTs (never upserts), so every record is new — stamp #[CreatedAt]
             // and #[UpdatedAt] as such, regardless of whether the PK is DB-generated or app-minted.
             $r->applyAutoTimestamps(true);
+            $r->seedVersionForInsert();
             $r->validate();
         }
 

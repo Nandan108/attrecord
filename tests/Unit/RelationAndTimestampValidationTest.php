@@ -9,6 +9,7 @@ use Nandan108\Attrecord\Attribute\CreatedAt;
 use Nandan108\Attrecord\Attribute\Relation;
 use Nandan108\Attrecord\Attribute\Table;
 use Nandan108\Attrecord\Attribute\UpdatedAt;
+use Nandan108\Attrecord\Attribute\Version;
 use Nandan108\Attrecord\Enum\ColumnType;
 use Nandan108\Attrecord\Enum\RelationType;
 use Nandan108\Attrecord\Exception\SchemaException;
@@ -93,6 +94,49 @@ final class RelationAndTimestampValidationTest extends TestCase
             #[Column(ColumnType::DateTime, nullable: true)]
             #[UpdatedAt]
             public ?\DateTimeImmutable $u2 = null;
+        })::schema();
+    }
+
+    public function testVersionRequiresIntegerColumn(): void
+    {
+        $this->expectException(SchemaException::class);
+        (new #[Table(name: 'bad_version_type')] class extends Record {
+            #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+            public ?int $id = null;
+
+            #[Column(ColumnType::VarChar, length: 20)]
+            #[Version]
+            public string $version = '';
+        })::schema();
+    }
+
+    public function testVersionCannotBeAGeneratedColumn(): void
+    {
+        $this->expectException(SchemaException::class);
+        (new #[Table(name: 'bad_version_generated')] class extends Record {
+            #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+            public ?int $id = null;
+
+            #[Column(ColumnType::IntUnsigned, generatedAs: '1')]
+            #[Version]
+            public int $version = 0;
+        })::schema();
+    }
+
+    public function testAtMostOneVersionColumn(): void
+    {
+        $this->expectException(SchemaException::class);
+        (new #[Table(name: 'bad_dup_version')] class extends Record {
+            #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+            public ?int $id = null;
+
+            #[Column(ColumnType::IntUnsigned)]
+            #[Version]
+            public ?int $v1 = null;
+
+            #[Column(ColumnType::IntUnsigned)]
+            #[Version]
+            public ?int $v2 = null;
         })::schema();
     }
 }
