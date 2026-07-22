@@ -43,24 +43,27 @@ attrecord's *typed, schema-authoring, contention-hardened* design diverges from 
 
 |  | **attrecord** | **php-activerecord** | **Doctrine ORM** | **Eloquent** |
 | --- | --- | --- | --- | --- |
-| Pattern | Active Record | Active Record | Data Mapper (identity map + unit of work) | Active Record |
+| Pattern | Active Record | Active Record | Data Mapper | Active Record |
 | Framework coupling | Standalone, framework-agnostic | Standalone, framework-agnostic | Standalone (Symfony-friendly) | Laravel-native (standalone via `illuminate/database`) |
 | Runtime dependencies | **None** | **None** (PDO ext) | Several (DBAL, …) | `illuminate/*` |
-| Install footprint (`vendor/`) | **1 package · ~370 KB** | 1 package · ~280 KB | ~22 packages · ~1.6 MB | ~26 packages · ~2.3 MB |
+| Install footprint (`vendor/`) | **1 package · ~375 KB** | 1 package · ~280 KB | ~22 packages · ~1.6 MB | ~26 packages · ~2.3 MB |
 | Schema mapping | PHP 8 attributes only | **Introspected from the live DB** (no code mapping) | Attributes / XML / YAML | Conventions (schema lives in migrations, not the model) |
 | Column access / typing | **Typed properties** (psalm-checked) | Dynamic `__get`/`__set` (magic) | Typed properties | Dynamic `$attributes` (magic) |
 | Schema changes | Emits `CREATE TABLE` from attributes; forward migrations via a planned opt-in add-on (not in core) | None — the DB *is* the source; no DDL/migrations | `doctrine/migrations` | Laravel migrations |
 | Query building | Finders + immutable `WhereClause` + `RawSql` | Dynamic finders + string conditions (`find_by_x`) | DQL + QueryBuilder | Fluent query builder |
-| Relations | has-many / belongs-to / has-one, polymorphic, many-to-many, has-many-through; **imperative** batched eager loading (`load()` / `loadMissing()`, no N+1) — no lazy graph, identity map, or UoW | `has_many` / `belongs_to` / HABTM / `through` + eager loading | Full graph: lazy loading, identity map, UoW | Full: lazy + eager, rich relationship set |
+| Relation types | has-many / belongs-to / has-one, **polymorphic**, many-to-many, has-many-through | `has_many` / `belongs_to` / `has_one` / HABTM / `through`; no polymorphic | `OneToOne` / `OneToMany` / `ManyToOne` / `ManyToMany`; no polymorphic associations (inheritance mapping instead), no `through` shorthand | Richest set: `hasOne`/`hasMany`/`belongsTo`/`belongsToMany`, `hasOneThrough`/`hasManyThrough`, full `morph*` family |
+| Relation loading | **Imperative eager only** — `load()` / `loadMissing()`, one `IN (…)` per level; accessing an unloaded relation **never queries**, so an N+1 has to be written rather than tripped into | **Lazy** on property access; `include` for eager loading | **Lazy** by default via proxies; eager via fetch mode or DQL `JOIN FETCH` | **Lazy** on property access; `with()` eager, `load()` deferred-eager, opt-in `preventLazyLoading()` guard |
+| Identity map / unit of work | **Neither** — each record persists itself via `save()`; an opt-in identity map + batched flush is planned as the `attrecord-uow` companion package | Neither — per-record `save()` | **Both** — `persist()` + `flush()`, change-sets diffed against load-time state, FK-ordered commit | Neither — per-model `save()` |
 | Backends | MySQL/MariaDB, PostgreSQL, SQLite | MySQL, PostgreSQL, SQLite | Many (via DBAL) | MySQL, PostgreSQL, SQLite, SQL Server |
 | Driver / session layer | Pluggable `DbSession`: PDO, **mysqli, wpdb** + retry decorator | **PDO only** | DBAL | PDO |
-| Bulk writes | First-class: deadlock-safe multi-mask upsert, per-chunk-commit chunking, burn-free upsert | None (row-at-a-time `save()`) | Batch inserts; bulk `UPDATE`/`DELETE` via DQL | `upsert()` / bulk `insert()` |
-| Concurrency | Tier-ordered `FOR UPDATE` locks, advisory locks, transient-retry decorator | None | Pessimistic + optimistic locking | `lockForUpdate()` / `sharedLock()` |
+| Bulk writes | First-class, one statement per operation — never a per-row loop: `insertAll()` (multi-row INSERT, insert-only), `upsertAll()` (deadlock-safe 3-step keyed upsert), `upsertAllByUniqueKey()` (auto-increment-burn-free), `deleteAll()`, set-based `updateWhere()`; opt-in per-chunk-commit chunking | None — row-at-a-time `save()` | `flush()` emits **one INSERT per entity** (statement reuse, not multi-row `VALUES`); set-based `UPDATE`/`DELETE` via DQL, bypassing the UoW; no upsert; "batching" = flush + clear every N | `insert()` (multi-row), `upsert()` (multi-row `ON DUPLICATE KEY`/`ON CONFLICT`), query-builder `update()`/`delete()`; no lock-ordering or chunk-commit primitive |
+| DB-computed values (read-back) | `readBack` auto-detects the columns a write left diverged — fired defaults, and generated columns via an expression-dependency scan — and **folds them into `RETURNING`** on PostgreSQL/SQLite (same round-trip), scoped `SELECT` on MySQL; issues nothing when nothing diverged | None — re-`find()` by hand | `Column(generated:)` triggers a refresh `SELECT` for marked columns; refetched unconditionally, no dependency analysis | None automatic — `refresh()` re-reads the whole row |
+| Concurrency | Pessimistic: tier-ordered `FOR UPDATE` (`LockSet`) + advisory locks; optimistic: `#[Version]`; plus a transient-conflict retry decorator | None | Pessimistic + optimistic (`@Version`) locking | `lockForUpdate()` / `sharedLock()`; no optimistic-locking primitive |
 | Maturity / ecosystem | **Young, pre-1.0, small** | Mature (since 2010), established | Mature, large | Mature, very large |
 
 <sub>attrecord and php-activerecord ship as a **single package with zero runtime dependencies**
 (php-activerecord needs a PDO driver extension); their figures are shipped source — attrecord `src/`
-≈ 370 KB at v0.7.0 (only ~160 KB is code; the rest is docblocks), php-activerecord `lib/` ≈ 280 KB.
+≈ 375 KB at v0.8.0 (only ~163 KB is code; the rest is docblocks), php-activerecord `lib/` ≈ 280 KB.
 Doctrine and Eloquent figures are a full `composer require --prefer-dist` install **including their
 dependency trees** (`doctrine/orm`, `illuminate/database`); counts and sizes vary by version.</sub>
 
