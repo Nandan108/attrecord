@@ -122,6 +122,7 @@ This README is the narrative guide. Deeper references live in [`docs/`](docs/):
 - [polymorphic-relations.md](docs/polymorphic-relations.md) — morph relations
 - [arch-concurrency.md](docs/arch-concurrency.md) — production locking model, retryable-error classification, `RetryingDbSession`
 - [arch-bulk-update-scaling.md](docs/arch-bulk-update-scaling.md) — the join-based bulk-`UPDATE` emitter and `upsertAll()` chunking rationale
+- [arch-unit-of-work.md](docs/arch-unit-of-work.md) — the planned `attrecord-uow` companion package: opt-in identity map + state-derived flush (and the non-goals fence)
 - [design-note-no-name-auto-conversion.md](docs/design-note-no-name-auto-conversion.md) — why no auto snake/camel conversion
 
 ---
