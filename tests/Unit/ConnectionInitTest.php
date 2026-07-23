@@ -95,6 +95,11 @@ final class RecordingInitDialect implements SqlDialect
         return false;
     }
 
+    public function incomingRef(string $column): string
+    {
+        return 'VALUES('.$column.')';
+    }
+
     /**
      * @param list<string>       $columnNames
      * @param list<list<string>> $rows
@@ -105,9 +110,9 @@ final class RecordingInitDialect implements SqlDialect
     }
 
     /**
-     * @param list<string> $columnNames
-     * @param list<string> $conflictCols
-     * @param list<string> $updateCols
+     * @param list<string>           $columnNames
+     * @param list<string>           $conflictCols
+     * @param array<string, ?string> $updateCols
      */
     public function buildSingleUpsertSql(string $tableName, array $columnNames, array $conflictCols, array $updateCols): string
     {

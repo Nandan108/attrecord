@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Expression / `RawSql` SET in `upsertByUniqueKey()`.** `$updateColumns` now accepts, alongside the
+  plain `list<string>` (each column set to the incoming value), a `column => RawSql` map for a
+  per-column SET **expression** — the two forms may be mixed. Inside an expression, reference the
+  incoming and stored row values portably with the new static helpers **`Record::incoming('col')`**
+  (renders `VALUES(\`col\`)` on MySQL/MariaDB, `EXCLUDED."col"` on PostgreSQL/SQLite) and
+  **`Record::stored('col')`** (the quoted column); bind literal values via the `RawSql`'s `?` params,
+  which splice in after the INSERT `VALUES` params in map-iteration order. This makes conditional
+  upserts — e.g. `name = CASE WHEN <incoming> <> '' THEN <incoming> ELSE <stored> END`, or a
+  `CURRENT_TIMESTAMP` refresh — expressible in one native statement, closing the previous
+  "`SET` is limited to `col = VALUES(col)`" gap. A string-keyed value must be a `RawSql` (a bare
+  string is rejected); unknown columns throw `SchemaException`; expression SET is unsupported with
+  `preserveAutoIncrement: true` (its plain-UPDATE path has no incoming row). New dialect method
+  `SqlDialect::incomingRef()`; the legacy `list<string>` form is unchanged.
+
 ## [0.8.0] - 2026-07-22 — Optimistic locking
 
 ### Added

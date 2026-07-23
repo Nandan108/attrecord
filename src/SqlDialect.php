@@ -122,16 +122,27 @@ interface SqlDialect
     ): string;
 
     /**
+     * A reference to the *incoming* (would-be-inserted) row's value for a column, usable inside an
+     * upsert's conflict-UPDATE SET clause: `VALUES(col)` on MySQL/MariaDB, `EXCLUDED.col` on
+     * PostgreSQL/SQLite. Renders an **identifier reference**, not a bound value.
+     *
+     * @param string $column Unquoted column name
+     */
+    public function incomingRef(string $column): string;
+
+    /**
      * Build a parameterized INSERT … ON CONFLICT UPDATE for a single record.
      *
-     * MySQL uses ON DUPLICATE KEY UPDATE col = VALUES(col); conflictCols are accepted
-     * but not required in the SQL (MySQL resolves the conflict implicitly).
-     * PostgreSQL uses ON CONFLICT (cols) DO UPDATE SET col = EXCLUDED.col.
+     * MySQL emits `ON DUPLICATE KEY UPDATE`; PostgreSQL/SQLite `ON CONFLICT (cols) DO UPDATE SET`
+     * (and `DO NOTHING` when `$updateCols` is empty). Each SET entry is keyed by column name and
+     * carries either `null` — meaning the default "copy the incoming value" ({@see incomingRef()}) —
+     * or a **raw SQL expression string** (already dialect-portable; its bound values are supplied by
+     * the caller, spliced after the INSERT `VALUES` params in this map's iteration order).
      *
-     * @param string       $tableName    Unquoted table name
-     * @param list<string> $columnNames  Columns to insert (unquoted; autoIncrement PK excluded)
-     * @param list<string> $conflictCols Unique key columns for conflict detection
-     * @param list<string> $updateCols   Columns to overwrite on conflict
+     * @param string                 $tableName    Unquoted table name
+     * @param list<string>           $columnNames  Columns to insert (unquoted; autoIncrement PK excluded)
+     * @param list<string>           $conflictCols Unique key columns for conflict detection
+     * @param array<string, ?string> $updateCols   Column → SET expression (null = copy the incoming value)
      */
     public function buildSingleUpsertSql(
         string $tableName,

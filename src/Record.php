@@ -1232,18 +1232,95 @@ abstract class Record
     }
 
     /**
-     * INSERT this record; on unique key conflict, UPDATE the given columns instead.
+     * A portable reference to the **incoming** (would-be-inserted) row's value for a column, for use
+     * inside an {@see upsertByUniqueKey()} SET expression: renders `VALUES(col)` on MySQL/MariaDB and
+     * `EXCLUDED.col` on PostgreSQL/SQLite, resolved against the record's current connection dialect.
+     * It is an identifier reference — interpolate it into a {@see RawSql} expression string; bind any
+     * literal *values* via that RawSql's `?` params.
      *
-     * All non-autoIncrement columns are included in the INSERT. On conflict on the
-     * named unique key, only $updateColumns are overwritten. After execution the
-     * snapshot is refreshed and the record is marked as not-new.
+     * @api
+     */
+    public static function incoming(string $column): string
+    {
+        return static::connection()->dialect->incomingRef($column);
+    }
+
+    /**
+     * The quoted reference to the **stored** (existing) row's value for a column — the counterpart of
+     * {@see incoming()} for the "keep the old value" side of an upsert SET expression. Just the
+     * dialect-quoted column name.
+     *
+     * @api
+     */
+    public static function stored(string $column): string
+    {
+        return static::connection()->dialect->quoteIdentifier($column);
+    }
+
+    /**
+     * Normalize a caller's `$updateColumns` into the dialect's SET spec + ordered bound params.
+     *
+     * Accepts a mixed array: an **int-keyed** entry is a plain column name → `col = <incoming>`; a
+     * **string-keyed** entry maps a column to a {@see RawSql} expression → `col = <expression>`, whose
+     * params are collected in iteration order (they bind after the INSERT `VALUES` params).
+     *
+     * @param array<array-key, string|RawSql> $updateColumns
+     *
+     * @return array{exprs: array<string, ?string>, params: list<scalar|null>}
+     *
+     * @throws SchemaException on an unknown column, a non-string list entry, or a non-RawSql map value
+     */
+    private static function normalizeUpsertSet(array $updateColumns, TableSchema $schema): array
+    {
+        $exprs = [];
+        $params = [];
+        /** @psalm-suppress MixedAssignment */
+        foreach ($updateColumns as $key => $value) {
+            if (is_int($key)) {
+                if (!is_string($value)) {
+                    throw new SchemaException(sprintf('upsertByUniqueKey: list entries must be column names on %s.', static::class));
+                }
+                $col = $value;
+                $expr = null;
+            } else {
+                $col = $key;
+                if (!$value instanceof RawSql) {
+                    throw new SchemaException(sprintf('upsertByUniqueKey: the SET value for "%s" on %s must be a RawSql expression.', $col, static::class));
+                }
+                $expr = $value->expression;
+                foreach ($value->params as $p) {
+                    $params[] = $p;
+                }
+            }
+            if (!isset($schema->columns[$col])) {
+                throw new SchemaException(sprintf('upsertByUniqueKey: unknown column "%s" on %s.', $col, static::class));
+            }
+            $exprs[$col] = $expr;
+        }
+
+        return ['exprs' => $exprs, 'params' => $params];
+    }
+
+    /**
+     * INSERT this record; on unique-key conflict, UPDATE the given columns instead.
+     *
+     * All non-autoIncrement columns are included in the INSERT. On conflict on the named unique key,
+     * only `$updateColumns` are overwritten. After execution the snapshot is refreshed and the record
+     * is marked not-new.
+     *
+     * `$updateColumns` is either a plain `list<string>` of column names — each set to the incoming
+     * value (`col = VALUES(col)` / `col = EXCLUDED.col`) — or a `column => RawSql` map for a per-column
+     * SET **expression**, and the two forms may be mixed in one array. Inside an expression, reference
+     * the incoming and stored values portably with {@see incoming()} / {@see stored()} and bind any
+     * literal values via the `RawSql`'s `?` params (spliced after the INSERT `VALUES` params).
      *
      * @api
      *
-     * @param string       $conflictKey   Name of a #[UniqueKey] declared on this Record class
-     * @param list<string> $updateColumns Non-PK columns to overwrite on conflict
+     * @param string                          $conflictKey   name of a `#[UniqueKey]` declared on this Record
+     * @param array<array-key, string|RawSql> $updateColumns column names and/or `column => RawSql` SET expressions
      *
-     * @throws AttrecordException  when $conflictKey is not declared on this Record
+     * @throws AttrecordException  when $conflictKey is unknown, or expression SET is combined with $preserveAutoIncrement
+     * @throws SchemaException     on an unknown column or a malformed $updateColumns entry
      * @throws RecordSaveException on DB error
      */
     public function upsertByUniqueKey(string $conflictKey, array $updateColumns, bool $preserveAutoIncrement = false): void
@@ -1258,8 +1335,17 @@ abstract class Record
                 sprintf('upsertByUniqueKey: unknown unique key "%s" on %s.', $conflictKey, static::class),
             );
 
+        ['exprs' => $setExprs, 'params' => $setParams] = self::normalizeUpsertSet($updateColumns, $schema);
+
         if ($preserveAutoIncrement) {
-            $this->upsertByUniqueKeyPreservingAutoIncrement($schema, $conflictCols, $updateColumns);
+            // The burn-free variant does a plain UPDATE of the existing row, where an "incoming"
+            // reference has no meaning — so expression SET is not supported there.
+            foreach ($setExprs as $expr) {
+                if (null !== $expr) {
+                    throw new AttrecordException('upsertByUniqueKey: RawSql/expression SET is not supported with preserveAutoIncrement: true.');
+                }
+            }
+            $this->upsertByUniqueKeyPreservingAutoIncrement($schema, $conflictCols, array_keys($setExprs));
 
             return;
         }
@@ -1275,11 +1361,11 @@ abstract class Record
             $params[] = ColumnSerializer::toParam($this->{$col->propertyName} ?? null, $col, $dialect->bindsBinaryAsLob());
         }
 
-        $sql = $dialect->buildSingleUpsertSql($schema->tableName, $columnNames, $conflictCols, $updateColumns);
+        $sql = $dialect->buildSingleUpsertSql($schema->tableName, $columnNames, $conflictCols, $setExprs);
 
         try {
             /** @psalm-suppress MixedArgumentTypeCoercion */
-            $session->exec($sql, $params);
+            $session->exec($sql, [...$params, ...$setParams]);
         } catch (\Throwable $e) {
             throw new RecordSaveException($e->getMessage(), $e);
         }

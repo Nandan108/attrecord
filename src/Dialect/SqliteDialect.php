@@ -153,11 +153,12 @@ final class SqliteDialect implements SqlDialect
         return " ESCAPE '\\'";
     }
 
-    /**
-     * @param list<string> $columnNames
-     * @param list<string> $conflictCols
-     * @param list<string> $updateCols
-     */
+    #[\Override]
+    public function incomingRef(string $column): string
+    {
+        return 'excluded.'.$this->quoteIdentifier($column);
+    }
+
     #[\Override]
     public function buildSingleUpsertSql(
         string $tableName,
@@ -173,10 +174,10 @@ final class SqliteDialect implements SqlDialect
         $sql = "INSERT INTO {$qt} ({$quotedCols}) VALUES ({$placeholders})";
 
         if (!empty($updateCols)) {
-            $setParts = \array_map(
-                fn (string $col): string => $this->quoteIdentifier($col).' = excluded.'.$this->quoteIdentifier($col),
-                $updateCols,
-            );
+            $setParts = [];
+            foreach ($updateCols as $col => $expr) {
+                $setParts[] = $this->quoteIdentifier($col).' = '.($expr ?? $this->incomingRef($col));
+            }
             $sql .= " ON CONFLICT ({$conflictTarget}) DO UPDATE SET ".\implode(', ', $setParts);
         } else {
             $sql .= " ON CONFLICT ({$conflictTarget}) DO NOTHING";

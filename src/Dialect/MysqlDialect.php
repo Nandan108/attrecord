@@ -152,11 +152,14 @@ final class MysqlDialect implements SqlDialect
         return '';
     }
 
-    /**
-     * @param list<string> $columnNames
-     * @param list<string> $conflictCols
-     * @param list<string> $updateCols
-     */
+    #[\Override]
+    public function incomingRef(string $column): string
+    {
+        // VALUES(col) is deprecated on MySQL 8.0.20+ but is the only form MariaDB supports, so it
+        // stays the portable choice across the MySQL/MariaDB family this dialect serves.
+        return 'VALUES('.$this->quoteIdentifier($column).')';
+    }
+
     #[\Override]
     public function buildSingleUpsertSql(
         string $tableName,
@@ -171,10 +174,10 @@ final class MysqlDialect implements SqlDialect
         $sql = "INSERT INTO {$qt} ({$quotedCols}) VALUES ({$placeholders})";
 
         if (!empty($updateCols)) {
-            $setParts = \array_map(
-                fn (string $col): string => $this->quoteIdentifier($col).' = VALUES('.$this->quoteIdentifier($col).')',
-                $updateCols,
-            );
+            $setParts = [];
+            foreach ($updateCols as $col => $expr) {
+                $setParts[] = $this->quoteIdentifier($col).' = '.($expr ?? $this->incomingRef($col));
+            }
             $sql .= ' ON DUPLICATE KEY UPDATE '.\implode(', ', $setParts);
         }
 

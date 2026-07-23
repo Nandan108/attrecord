@@ -335,18 +335,31 @@ Persistence:
 - `delete(): void` — DELETE by PK; marks record new again.
 - `upsertByUniqueKey(string $conflictKey, array $updateColumns, bool $preserveAutoIncrement = false): void`
   — single-row upsert on a unique key. **Default (`preserveAutoIncrement: false`) emits exactly one
-  native statement** — `INSERT … VALUES (…) ON DUPLICATE KEY UPDATE col = VALUES(col)` (MySQL) /
-  `ON CONFLICT (cols) DO UPDATE SET col = EXCLUDED.col` (PG/SQLite), via
-  `SqlDialect::buildSingleUpsertSql()`. This is the faithful 1:1 replacement for a hand-written
-  single-row `ON DUPLICATE KEY UPDATE`. **Two constraints:** (1) the `SET` is limited to
-  `col = VALUES(col)` for the named `$updateColumns` — it **cannot** express a `CASE`, a raw
-  expression, or a literal-preserve like `name = CASE WHEN VALUES(name) <> '' THEN … ELSE name END`
-  (fold a literal into the inserted VALUES instead — then `col = VALUES(col)` reproduces it — but
-  genuine conditional logic must stay hand-written or move into `beforeSave()`); (2) `$conflictKey`
-  must name a declared `#[UniqueKey]` — **the primary key is not in `schema->uniqueKeys`**, so to
-  upsert on a PK conflict, declare a `#[UniqueKey]` mirroring the PK column(s) and pass its name.
-  `preserveAutoIncrement: true` instead uses a SELECT-then-write strategy (two statements) that does
-  **not** burn an auto-increment value on conflict.
+  native statement** — `INSERT … VALUES (…) ON DUPLICATE KEY UPDATE …` (MySQL) /
+  `ON CONFLICT (cols) DO UPDATE SET …` (PG/SQLite), via `SqlDialect::buildSingleUpsertSql()`. The
+  faithful 1:1 replacement for a hand-written single-row upsert.
+  **`$updateColumns` — plain columns and/or expressions.** Each entry is either an int-keyed **column
+  name** (`col` → set to the incoming value: `col = VALUES(col)` / `col = EXCLUDED.col`) or a
+  string-keyed `col => RawSql` **expression** — and the two forms may be mixed in one array. Inside an
+  expression, reference the incoming and stored values portably with the static helpers
+  **`Record::incoming('col')`** (→ `VALUES(\`col\`)` on MySQL, `EXCLUDED."col"` on PG/SQLite) and
+  **`Record::stored('col')`** (the quoted column); bind literal *values* via the `RawSql`'s `?` params
+  (they splice after the INSERT `VALUES` params, in map-iteration order). So the preserve-if-nonempty
+  policy is now expressible:
+  ```php
+  $rec->upsertByUniqueKey('uk_slug', [
+      'plugin_name' => new RawSql(sprintf('CASE WHEN %1$s <> ? THEN %1$s ELSE %2$s END',
+                                          $rec::incoming('plugin_name'), $rec::stored('plugin_name')), ['']),
+      'last_seen_at' => new RawSql('CURRENT_TIMESTAMP(6)'),
+  ]);
+  ```
+  A string-keyed value must be a `RawSql` (a bare string is rejected — never treated as raw SQL);
+  unknown columns throw `SchemaException`. Expression SET is **not** supported with
+  `preserveAutoIncrement: true` (its plain-UPDATE path has no "incoming" row) — it throws.
+  **`$conflictKey`** must name a declared `#[UniqueKey]` — **the primary key is not in
+  `schema->uniqueKeys`**, so to upsert on a PK conflict, declare a `#[UniqueKey]` mirroring the PK
+  column(s). `preserveAutoIncrement: true` instead uses a SELECT-then-write strategy (two statements)
+  that does **not** burn an auto-increment value on conflict.
 - `updateByUniqueKey(array $fields = []): int` — UPDATE keyed by this record's unique key.
 - `updateByWhere(string|WhereClause $where = '', array $params = [], array $fields = []): int`
 - `reload(): void` — re-fetch by PK, refresh properties + snapshot.
@@ -392,7 +405,7 @@ upsert paths deliberately fan into 3–4 statements for deadlock safety. Pick by
 |---|---|---|
 | `Record::save()` (new) | **1×** `INSERT` | single append / insert-by-PK |
 | `Record::save()` (existing) | **1×** `UPDATE` of dirty cols by PK | `#[Version]`-guarded if declared |
-| `Record::upsertByUniqueKey()` (default) | **1×** native `INSERT … ON DUPLICATE KEY UPDATE col = VALUES(col)` | single-row atomic upsert; `SET` limited to `col = VALUES(col)`; `$conflictKey` must be a declared `#[UniqueKey]` (see above) |
+| `Record::upsertByUniqueKey()` (default) | **1×** native `INSERT … ON DUPLICATE KEY UPDATE …` | single-row atomic upsert; `SET` supports plain columns **and** `RawSql` expressions (`incoming()`/`stored()`); `$conflictKey` must be a declared `#[UniqueKey]` (see above) |
 | `Record::upsertByUniqueKey(preserveAutoIncrement: true)` | **2×** `SELECT` + `UPDATE`/`INSERT` | burn-free; small race window |
 | `RecordSet::insertAll()` | **1×** bulk `INSERT … VALUES (…),(…)` | append-only; duplicate PK **throws** |
 | `RecordSet::upsertAll()` | **3×** `INSERT IGNORE` → `SELECT … FOR UPDATE` → join `UPDATE` | bulk keyed upsert, deadlock-safe |

@@ -24,6 +24,9 @@ final class UpsertByUniqueKeyRecord extends Record
     #[Column(ColumnType::VarChar, length: 100)]
     public string $name = '';
 
+    #[Column(ColumnType::VarChar, length: 100, nullable: true)]
+    public ?string $note = null;
+
     /** Test convenience builder. */
     public function withCode(string $code, string $name): static
     {

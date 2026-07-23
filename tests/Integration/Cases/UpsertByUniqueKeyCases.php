@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord\Tests\Integration\Cases;
 
+use Nandan108\Attrecord\Exception\AttrecordException;
+use Nandan108\Attrecord\Exception\SchemaException;
+use Nandan108\Attrecord\RawSql;
 use Nandan108\Attrecord\Record;
 use Nandan108\Attrecord\RecordSet;
 use Nandan108\Attrecord\Tests\Fixtures\UpsertByUniqueKeyRecord;
@@ -120,5 +123,82 @@ trait UpsertByUniqueKeyCases
         } catch (\Throwable $e) {
             $this->assertTrue($session->isDuplicateKeyError($e));
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Expression / RawSql SET, with the incoming()/stored() helpers
+    // -----------------------------------------------------------------
+
+    /** Build the portable "keep the stored value unless the incoming one is non-empty" SET for a column. */
+    private function keepIfIncomingNonEmpty(string $column): RawSql
+    {
+        return new RawSql(
+            sprintf(
+                'CASE WHEN %1$s <> ? THEN %1$s ELSE %2$s END',
+                UpsertByUniqueKeyRecord::incoming($column),   // VALUES(`name`) | EXCLUDED."name"
+                UpsertByUniqueKeyRecord::stored($column),      // `name`         | "name"
+            ),
+            [''],   // the empty-string comparison, bound (not inlined) so quoting can't bite
+        );
+    }
+
+    public function testExpressionSetPreservesOrReplacesViaIncomingAndStored(): void
+    {
+        (new UpsertByUniqueKeyRecord())->withCode('slug', 'Original')->upsertByUniqueKey('uniq_code', ['name']);
+        $this->assertSame('Original', UpsertByUniqueKeyRecord::findOne('code = ?', ['slug'])?->name);
+
+        $keep = $this->keepIfIncomingNonEmpty('name');
+
+        // Empty incoming → the CASE keeps the stored value.
+        (new UpsertByUniqueKeyRecord())->withCode('slug', '')->upsertByUniqueKey('uniq_code', ['name' => $keep]);
+        $this->assertSame('Original', UpsertByUniqueKeyRecord::findOne('code = ?', ['slug'])?->name, 'empty incoming preserved the stored name');
+
+        // Non-empty incoming → the CASE takes the incoming value.
+        (new UpsertByUniqueKeyRecord())->withCode('slug', 'Updated')->upsertByUniqueKey('uniq_code', ['name' => $keep]);
+        $this->assertSame('Updated', UpsertByUniqueKeyRecord::findOne('code = ?', ['slug'])?->name, 'non-empty incoming replaced the stored name');
+
+        // Exactly one row throughout — every write was an upsert on the same conflict key.
+        $this->assertSame(1, UpsertByUniqueKeyRecord::countWhere('1=1'));
+    }
+
+    public function testExpressionSetMixesPlainAndExpressionColumns(): void
+    {
+        $seed = new UpsertByUniqueKeyRecord();
+        $seed->code = 'mix';
+        $seed->name = 'Seed';
+        $seed->note = 'keep-me';
+        $seed->upsertByUniqueKey('uniq_code', ['name', 'note']);
+
+        // `name` = plain incoming copy; `note` = keep-unless-non-empty.
+        $in = new UpsertByUniqueKeyRecord();
+        $in->code = 'mix';
+        $in->name = 'Fresh';
+        $in->note = '';   // empty → the expression keeps 'keep-me'
+        $in->upsertByUniqueKey('uniq_code', ['name', 'note' => $this->keepIfIncomingNonEmpty('note')]);
+
+        $row = UpsertByUniqueKeyRecord::findOne('code = ?', ['mix']);
+        $this->assertNotNull($row);
+        $this->assertSame('Fresh', $row->name, 'plain list entry took the incoming value');
+        $this->assertSame('keep-me', $row->note, 'expression entry preserved the stored value');
+    }
+
+    public function testExpressionSetRejectedWithPreserveAutoIncrement(): void
+    {
+        $r = new UpsertByUniqueKeyRecord();
+        $r->code = 'x';
+        $r->name = 'y';
+
+        $this->expectException(AttrecordException::class);
+        $r->upsertByUniqueKey('uniq_code', ['name' => new RawSql('CURRENT_TIMESTAMP')], preserveAutoIncrement: true);
+    }
+
+    public function testExpressionSetUnknownColumnThrows(): void
+    {
+        $r = new UpsertByUniqueKeyRecord();
+        $r->code = 'x';
+        $r->name = 'y';
+
+        $this->expectException(SchemaException::class);
+        $r->upsertByUniqueKey('uniq_code', ['no_such_col' => new RawSql('1')]);
     }
 }
