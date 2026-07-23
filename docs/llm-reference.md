@@ -334,8 +334,19 @@ Persistence:
   `bool|list<string>|null $readBack` argument on `insertAll()` / `upsertAll()`.
 - `delete(): void` — DELETE by PK; marks record new again.
 - `upsertByUniqueKey(string $conflictKey, array $updateColumns, bool $preserveAutoIncrement = false): void`
-  — single-row upsert on a unique key. `preserveAutoIncrement: true` uses a SELECT-then-write
-  strategy that does **not** burn an auto-increment value on conflict.
+  — single-row upsert on a unique key. **Default (`preserveAutoIncrement: false`) emits exactly one
+  native statement** — `INSERT … VALUES (…) ON DUPLICATE KEY UPDATE col = VALUES(col)` (MySQL) /
+  `ON CONFLICT (cols) DO UPDATE SET col = EXCLUDED.col` (PG/SQLite), via
+  `SqlDialect::buildSingleUpsertSql()`. This is the faithful 1:1 replacement for a hand-written
+  single-row `ON DUPLICATE KEY UPDATE`. **Two constraints:** (1) the `SET` is limited to
+  `col = VALUES(col)` for the named `$updateColumns` — it **cannot** express a `CASE`, a raw
+  expression, or a literal-preserve like `name = CASE WHEN VALUES(name) <> '' THEN … ELSE name END`
+  (fold a literal into the inserted VALUES instead — then `col = VALUES(col)` reproduces it — but
+  genuine conditional logic must stay hand-written or move into `beforeSave()`); (2) `$conflictKey`
+  must name a declared `#[UniqueKey]` — **the primary key is not in `schema->uniqueKeys`**, so to
+  upsert on a PK conflict, declare a `#[UniqueKey]` mirroring the PK column(s) and pass its name.
+  `preserveAutoIncrement: true` instead uses a SELECT-then-write strategy (two statements) that does
+  **not** burn an auto-increment value on conflict.
 - `updateByUniqueKey(array $fields = []): int` — UPDATE keyed by this record's unique key.
 - `updateByWhere(string|WhereClause $where = '', array $params = [], array $fields = []): int`
 - `reload(): void` — re-fetch by PK, refresh properties + snapshot.
@@ -373,7 +384,28 @@ Access / shaping:
 - `toArraySet(): list<T>`
 - `bulkSet(array $attrs): static` — assign attrs to every record (stages dirty); returns `$this`.
 
-Batch persistence (single SQL per operation — never a loop of queries):
+**Write-path selection — statement count matters on hot single-key writes.** A per-record `save()`
+loop is always wrong (see §16), but "not a loop" does **not** mean "one statement": the bulk *keyed*
+upsert paths deliberately fan into 3–4 statements for deadlock safety. Pick by shape:
+
+| Method | SQL emitted | Semantics |
+|---|---|---|
+| `Record::save()` (new) | **1×** `INSERT` | single append / insert-by-PK |
+| `Record::save()` (existing) | **1×** `UPDATE` of dirty cols by PK | `#[Version]`-guarded if declared |
+| `Record::upsertByUniqueKey()` (default) | **1×** native `INSERT … ON DUPLICATE KEY UPDATE col = VALUES(col)` | single-row atomic upsert; `SET` limited to `col = VALUES(col)`; `$conflictKey` must be a declared `#[UniqueKey]` (see above) |
+| `Record::upsertByUniqueKey(preserveAutoIncrement: true)` | **2×** `SELECT` + `UPDATE`/`INSERT` | burn-free; small race window |
+| `RecordSet::insertAll()` | **1×** bulk `INSERT … VALUES (…),(…)` | append-only; duplicate PK **throws** |
+| `RecordSet::upsertAll()` | **3×** `INSERT IGNORE` → `SELECT … FOR UPDATE` → join `UPDATE` | bulk keyed upsert, deadlock-safe |
+| `RecordSet::upsertAllByUniqueKey()` | **4×** `SELECT … IN` (resolve PKs) → then `upsertAll`'s 3 | bulk upsert keyed by a unique key |
+
+**There is no bulk *single-statement* `INSERT … VALUES (…),(…) ON DUPLICATE KEY UPDATE`.** For one
+atomic multi-row native upsert (e.g. a coalescing queue/outbox write on a hot path), the bulk keyed
+paths cost 3–4 statements — hand-written SQL is the correct choice there, not a regression to justify
+away. A **single-row** native upsert, by contrast, *is* available as one statement via
+`upsertByUniqueKey()`. `insertAll()` is one statement but has **no** upsert semantics — a PK
+collision surfaces as an error (correct for append-only ledgers/outboxes that never coalesce).
+
+Batch persistence (a bounded number of statements per operation — never a per-record loop):
 - `upsertAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false, ?array $ignoreColumns = null, bool|list<string>|null $readBack = null): ?SaveResult`
   (was `saveAll()` — kept as a `@deprecated` forwarding alias) — plain bulk `INSERT` for PK-null
   records; deadlock-safe 3-step upsert for keyed records
@@ -416,6 +448,11 @@ Batch persistence (single SQL per operation — never a loop of queries):
   `null` for an empty set or when no insertable column carries a value. Replaces a per-row raw
   `INSERT` loop on immutable-ledger tables with one round-trip **without** inheriting upsert semantics.
 - `upsertAllByUniqueKey(string $conflictKey): ?SaveResult` — bulk burn-free upsert by unique key.
+  **Four statements, not one:** one batched `SELECT … WHERE (cols) IN (…)` resolves each PK-less
+  record's existing PK from its conflict-key tuple (in-memory pairing, no per-record query), then it
+  delegates to `upsertAll()` (the 3-step keyed path). `$conflictKey` must name a declared
+  `#[UniqueKey]`. Burn-free because matched rows route to `UPDATE` by resolved PK rather than
+  `INSERT … ON DUPLICATE KEY`, so no auto-increment value is allocated-and-discarded on conflict.
 - `buildUpsertAllSql(bool $force = false): ?UpsertSql` — the SQL the upsert path would run (introspection/testing); `buildSaveAllSql()` is a deprecated alias.
 - `buildInsertAllSql(): ?string` — the single plain INSERT `insertAll()` would run (introspection/testing; no hooks/DB).
 - `deleteAll(): int` — single `DELETE … WHERE pk IN (…)`.
