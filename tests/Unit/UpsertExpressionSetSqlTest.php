@@ -62,7 +62,7 @@ final class UpsertExpressionSetSqlTest extends TestCase
         $this->assertStringContainsString('INSERT INTO `attrecord_upsert`', $sql);
         $this->assertStringContainsString('ON DUPLICATE KEY UPDATE', $sql);
         $this->assertStringContainsString('VALUES(`name`)', $sql, 'incoming() renders VALUES(col) on MySQL');
-        $this->assertStringContainsString('CASE WHEN VALUES(`name`) <> ? THEN VALUES(`name`) ELSE `name` END', $sql);
+        $this->assertStringContainsString('CASE WHEN VALUES(`name`) <> ? THEN VALUES(`name`) ELSE `attrecord_upsert`.`name` END', $sql);
 
         // Param order: the INSERT VALUES params (code, name, note) first, then the SET-expression param ('').
         $this->assertSame(['slug', 'incoming-name', null, ''], $this->session->lastParams());
@@ -88,7 +88,7 @@ final class UpsertExpressionSetSqlTest extends TestCase
 
         $sql = (string) $this->session->lastSql();
         $this->assertStringContainsString('ON CONFLICT ("code") DO UPDATE SET', $sql);
-        $this->assertStringContainsString('COALESCE(NULLIF(EXCLUDED."name", ?), "name")', $sql, 'incoming() renders EXCLUDED.col on PG');
+        $this->assertStringContainsString('COALESCE(NULLIF(EXCLUDED."name", ?), "attrecord_upsert"."name")', $sql, 'incoming() renders EXCLUDED.col on PG; stored() is table-qualified');
         $this->assertSame(['slug', 'incoming-name', null, ''], $this->session->lastParams());
     }
 
@@ -176,12 +176,12 @@ final class UpsertExpressionSetSqlTest extends TestCase
         $mysql = UpsertByUniqueKeyRecord::upsertCol('name');
         $this->assertSame('name', $mysql->name, 'name is the raw (unquoted) column — the map key');
         $this->assertSame('VALUES(`name`)', $mysql->incoming);
-        $this->assertSame('`name`', $mysql->stored);
+        $this->assertSame('`attrecord_upsert`.`name`', $mysql->stored, 'stored is table-qualified');
 
         $this->connect(new PgsqlDialect());
         $pg = UpsertByUniqueKeyRecord::upsertCol('name');
         $this->assertSame('EXCLUDED."name"', $pg->incoming);
-        $this->assertSame('"name"', $pg->stored);
+        $this->assertSame('"attrecord_upsert"."name"', $pg->stored, 'stored is table-qualified (avoids PG ON CONFLICT ambiguity)');
     }
 
     public function testSetRawReturnsSingleEntryMapKeyedByRawName(): void
@@ -192,7 +192,7 @@ final class UpsertExpressionSetSqlTest extends TestCase
         $fragment = $c->setRaw("CONCAT({$c->stored}, ?)", ['-x']);
         $this->assertSame(['name'], array_keys($fragment), 'keyed by the raw column name');
         $this->assertInstanceOf(RawSql::class, $fragment['name']);
-        $this->assertSame('CONCAT(`name`, ?)', $fragment['name']->expression);
+        $this->assertSame('CONCAT(`attrecord_upsert`.`name`, ?)', $fragment['name']->expression);
         $this->assertSame(['-x'], $fragment['name']->params);
     }
 
@@ -218,13 +218,13 @@ final class UpsertExpressionSetSqlTest extends TestCase
         $r2->code = 'slug';
         $r2->name = 'incoming-name';
         $r2->upsertByUniqueKey('uniq_code', [
-            'name' => new RawSql('CASE WHEN VALUES(`name`) <> ? THEN VALUES(`name`) ELSE `name` END', ['']),
+            'name' => new RawSql('CASE WHEN VALUES(`name`) <> ? THEN VALUES(`name`) ELSE `attrecord_upsert`.`name` END', ['']),
         ]);
 
         $this->assertSame((string) $this->session->lastSql(), $spreadSql);
         $this->assertSame($this->session->lastParams(), $spreadParams);
         $this->assertStringContainsString(
-            'ON DUPLICATE KEY UPDATE `name` = CASE WHEN VALUES(`name`) <> ? THEN VALUES(`name`) ELSE `name` END',
+            'ON DUPLICATE KEY UPDATE `name` = CASE WHEN VALUES(`name`) <> ? THEN VALUES(`name`) ELSE `attrecord_upsert`.`name` END',
             $spreadSql,
         );
     }

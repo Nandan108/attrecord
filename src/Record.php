@@ -1336,15 +1336,19 @@ abstract class Record
     }
 
     /**
-     * The quoted reference to the **stored** (existing) row's value for a column — the counterpart of
-     * {@see incoming()} for the "keep the old value" side of an upsert SET expression. Just the
-     * dialect-quoted column name.
+     * The reference to the **stored** (existing) row's value for a column — the counterpart of
+     * {@see incoming()} for the "keep the old value" side of an upsert SET expression. The column is
+     * **table-qualified** (`table.col`): inside a PostgreSQL `ON CONFLICT DO UPDATE SET`, a bare column
+     * is ambiguous between the target table and the `EXCLUDED` pseudo-row (SQLSTATE 42702), so the
+     * qualifier is required there; it is equally valid on MySQL/MariaDB and SQLite.
      *
      * @api
      */
     public static function stored(string $column): string
     {
-        return static::connection()->dialect->quoteIdentifier($column);
+        $dialect = static::connection()->dialect;
+
+        return $dialect->quoteIdentifier(static::schema()->tableName).'.'.$dialect->quoteIdentifier($column);
     }
 
     /**
@@ -1365,7 +1369,7 @@ abstract class Record
         return new UpsertColumn(
             $column,
             $dialect->incomingRef($column),
-            $dialect->quoteIdentifier($column),
+            $dialect->quoteIdentifier(static::schema()->tableName).'.'.$dialect->quoteIdentifier($column),
         );
     }
 
@@ -1969,16 +1973,13 @@ abstract class Record
             /** @psalm-suppress MixedAssignment */
             $value = ColumnSerializer::fromDb($raw, $col, $row);
             $this->{$col->propertyName} = $value;
-            // For casted columns, snapshot the re-encoded canonical form rather than the
-            // raw DB bytes: native JSON storage normalizes (key order / whitespace), so
-            // comparing our own encoding on both sides keeps a freshly loaded, untouched
-            // record clean instead of falsely dirty.
-            // Binary columns snapshot from the decoded value too: on PostgreSQL the raw
-            // bytea arrives as a single-read stream that fromDb() has already consumed, so
-            // (string) $raw would be empty/garbage here.
-            $this->_snapshot[$colName] = (null !== $col->caster || $col->isBinary)
-                ? ColumnSerializer::toSnapshotString($value, $col)
-                : (null !== $raw ? (string) $raw : null);
+            // Snapshot the **canonical** form (from the decoded value), never the raw DB string —
+            // it must match what refreshSnapshot() writes and what dirtyFields() computes, or a
+            // freshly-loaded, untouched record reads back falsely dirty. The raw string diverges from
+            // the canonical form for more than just casted/binary columns: a PostgreSQL `timestamp`
+            // comes back in a format unlike our DateTime serialization, and a bytea arrives as a
+            // single-read stream fromDb() has already consumed. toSnapshotString() normalizes all of it.
+            $this->_snapshot[$colName] = ColumnSerializer::toSnapshotString($value, $col);
         }
 
         $this->_isNew = false;
@@ -2006,10 +2007,10 @@ abstract class Record
             /** @psalm-suppress MixedAssignment */
             $value = ColumnSerializer::fromDb($raw, $col, $row);
             $this->{$col->propertyName} = $value;
-            // Snapshot the same way hydrateFromRow() does (canonical form for casted/binary columns).
-            $this->_snapshot[$colName] = (null !== $col->caster || $col->isBinary)
-                ? ColumnSerializer::toSnapshotString($value, $col)
-                : (null !== $raw ? (string) $raw : null);
+            // Snapshot the canonical form (see hydrateFromRow()) so the read-back column reads clean —
+            // the raw DB string can diverge from it (e.g. a PostgreSQL timestamp), which would leave
+            // the record falsely dirty after an auto read-back.
+            $this->_snapshot[$colName] = ColumnSerializer::toSnapshotString($value, $col);
         }
     }
 

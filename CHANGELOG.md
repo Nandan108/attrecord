@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-07-24
+
+### Fixed
+
+- **PostgreSQL: `stored()` is now table-qualified.** A bare column in an `upsertByUniqueKey()` SET
+  expression (`Record::stored()` / `UpsertColumn->stored`) was ambiguous inside PostgreSQL's
+  `ON CONFLICT DO UPDATE SET` (target table vs `EXCLUDED`, SQLSTATE 42702). It now renders
+  `table.col`, valid on all three engines. (New in 0.9.0, PG-only, never caught locally because PG
+  was down.)
+- **PostgreSQL: `upsertAll(strategy: Lockless)` rejects PK-null records** with a clear
+  `AttrecordException`. Lockless coalesces on the PK, and an explicit `NULL` auto-increment PK is
+  accepted by MySQL but rejected by PostgreSQL/SQLite (the sequence default fires only when the column
+  is omitted, and one uniform-column statement can't omit it per-row). Carry the PK, or use the
+  default `Locked` strategy / `insertAll()` for new rows. (New in 0.9.0.)
+- **Read-back left records falsely dirty on PostgreSQL (regression since 0.7.0).**
+  `hydrateFromRow()` / `patchColumnsFromRow()` snapshotted plain columns as the raw DB string, while
+  `dirtyFields()` / `refreshSnapshot()` compare the canonical `toSnapshotString()`. For a `DateTime`,
+  PG's raw `timestamp` string diverges from the canonical form, so an auto read-back left the record
+  `isDirty()` — and that falsely-dirty timestamp then tripped a `text`-vs-`timestamp` datatype error
+  in the keyed 3-step upsert's derived table. All snapshot writers now use `toSnapshotString()`, so a
+  loaded/read-back row is byte-identical to the dirty-check. This fixes the entire block of PostgreSQL
+  CI failures red since v0.7.0.
+
 ## [0.9.1] - 2026-07-24
 
 ### Changed

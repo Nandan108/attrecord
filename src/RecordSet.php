@@ -480,6 +480,20 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      */
     private function upsertAllLockless(array $dirtyRecords, array $insertedRecords, ?int $chunkSize, bool $allowInTransactionChunking, DbSession $session, TableSchema $schema, SqlDialect $dialect, string $pk, string $pkProp, array $ignore, string | array | null $readBackCols): SaveResult
     {
+        // Lockless coalesces on the PRIMARY KEY, so every record must carry it. A PK-null record has
+        // no key to conflict on — and on an auto-increment table it would emit an explicit `NULL` PK,
+        // which MySQL/MariaDB auto-fill but PostgreSQL/SQLite reject (a SERIAL/AUTOINCREMENT default
+        // fires only when the column is omitted, and a single uniform-column statement can't omit it
+        // for some rows and not others). Route genuinely-new rows through the default Locked strategy
+        // or insertAll(). ($insertedRecords is the PK-null subset, computed by upsertAll().)
+        if ([] !== $insertedRecords) {
+            throw new AttrecordException(
+                'upsertAll(strategy: Lockless) requires every record to carry its primary key: a null '
+                .'PK has nothing to coalesce on (and an explicit NULL auto-increment PK is rejected by '
+                .'PostgreSQL/SQLite). Use the default Locked strategy, or insertAll() for new rows.',
+            );
+        }
+
         // Chunking here only bounds statement size — there is no FOR UPDATE to order, so no PK sort.
         // The in-transaction guard still applies: per-chunk commit is impossible inside an open
         // transaction, so reject it unless explicitly allowed (mirrors the locked path).
@@ -509,13 +523,12 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             }
         }
 
-        $insertedSet = [];
-        foreach ($insertedRecords as $record) {
-            $insertedSet[spl_object_id($record)] = true;
-        }
+        // Every record carries a PK (guarded above), and the DB doesn't report per-row insert-vs-update
+        // for a single upsert statement, so afterSave() is called with wasInsert=false uniformly — the
+        // documented best-effort of the Lockless strategy.
         foreach ($dirtyRecords as $record) {
             $record->markClean();
-            $record->afterSave(isset($insertedSet[spl_object_id($record)]));
+            $record->afterSave(false);
         }
 
         if (null !== $readBackCols && [] !== $readBackCols) {

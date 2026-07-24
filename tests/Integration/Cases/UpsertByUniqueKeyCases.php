@@ -299,15 +299,16 @@ trait UpsertByUniqueKeyCases
         $seed->save();
         $this->assertSame(1, $seed->id);
 
-        // A mixed batch: id 1 already exists (→ UPDATE), a PK-null row is new (→ INSERT with an
-        // auto-increment id). Lockless resolves both in one INSERT … ON DUPLICATE KEY UPDATE /
-        // ON CONFLICT (id) DO UPDATE. readBack re-reads the keyed row (the PK-null one has no id to
-        // key on — no back-fill under Lockless — so it is skipped).
+        // Every record carries its PK (Lockless coalesces on it): id 1 already exists (→ UPDATE), a
+        // genuinely-new id 2 (→ INSERT). Both resolve in one INSERT … ON DUPLICATE KEY UPDATE /
+        // ON CONFLICT (id) DO UPDATE. An explicit id is accepted on every backend (MySQL auto-increment
+        // and PG/SQLite serial alike allow overriding the value); a PK-*null* row would throw (below).
         $existing = new UpsertByUniqueKeyRecord();
         $existing->id = 1;
         $existing->code = 'k1';
         $existing->name = 'Updated';
         $fresh = new UpsertByUniqueKeyRecord();
+        $fresh->id = 2;
         $fresh->code = 'k2';
         $fresh->name = 'Fresh';
 
@@ -316,12 +317,24 @@ trait UpsertByUniqueKeyCases
         $this->assertNotNull($result);
         $this->assertSame(0, $result->updated, 'lockless does not split inserted/updated');
         $this->assertSame('Updated', UpsertByUniqueKeyRecord::findOne('id = ?', [1])?->name, 'existing row coalesced');
-        $this->assertSame('Fresh', UpsertByUniqueKeyRecord::findOne('code = ?', ['k2'])?->name, 'new row inserted');
+        $this->assertSame('Fresh', UpsertByUniqueKeyRecord::findOne('id = ?', [2])?->name, 'new row inserted');
         $this->assertSame(2, UpsertByUniqueKeyRecord::countWhere('1=1'));
 
-        // The keyed row read back clean; the PK-null insert is not back-filled under Lockless.
+        // Both rows read back clean.
         $this->assertFalse($existing->isDirty());
-        $this->assertNull($fresh->id, 'Lockless does not back-fill the auto-increment id');
+        $this->assertFalse($fresh->isDirty());
+    }
+
+    public function testLocklessRejectsPkNullRecords(): void
+    {
+        // A PK-null record has no key to coalesce on and would emit an explicit NULL PK (rejected by
+        // PG/SQLite) — Lockless requires every record to carry its primary key.
+        $fresh = new UpsertByUniqueKeyRecord();
+        $fresh->code = 'x';
+        $fresh->name = 'y';
+
+        $this->expectException(AttrecordException::class);
+        (new RecordSet([$fresh]))->upsertAll(strategy: UpsertStrategy::Lockless);
     }
 
     public function testLocklessUpsertRefreshesOnRepeatedUpsert(): void

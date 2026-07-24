@@ -31,7 +31,8 @@ final class UpsertColumn
     /**
      * @param string $name     Raw (unquoted) column name — the key in the update-columns map
      * @param string $incoming Incoming-row value ref: `VALUES(\`col\`)` (MySQL/MariaDB) | `EXCLUDED."col"` (PG/SQLite)
-     * @param string $stored   Stored-row value ref — the dialect-quoted column: `` `col` `` | `"col"`
+     * @param string $stored   Stored-row value ref — the **table-qualified** column (`table.col`), so
+     *                         it is unambiguous inside PostgreSQL's `ON CONFLICT DO UPDATE SET`
      */
     public function __construct(
         public readonly string $name,
