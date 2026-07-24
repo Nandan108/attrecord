@@ -49,6 +49,16 @@ All notable changes to this project are documented here. The format is based on
   An empty update set degrades to insert-or-ignore. New dialect method
   `SqlDialect::buildBulkUpsertSql()`, which composes with the expression/`RawSql` SET convention.
   The default (`Locked`) preserves prior behaviour exactly.
+- **Scoped per-operation connection/session binding.** New static `Record::usingConnection(Connection
+  $connection, callable $fn)` and `Record::usingSession(DbSession $session, callable $fn)` run every
+  Record/RecordSet operation inside the closure against an explicitly supplied connection/session,
+  then restore the previous binding (even on throw; nesting restores to the enclosing scope, not the
+  global default). The scoped binding wins over both a per-class and the default connection. This lets
+  a caller run a unit of work against a **specific** session rather than the ambient global one — e.g.
+  a projection participant handed an engine-scoped session that must carry the write, or a store
+  keeping its attrecord ops on the exact injected session its raw-SQL siblings use (which also makes
+  the write observable in a unit test with no global-state juggling). `usingSession()` binds only the
+  session and carries the current dialect over (same-engine alternate session — the common case).
 
 ## [0.8.0] - 2026-07-22 — Optimistic locking
 

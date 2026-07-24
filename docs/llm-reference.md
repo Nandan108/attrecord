@@ -61,6 +61,16 @@ Record::setTablePrefix('wp_');         // optional; prepended to every Table nam
   registers a per-class connection override (multi-DB); omit for the global default.
 - `Record::connection(): Connection`, `Record::tablePrefix(): string`,
   `Record::setTablePrefix(string $prefix): void`.
+- `Record::usingConnection(Connection $c, callable $fn)` / `Record::usingSession(DbSession $s, callable $fn)`
+  — run every Record/RecordSet op inside `$fn` against an explicitly supplied connection/session,
+  restoring the previous binding afterward (even on throw; nesting restores to the enclosing scope).
+  The scoped binding **wins over** both a per-class override and the default. Use it to run a unit of
+  work on a **specific** session instead of the ambient global one — a projection participant handed
+  an engine-scoped session that must carry the write, or a store keeping its attrecord ops on the same
+  injected session as its raw-SQL siblings (also makes the write observable in a unit test without
+  touching global state). `usingSession()` binds only the session and reuses the current dialect
+  (same-engine alternate session — the common case); pass a full `Connection` via `usingConnection()`
+  to cross engines.
 - The table prefix is read **fresh at query/DDL time**, so changing it re-targets all Records
   (used by the test suite and multi-tenant setups).
 

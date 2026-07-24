@@ -103,6 +103,13 @@ abstract class Record
     private static array $_classConnections = [];
 
     /**
+     * Connection bound for the duration of a {@see usingConnection()} / {@see usingSession()} block,
+     * overriding both the per-class and default connections. Restored (to the prior value, so nesting
+     * works) when the block returns. `null` outside any such block.
+     */
+    private static ?Connection $_scopedConnection = null;
+
+    /**
      * Set the default Connection for all Record subclasses, or override for one class.
      *
      * @api
@@ -121,11 +128,66 @@ abstract class Record
     /** @api */
     public static function connection(): Connection
     {
-        return self::$_classConnections[static::class]
+        return self::$_scopedConnection
+            ?? self::$_classConnections[static::class]
             ?? self::$_defaultConnection
             ?? throw new AttrecordException(
                 'No Connection configured. Call Record::setConnection() before any DB operation.',
             );
+    }
+
+    /**
+     * Run `$fn` with **every** Record/RecordSet operation bound to `$connection`, then restore the
+     * previous binding (even if `$fn` throws). Nests correctly — an inner call restores to the outer
+     * scope, not to the global default.
+     *
+     * The scoped connection wins over both a per-class {@see setConnection()} override and the
+     * default, so it is the way to run a unit of work against an **explicitly supplied** session
+     * rather than the ambient global one — e.g. a projection participant handed an engine-scoped
+     * session that must carry the write, or a store that wants its attrecord ops to land on the exact
+     * injected session its raw-SQL siblings use (which also makes the write observable in a unit test
+     * without touching global state). Prefer {@see usingSession()} when you only have a session and
+     * want to keep the current dialect.
+     *
+     * @api
+     *
+     * @template TReturn
+     *
+     * @param callable(): TReturn $fn
+     *
+     * @return TReturn
+     */
+    public static function usingConnection(Connection $connection, callable $fn): mixed
+    {
+        $previous = self::$_scopedConnection;
+        self::$_scopedConnection = $connection;
+        try {
+            return $fn();
+        } finally {
+            self::$_scopedConnection = $previous;
+        }
+    }
+
+    /**
+     * Like {@see usingConnection()}, but binds only the **session** — the dialect is carried over from
+     * the current connection (resolved on the class this is called on). Use when you hold a
+     * {@see DbSession} for the same database engine as the ambient connection (the common case: an
+     * alternate/engine-scoped session on the same MySQL/PostgreSQL/SQLite backend) and don't want to
+     * reconstruct a {@see Connection}. Binding a session for a *different* engine than the current
+     * dialect would emit that dialect's SQL against the wrong backend — pass a full Connection via
+     * {@see usingConnection()} in that case.
+     *
+     * @api
+     *
+     * @template TReturn
+     *
+     * @param callable(): TReturn $fn
+     *
+     * @return TReturn
+     */
+    public static function usingSession(DbSession $session, callable $fn): mixed
+    {
+        return self::usingConnection(new Connection($session, static::connection()->dialect), $fn);
     }
 
     /** Shorthand: quote an identifier using the current class's connection dialect. */
