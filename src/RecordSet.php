@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord;
 
+use Nandan108\Attrecord\Enum\OnConflict;
 use Nandan108\Attrecord\Enum\RelationType;
 use Nandan108\Attrecord\Exception\AppendOnlyViolationException;
 use Nandan108\Attrecord\Exception\AttrecordException;
@@ -488,20 +489,29 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * @param bool|list<string>|null $readBack      re-read the inserted rows and hydrate them (see
      *                                              {@see Record::save()}); `true` full row, `false` never,
      *                                              a `list<string>` those columns, `null` = auto (ignored
-     *                                              nullable-with-default + generated columns)
+     *                                              nullable-with-default + generated columns). Under
+     *                                              {@see OnConflict::Ignore} on an auto-increment table
+     *                                              the skipped records keep a null PK, so read-back can
+     *                                              only reach client-minted-PK records.
+     * @param OnConflict             $onConflict    {@see OnConflict::Fail} (default) surfaces a key
+     *                                              collision as a DB error; {@see OnConflict::Ignore}
+     *                                              skips colliding rows (insert-or-ignore) — the PK is
+     *                                              then NOT back-filled (a mixed insert/skip batch cannot
+     *                                              be aligned), and $inserted counts only real inserts
      *
      * @return SaveResult|null inserted count (updated is always 0), or null if the set is empty
      *                         or no insertable column carries a value
      *
-     * @throws RecordSaveException on DB error (including a duplicate-PK collision)
+     * @throws RecordSaveException on DB error (a duplicate-PK collision under {@see OnConflict::Fail})
      * @throws SchemaException     when $ignoreColumns or $readBack names a column not on the record
      */
-    public function insertAll(?array $ignoreColumns = null, bool | array | null $readBack = null): ?SaveResult
+    public function insertAll(?array $ignoreColumns = null, bool | array | null $readBack = null, OnConflict $onConflict = OnConflict::Fail): ?SaveResult
     {
         if (empty($this->records)) {
             return null;
         }
 
+        $ignoreConflicts = OnConflict::Ignore === $onConflict;
         $records = $this->records;
         $first = $records[0];
         $schema = $first::schema();
@@ -526,7 +536,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             $r->validate();
         }
 
-        $insertSql = $this->buildBulkInsertSql($records, $schema, $dialect, $ignore);
+        $insertSql = $this->buildBulkInsertSql($records, $schema, $dialect, $ignore, $ignoreConflicts);
         if (null === $insertSql) {
             return null;
         }
@@ -545,8 +555,10 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $insertedIds = $counts['insertedIds'];
 
         // Back-fill DB-generated auto-increment ids onto the (PK-null) records, in INSERT order.
-        // Application-minted PKs yield no insertedIds, so this is a no-op for them.
-        if ($pkAutoIncrement) {
+        // Application-minted PKs yield no insertedIds, so this is a no-op for them. Skipped under
+        // OnConflict::Ignore: a partial insert leaves fewer ids than records with no way to tell
+        // which record each id belongs to, so position-based back-fill would misalign.
+        if ($pkAutoIncrement && !$ignoreConflicts) {
             $newRecords = array_values(array_filter(
                 $records,
                 static fn (Record $r): bool => null === $r->{$pkProp},
@@ -574,14 +586,15 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     }
 
     /**
-     * Return the single plain INSERT that {@see insertAll()} would execute for the current set,
-     * without touching the DB (test/inspection helper, mirroring {@see buildUpsertAllSql()}). Built
-     * from current record state; hooks/timestamps/validation are NOT run. Returns null if the set
-     * is empty or no insertable column carries a value.
+     * Return the single INSERT that {@see insertAll()} would execute for the current set, without
+     * touching the DB (test/inspection helper, mirroring {@see buildUpsertAllSql()}). Built from
+     * current record state; hooks/timestamps/validation are NOT run. Returns null if the set is empty
+     * or no insertable column carries a value.
      *
      * @param list<string>|null $ignoreColumns column names to drop from the INSERT
+     * @param OnConflict        $onConflict    {@see OnConflict::Ignore} appends the insert-or-ignore clause
      */
-    public function buildInsertAllSql(?array $ignoreColumns = null): ?string
+    public function buildInsertAllSql(?array $ignoreColumns = null, OnConflict $onConflict = OnConflict::Fail): ?string
     {
         if (empty($this->records)) {
             return null;
@@ -595,6 +608,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             $schema,
             $first::connection()->dialect,
             self::buildIgnoreSet($ignoreColumns, $schema, $first::class, 'insertAll'),
+            OnConflict::Ignore === $onConflict,
         );
     }
 
@@ -1027,20 +1041,22 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     }
 
     /**
-     * Build a single plain multi-row `INSERT INTO … VALUES (…), (…)` covering every given record,
-     * writing each record's PK column too (it is a normal, non-auto-increment column for
-     * application-minted PKs). Duplicate-PK collisions are left to surface as a DB error — this is
-     * a plain INSERT, never INSERT IGNORE — which is the correct, loud signal for the append-only
-     * tables {@see insertAll()} targets. Auto-increment and DB-generated columns are excluded (the
-     * DB supplies them); a column is included when it is non-null on at least one record. Returns
-     * null when the set is empty or no insertable column carries a value.
+     * Build a single multi-row `INSERT INTO … VALUES (…), (…)` covering every given record, writing
+     * each record's PK column too (it is a normal, non-auto-increment column for application-minted
+     * PKs). By default a duplicate-PK collision is left to surface as a DB error — the correct, loud
+     * signal for the append-only tables {@see insertAll()} targets; with `$ignoreConflicts = true`
+     * the statement carries the insert-or-ignore conflict clause instead, so a key collision skips
+     * that row while the rest insert. Auto-increment and DB-generated columns are excluded (the DB
+     * supplies them); a column is included when it is non-null on at least one record. Returns null
+     * when the set is empty or no insertable column carries a value.
      *
      * Shared by {@see buildPlan()} (new/PK-null records) and {@see insertAll()} (all records).
      *
      * @param list<Record>        $records
-     * @param array<string, true> $ignore  column names to drop from the INSERT (their DB default fires)
+     * @param array<string, true> $ignore          column names to drop from the INSERT (their DB default fires)
+     * @param bool                $ignoreConflicts append the insert-or-ignore conflict clause (skip key collisions)
      */
-    private function buildBulkInsertSql(array $records, TableSchema $schema, SqlDialect $dialect, array $ignore = []): ?string
+    private function buildBulkInsertSql(array $records, TableSchema $schema, SqlDialect $dialect, array $ignore = [], bool $ignoreConflicts = false): ?string
     {
         if (empty($records)) {
             return null;
@@ -1066,7 +1082,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             $rows[] = $row;
         }
 
-        return $dialect->buildBulkInsert($schema->tableName, $colNames, $rows);
+        return $dialect->buildBulkInsert($schema->tableName, $colNames, $rows, $ignoreConflicts);
     }
 
     /**

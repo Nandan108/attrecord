@@ -296,9 +296,12 @@ Lifecycle hooks (override; empty by default):
 - `afterLoad(): void` — after each hydration from a DB row.
 
 Persistence:
-- `save(bool $force = false, ?array $ignoreColumns = null, bool|list<string>|null $readBack = null): static` — INSERT
+- `save(bool $force = false, ?array $ignoreColumns = null, bool|list<string>|null $readBack = null, OnConflict $onConflict = OnConflict::Fail): static` — INSERT
   if new, else UPDATE of **dirty** columns only. Returns `$this`; `->_saved` (bool) reflects whether
-  a write occurred. `force` writes even if clean.
+  a write occurred. `force` writes even if clean. **`onConflict`** governs the INSERT (new-record)
+  path only — a no-op on an UPDATE: `OnConflict::Ignore` makes a key-colliding insert a skip (`->_saved`
+  stays `false`, the record stays new with no PK, and read-back is not run) instead of a
+  `RecordSaveException`; the single-row sibling of `insertAll(onConflict:)` (see §8).
   **Insert / DB-default rule:** on INSERT, a **NOT-NULL** column left `null` that declares a `default`
   or `defaultExpr` is **omitted** from the statement so the DB default fires — never emitted as an
   explicit `NULL` (which would violate the constraint; a caller cannot have meant it). A **nullable**
@@ -407,7 +410,7 @@ upsert paths deliberately fan into 3–4 statements for deadlock safety. Pick by
 | `Record::save()` (existing) | **1×** `UPDATE` of dirty cols by PK | `#[Version]`-guarded if declared |
 | `Record::upsertByUniqueKey()` (default) | **1×** native `INSERT … ON DUPLICATE KEY UPDATE …` | single-row atomic upsert; `SET` supports plain columns **and** `RawSql` expressions (`incoming()`/`stored()`); `$conflictKey` must be a declared `#[UniqueKey]` (see above) |
 | `Record::upsertByUniqueKey(preserveAutoIncrement: true)` | **2×** `SELECT` + `UPDATE`/`INSERT` | burn-free; small race window |
-| `RecordSet::insertAll()` | **1×** bulk `INSERT … VALUES (…),(…)` | append-only; duplicate PK **throws** |
+| `RecordSet::insertAll()` | **1×** bulk `INSERT … VALUES (…),(…)` | append-only; a key collision **throws** — or is **skipped** with `onConflict: OnConflict::Ignore` |
 | `RecordSet::upsertAll()` | **3×** `INSERT IGNORE` → `SELECT … FOR UPDATE` → join `UPDATE` | bulk keyed upsert, deadlock-safe |
 | `RecordSet::upsertAllByUniqueKey()` | **4×** `SELECT … IN` (resolve PKs) → then `upsertAll`'s 3 | bulk upsert keyed by a unique key |
 
@@ -416,7 +419,14 @@ atomic multi-row native upsert (e.g. a coalescing queue/outbox write on a hot pa
 paths cost 3–4 statements — hand-written SQL is the correct choice there, not a regression to justify
 away. A **single-row** native upsert, by contrast, *is* available as one statement via
 `upsertByUniqueKey()`. `insertAll()` is one statement but has **no** upsert semantics — a PK
-collision surfaces as an error (correct for append-only ledgers/outboxes that never coalesce).
+collision surfaces as an error (correct for append-only ledgers/outboxes that never coalesce). The
+one relaxation is **insert-or-ignore**: `insertAll(onConflict: OnConflict::Ignore)` (and the
+single-row `save(onConflict: OnConflict::Ignore)`) *skip* a colliding row instead of throwing —
+idempotent seeding, not coalescing. It ignores **only** key conflicts (emitting `ON DUPLICATE KEY
+UPDATE col = col` on MySQL / `ON CONFLICT DO NOTHING` on PG/SQLite, never the blunt `INSERT IGNORE` /
+`INSERT OR IGNORE` that would also swallow NOT-NULL/truncation errors); on an auto-increment table a
+skipped row's PK is **not** back-filled, and `SaveResult::$inserted` counts only the rows really
+inserted.
 
 Batch persistence (a bounded number of statements per operation — never a per-record loop):
 - `upsertAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false, ?array $ignoreColumns = null, bool|list<string>|null $readBack = null): ?SaveResult`
@@ -444,10 +454,15 @@ Batch persistence (a bounded number of statements per operation — never a per-
     `$allowInTransactionChunking: true`, which chunks the statements inline within the outer
     transaction: smaller statements, still **atomic** (the outer transaction's contract), but the
     lock/undo footprint stays unbounded. No effect outside a transaction.
-- `insertAll(?array $ignoreColumns = null, bool|list<string>|null $readBack = null): ?SaveResult` — bulk **insert-only** writer: **one plain `INSERT INTO … VALUES (…), (…)`**
-  covering every record, in a single statement + one transaction. **No upsert semantics** — a
-  duplicate PK raises a DB error (wrapped in `RecordSaveException`), never `INSERT IGNORE` and never a
-  `SELECT … FOR UPDATE`. This is the correct primitive for **append-only** tables (ledgers, event
+- `insertAll(?array $ignoreColumns = null, bool|list<string>|null $readBack = null, OnConflict $onConflict = OnConflict::Fail): ?SaveResult` — bulk **insert-only** writer: **one `INSERT INTO … VALUES (…), (…)`**
+  covering every record, in a single statement + one transaction. **No upsert semantics** — under the
+  default `OnConflict::Fail` a duplicate key raises a DB error (wrapped in `RecordSaveException`),
+  never a `SELECT … FOR UPDATE`. With **`OnConflict::Ignore`** the statement carries an insert-or-ignore
+  conflict clause (`ON DUPLICATE KEY UPDATE col = col` on MySQL, `ON CONFLICT DO NOTHING` on PG/SQLite —
+  deliberately *not* `INSERT IGNORE` / `INSERT OR IGNORE`, which would also swallow NOT-NULL/truncation
+  errors): a key-colliding row is skipped, the rest insert, `$inserted` counts only real inserts, and on
+  an auto-increment table the PK is **not** back-filled onto records (a mixed insert/skip batch can't be
+  aligned — use minted PKs, or don't rely on back-fill, under `Ignore`). This is the correct primitive for **append-only** tables (ledgers, event
   logs, outboxes) — and the *only* correct one for **client-minted-PK** ones — where a row is written once and a PK collision is a bug to surface
   loudly, not a row to update — `upsertAll()` cannot serve them because a PK-carrying record routes into
   its keyed-upsert path (which *masks* the collision and takes locks the append never needed). Inserts
@@ -467,7 +482,7 @@ Batch persistence (a bounded number of statements per operation — never a per-
   `#[UniqueKey]`. Burn-free because matched rows route to `UPDATE` by resolved PK rather than
   `INSERT … ON DUPLICATE KEY`, so no auto-increment value is allocated-and-discarded on conflict.
 - `buildUpsertAllSql(bool $force = false): ?UpsertSql` — the SQL the upsert path would run (introspection/testing); `buildSaveAllSql()` is a deprecated alias.
-- `buildInsertAllSql(): ?string` — the single plain INSERT `insertAll()` would run (introspection/testing; no hooks/DB).
+- `buildInsertAllSql(?array $ignoreColumns = null, OnConflict $onConflict = OnConflict::Fail): ?string` — the single INSERT `insertAll()` would run (introspection/testing; no hooks/DB); pass `OnConflict::Ignore` to see the insert-or-ignore clause.
 - `deleteAll(): int` — single `DELETE … WHERE pk IN (…)`.
 - `load(string ...$relationPaths): static` — load relations onto the set (dot-paths; multiple paths share prefixes, loaded once). `loadMissing(...)` skips records already having the relation (a to-one that resolved null still counts as loaded). `with(...)` is a deprecated alias for `load()`.
 

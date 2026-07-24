@@ -109,17 +109,34 @@ interface SqlDialect
     public function connectionInitStatements(): array;
 
     /**
-     * Build a plain bulk INSERT for new records (no known PK).
+     * Build a bulk INSERT for new records (no known PK).
+     *
+     * With `$ignore = true`, rows that collide on a primary or unique key are silently skipped
+     * (via {@see insertIgnoreClause()}) while every other row inserts; `$ignore = false` (default)
+     * leaves a collision to surface as a DB error.
      *
      * @param string             $tableName   Unquoted table name
      * @param list<string>       $columnNames Column names to insert (unquoted; PK excluded)
      * @param list<list<string>> $rows        Each inner list is ordered SQL literals per column
+     * @param bool               $ignore      Append the insert-or-ignore conflict clause
      */
     public function buildBulkInsert(
         string $tableName,
         array $columnNames,
         array $rows,
+        bool $ignore = false,
     ): string;
+
+    /**
+     * The conflict clause that turns an INSERT into an insert-or-ignore: a key collision is skipped,
+     * every other error still surfaces. `ON DUPLICATE KEY UPDATE <col> = <col>` on MySQL/MariaDB (a
+     * no-op set — deliberately not the blunt `INSERT IGNORE`, which would also swallow truncation /
+     * NOT NULL errors); ` ON CONFLICT DO NOTHING` on PostgreSQL/SQLite. Returned with a leading
+     * space, ready to splice after the `VALUES (…)` list (and before any `RETURNING`).
+     *
+     * @param list<string> $columnNames Unquoted written columns (MySQL keys its no-op set on the first)
+     */
+    public function insertIgnoreClause(array $columnNames): string;
 
     /**
      * A reference to the *incoming* (would-be-inserted) row's value for a column, usable inside an

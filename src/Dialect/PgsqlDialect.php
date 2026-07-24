@@ -171,6 +171,7 @@ final class PgsqlDialect implements SqlDialect
         string $tableName,
         array $columnNames,
         array $rows,
+        bool $ignore = false,
     ): string {
         $quotedTable = $this->quoteIdentifier($tableName);
         $quotedCols = \implode(', ', \array_map($this->quoteIdentifier(...), $columnNames));
@@ -180,7 +181,16 @@ final class PgsqlDialect implements SqlDialect
         );
 
         return "INSERT INTO {$quotedTable} ({$quotedCols}) VALUES\n    "
-            .\implode(",\n    ", $valueSets);
+            .\implode(",\n    ", $valueSets)
+            .($ignore ? $this->insertIgnoreClause($columnNames) : '');
+    }
+
+    #[\Override]
+    public function insertIgnoreClause(array $columnNames): string
+    {
+        // Targetless DO NOTHING skips any primary/unique-key conflict while still surfacing other
+        // errors — safer than a blunt swallow, and consistent with the MySQL no-op form.
+        return ' ON CONFLICT DO NOTHING';
     }
 
     /**

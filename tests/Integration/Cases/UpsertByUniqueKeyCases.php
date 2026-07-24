@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord\Tests\Integration\Cases;
 
+use Nandan108\Attrecord\Enum\OnConflict;
 use Nandan108\Attrecord\Exception\AttrecordException;
+use Nandan108\Attrecord\Exception\RecordSaveException;
 use Nandan108\Attrecord\Exception\SchemaException;
 use Nandan108\Attrecord\RawSql;
 use Nandan108\Attrecord\Record;
@@ -200,5 +202,65 @@ trait UpsertByUniqueKeyCases
 
         $this->expectException(SchemaException::class);
         $r->upsertByUniqueKey('uniq_code', ['no_such_col' => new RawSql('1')]);
+    }
+
+    // -----------------------------------------------------------------
+    // Insert-or-ignore (OnConflict::Ignore)
+    // -----------------------------------------------------------------
+
+    public function testInsertAllIgnoreSkipsConflictsAndInsertsTheRest(): void
+    {
+        // Seed one row on the unique `code`.
+        (new UpsertByUniqueKeyRecord())->withCode('dup', 'Original')->save();
+
+        $conflicting = (new UpsertByUniqueKeyRecord())->withCode('dup', 'Replacement');
+        $fresh = (new UpsertByUniqueKeyRecord())->withCode('fresh', 'Fresh');
+
+        $result = (new RecordSet([$conflicting, $fresh]))->insertAll(onConflict: OnConflict::Ignore);
+
+        // Only the non-conflicting row inserted; inserted counts real inserts, not batch size.
+        $this->assertNotNull($result);
+        $this->assertSame(1, $result->inserted);
+        $this->assertSame(2, UpsertByUniqueKeyRecord::countWhere('1=1'));
+
+        // The pre-existing row is left untouched — ignore never overwrites.
+        $this->assertSame('Original', UpsertByUniqueKeyRecord::findOne('code = ?', ['dup'])?->name);
+        $this->assertSame('Fresh', UpsertByUniqueKeyRecord::findOne('code = ?', ['fresh'])?->name);
+    }
+
+    public function testInsertAllDefaultFailThrowsOnConflict(): void
+    {
+        (new UpsertByUniqueKeyRecord())->withCode('x', 'X')->save();
+
+        // The default (OnConflict::Fail) surfaces the unique-key collision loudly.
+        $this->expectException(RecordSaveException::class);
+        (new RecordSet([(new UpsertByUniqueKeyRecord())->withCode('x', 'Y')]))->insertAll();
+    }
+
+    public function testSaveIgnoreSkipsConflictLeavingRecordUnsaved(): void
+    {
+        (new UpsertByUniqueKeyRecord())->withCode('s1', 'Original')->save();
+
+        $r = (new UpsertByUniqueKeyRecord())->withCode('s1', 'Replacement');
+        $r->save(onConflict: OnConflict::Ignore);
+
+        // Skipped: not saved, still new, no PK assigned; the stored row is unchanged.
+        $this->assertFalse($r->_saved);
+        $this->assertTrue($r->isNew());
+        $this->assertNull($r->id);
+        $this->assertSame('Original', UpsertByUniqueKeyRecord::findOne('code = ?', ['s1'])?->name);
+        $this->assertSame(1, UpsertByUniqueKeyRecord::countWhere('1=1'));
+    }
+
+    public function testSaveIgnoreInsertsWhenNoConflict(): void
+    {
+        $r = (new UpsertByUniqueKeyRecord())->withCode('s2', 'Fresh');
+        $r->save(onConflict: OnConflict::Ignore);
+
+        // No conflict → a normal insert: saved, no longer new, PK back-filled.
+        $this->assertTrue($r->_saved);
+        $this->assertFalse($r->isNew());
+        $this->assertNotNull($r->id);
+        $this->assertSame('Fresh', UpsertByUniqueKeyRecord::findOne('code = ?', ['s2'])?->name);
     }
 }

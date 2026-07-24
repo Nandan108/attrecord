@@ -195,6 +195,7 @@ final class SqliteDialect implements SqlDialect
         string $tableName,
         array $columnNames,
         array $rows,
+        bool $ignore = false,
     ): string {
         $quotedTable = $this->quoteIdentifier($tableName);
         $quotedCols = \implode(', ', \array_map($this->quoteIdentifier(...), $columnNames));
@@ -204,7 +205,16 @@ final class SqliteDialect implements SqlDialect
         );
 
         return "INSERT INTO {$quotedTable} ({$quotedCols}) VALUES\n    "
-            .\implode(",\n    ", $valueSets);
+            .\implode(",\n    ", $valueSets)
+            .($ignore ? $this->insertIgnoreClause($columnNames) : '');
+    }
+
+    #[\Override]
+    public function insertIgnoreClause(array $columnNames): string
+    {
+        // `ON CONFLICT DO NOTHING` (SQLite 3.24+) skips only a key conflict — unlike `INSERT OR
+        // IGNORE`, which also silently drops NOT NULL / CHECK violations. Matches the PG form.
+        return ' ON CONFLICT DO NOTHING';
     }
 
     /**

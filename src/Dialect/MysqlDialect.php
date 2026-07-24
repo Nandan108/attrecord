@@ -193,6 +193,7 @@ final class MysqlDialect implements SqlDialect
         string $tableName,
         array $columnNames,
         array $rows,
+        bool $ignore = false,
     ): string {
         $quotedTable = $this->quoteIdentifier($tableName);
         $quotedCols = \implode(', ', \array_map($this->quoteIdentifier(...), $columnNames));
@@ -202,7 +203,18 @@ final class MysqlDialect implements SqlDialect
         );
 
         return "INSERT INTO {$quotedTable} ({$quotedCols}) VALUES\n    "
-            .\implode(",\n    ", $valueSets);
+            .\implode(",\n    ", $valueSets)
+            .($ignore ? $this->insertIgnoreClause($columnNames) : '');
+    }
+
+    #[\Override]
+    public function insertIgnoreClause(array $columnNames): string
+    {
+        // A no-op `col = col` set ignores *only* a key conflict, unlike `INSERT IGNORE` which would
+        // also downgrade truncation / NOT NULL errors to warnings. Any written column serves.
+        $q = $this->quoteIdentifier($columnNames[0]);
+
+        return " ON DUPLICATE KEY UPDATE {$q} = {$q}";
     }
 
     /**

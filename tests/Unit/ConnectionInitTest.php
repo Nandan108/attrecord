@@ -104,9 +104,14 @@ final class RecordingInitDialect implements SqlDialect
      * @param list<string>       $columnNames
      * @param list<list<string>> $rows
      */
-    public function buildBulkInsert(string $tableName, array $columnNames, array $rows): string
+    public function buildBulkInsert(string $tableName, array $columnNames, array $rows, bool $ignore = false): string
     {
         return $tableName;
+    }
+
+    public function insertIgnoreClause(array $columnNames): string
+    {
+        return ' ON CONFLICT DO NOTHING';
     }
 
     /**

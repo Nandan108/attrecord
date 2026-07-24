@@ -21,6 +21,20 @@ All notable changes to this project are documented here. The format is based on
   string is rejected); unknown columns throw `SchemaException`; expression SET is unsupported with
   `preserveAutoIncrement: true` (its plain-UPDATE path has no incoming row). New dialect method
   `SqlDialect::incomingRef()`; the legacy `list<string>` form is unchanged.
+- **Insert-or-ignore (`OnConflict::Ignore`).** New `OnConflict` enum threaded through
+  `RecordSet::insertAll(…, OnConflict $onConflict = OnConflict::Fail)` and the single-row
+  `Record::save(…, OnConflict $onConflict = OnConflict::Fail)`. Under `Ignore` a row that would
+  collide on a primary or unique key is **skipped** while the rest insert, instead of raising a
+  `RecordSaveException`. Only key conflicts are absorbed — a NOT-NULL / CHECK / truncation error
+  still surfaces — because attrecord emits `ON DUPLICATE KEY UPDATE <col> = <col>` (MySQL/MariaDB)
+  or `ON CONFLICT DO NOTHING` (PostgreSQL/SQLite), **never** the blunt `INSERT IGNORE` /
+  `INSERT OR IGNORE`. A skipped row gets no DB-generated id, so on an auto-increment table the PK is
+  not back-filled under `Ignore` (a mixed insert/skip batch can't be aligned); `SaveResult::$inserted`
+  counts only the rows really inserted, and a skipped `save()` leaves the record unsaved
+  (`->_saved === false`), still new, with no PK. Intended for idempotent seeds and fire-and-forget
+  batches. New dialect method `SqlDialect::insertIgnoreClause()`; `buildBulkInsert()` gains an
+  `bool $ignore` flag; `buildInsertAllSql()` gains an `OnConflict` argument. The default
+  (`OnConflict::Fail`) preserves prior behaviour exactly.
 
 ## [0.8.0] - 2026-07-22 — Optimistic locking
 

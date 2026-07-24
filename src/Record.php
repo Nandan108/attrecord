@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord;
 
+use Nandan108\Attrecord\Enum\OnConflict;
 use Nandan108\Attrecord\Exception\AppendOnlyViolationException;
 use Nandan108\Attrecord\Exception\AttrecordException;
 use Nandan108\Attrecord\Exception\OptimisticLockException;
@@ -861,8 +862,14 @@ abstract class Record
      *                                              nullable-with-default column(s) plus any generated
      *                                              column, and nothing on a plain save (so it costs
      *                                              nothing on the default path).
+     * @param OnConflict             $onConflict    conflict policy for the INSERT (new-record) path only —
+     *                                              a no-op on an UPDATE. {@see OnConflict::Fail} (default)
+     *                                              surfaces a key collision as a RecordSaveException;
+     *                                              {@see OnConflict::Ignore} skips a colliding insert,
+     *                                              leaving the record unsaved ({@see $_saved} = false),
+     *                                              still new, PK unassigned, and read-back not run.
      */
-    public function save(bool $force = false, ?array $ignoreColumns = null, bool | array | null $readBack = null): static
+    public function save(bool $force = false, ?array $ignoreColumns = null, bool | array | null $readBack = null, OnConflict $onConflict = OnConflict::Fail): static
     {
         // Append-only rows are write-once: a new-record save (INSERT) is a legitimate append,
         // but saving an existing record (UPDATE) is forbidden.
@@ -879,6 +886,8 @@ abstract class Record
         $dialect = $conn->dialect;
         $session = $conn->session;
         $wasInsert = $this->_isNew;
+        // Conflict policy applies only to the INSERT (new-record) path; a no-op on an UPDATE.
+        $ignoreConflict = OnConflict::Ignore === $onConflict;
 
         // Validate the (column-name) ignore list up front so a typo fails loudly rather than
         // silently writing a column the caller meant to drop.
@@ -997,6 +1006,11 @@ abstract class Record
                 $cols = implode(', ', $colNames);
                 $placeholders = implode(', ', array_fill(0, count($colNames), '?'));
                 $insertSql = "INSERT INTO {$qt} ({$cols}) VALUES ({$placeholders})";
+                if ($ignoreConflict) {
+                    // Insert-or-ignore: a key collision skips the row (see OnConflict::Ignore).
+                    // The clause slots in before any RETURNING.
+                    $insertSql .= $dialect->insertIgnoreClause(array_keys($writtenCols));
+                }
                 if ($canReturn) {
                     // PG/SQLite: one round-trip returns the generated PK plus any folded read-back
                     // columns (a generated column returns its computed value).
@@ -1004,6 +1018,13 @@ abstract class Record
                     $returning = 'RETURNING '.implode(', ', array_map($dialect->quoteIdentifier(...), $names));
                     /** @psalm-suppress MixedArgumentTypeCoercion */
                     $returnedRow = $session->fetchOne("{$insertSql} {$returning}", $params);
+                    if ($ignoreConflict && null === $returnedRow) {
+                        // Skipped on conflict — nothing was inserted. Leave the record new and
+                        // unsaved (no PK, no snapshot refresh, no read-back).
+                        $this->_saved = false;
+
+                        return $this;
+                    }
                     /** @psalm-suppress MixedAssignment, MixedArgument */
                     $rawPk = $returnedRow[$pk]
                         ?? throw new RecordSaveException('INSERT did not return a generated key.');
@@ -1013,7 +1034,14 @@ abstract class Record
                     $this->{$pkProp} = ColumnSerializer::fromDb($rawPk, $schema->columns[$pk], $returnedRow ?? []);
                 } else {
                     /** @psalm-suppress MixedArgumentTypeCoercion */
-                    $session->exec($insertSql, $params);
+                    $affected = $session->exec($insertSql, $params);
+                    if ($ignoreConflict && 0 === $affected) {
+                        // Skipped on conflict — nothing was inserted (MySQL's no-op `col = col` set
+                        // reports 0 affected rows). Leave the record new and unsaved.
+                        $this->_saved = false;
+
+                        return $this;
+                    }
                     // Only backfill the PK from lastInsertId() when the PK is
                     // an auto-increment integer. For application-minted PKs
                     // (e.g. BINARY(16) UUIDs), the application already set
