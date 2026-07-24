@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call: # lets the Release workflow gate a tag on the full matrix passing
 
 permissions:
   contents: read

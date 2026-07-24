@@ -72,6 +72,12 @@ updated through the Locked keyed-upsert path on PG, add typed literals to the de
 
 - Detailed, conventional commits. Breaking changes get a `!` and a **Breaking** note in the CHANGELOG.
 - `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` trailer.
-- Release = promote the CHANGELOG `[Unreleased]`/next section, **verify the full matrix is green
-  locally**, then annotated tag `vX.Y.Z` ("attrecord X.Y.Z — <title>") on HEAD, push `main`, push the
-  tag, `gh release create` with the CHANGELOG section as `--notes-file`. Pre-1.0: a minor may break.
+- **Releases are CI-gated — do NOT hand-create `vX.Y.Z` tags.** Packagist publishes on tag existence,
+  so the tag must be a *product* of green CI, not a precondition. Flow: promote the CHANGELOG section →
+  push the release commit to `main` → run the **Release** workflow (Actions → Release → Run workflow →
+  `version: X.Y.Z`; see `.github/workflows/release.yml`). It re-runs the full matrix and only then
+  creates the annotated tag + GitHub release, so a red build never reaches Packagist. A manual
+  `git tag && git push` bypasses this gate — don't (and ideally a `v*` tag ruleset rejects it; set one
+  via repo Settings → Rules if not yet configured). Still run `docker compose up -d && composer test`
+  locally first so the workflow doesn't fail on something you could have caught. Pre-1.0: a minor may
+  break — mark it `!` + **Breaking** in the CHANGELOG.

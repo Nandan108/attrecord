@@ -1,0 +1,73 @@
+name: Release
+
+# Publishing gate. Packagist crawls tags, so the only reliable way to keep a red build off Packagist
+# is to make the tag itself a *product* of green CI: this workflow re-runs the full matrix and creates
+# the tag + GitHub release ONLY when it passes. Trigger it manually after the release commit
+# (CHANGELOG promoted) is on main.
+#
+# Belt-and-braces: also add a tag ruleset restricting who/what can create `v*` tags to this workflow,
+# so a manual `git push origin vX.Y.Z` can't bypass the gate. See CLAUDE.md § Commit & release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.9.3 (needs a matching '## [0.9.3]' CHANGELOG section)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  # The gate: the entire CI workflow (tests on every backend + static analysis + coverage). The
+  # release job `needs` this, so a red matrix means no tag, which means nothing reaches Packagist.
+  ci:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag + GitHub release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate version, CHANGELOG entry, and tag availability
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must be X.Y.Z (got '$VERSION')"; exit 1; }
+          grep -qF "## [$VERSION]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no '## [$VERSION]' section"; exit 1; }
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then echo "::error::tag v$VERSION already exists"; exit 1; fi
+
+      - name: Extract release notes for this version
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          awk -v hdr="## [$VERSION]" '
+            index($0, hdr) == 1 { f = 1; next }
+            /^## \[/ { f = 0 }
+            f { print }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md || { echo "::error::empty release notes for $VERSION"; exit 1; }
+
+      - name: Create annotated tag and GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "attrecord $VERSION"
+          git push origin "v$VERSION"
+          gh release create "v$VERSION" --title "$VERSION" --notes-file release-notes.md
