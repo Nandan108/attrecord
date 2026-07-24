@@ -205,6 +205,27 @@ trait UpsertByUniqueKeyCases
         $r->upsertByUniqueKey('uniq_code', ['no_such_col' => new RawSql('1')]);
     }
 
+    public function testUpsertColSetRawSpreadPreservesOrReplaces(): void
+    {
+        (new UpsertByUniqueKeyRecord())->withCode('slug', 'Original')->upsertByUniqueKey('uniq_code', ['name']);
+
+        // The ergonomic upsertCol()->setRaw() spread form of the keep-unless-non-empty expression.
+        $name = UpsertByUniqueKeyRecord::upsertCol('name');
+        $keep = static fn (): array => $name->setRaw(
+            "CASE WHEN {$name->incoming} <> ? THEN {$name->incoming} ELSE {$name->stored} END",
+            [''],
+        );
+
+        // Empty incoming → keep the stored value.
+        (new UpsertByUniqueKeyRecord())->withCode('slug', '')->upsertByUniqueKey('uniq_code', [...$keep()]);
+        $this->assertSame('Original', UpsertByUniqueKeyRecord::findOne('code = ?', ['slug'])?->name);
+
+        // Non-empty incoming → take the incoming value.
+        (new UpsertByUniqueKeyRecord())->withCode('slug', 'Updated')->upsertByUniqueKey('uniq_code', [...$keep()]);
+        $this->assertSame('Updated', UpsertByUniqueKeyRecord::findOne('code = ?', ['slug'])?->name);
+        $this->assertSame(1, UpsertByUniqueKeyRecord::countWhere('1=1'));
+    }
+
     // -----------------------------------------------------------------
     // Insert-or-ignore (OnConflict::Ignore)
     // -----------------------------------------------------------------

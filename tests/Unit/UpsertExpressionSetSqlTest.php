@@ -165,4 +165,67 @@ final class UpsertExpressionSetSqlTest extends TestCase
             'INSERT params, then name-expr param, then note-expr params in order',
         );
     }
+
+    // -----------------------------------------------------------------
+    // upsertCol() / UpsertColumn::setRaw() — the interpolation-friendly handle
+    // -----------------------------------------------------------------
+
+    public function testUpsertColRendersNameAndRefsPerDialect(): void
+    {
+        $this->connect(new MysqlDialect());
+        $mysql = UpsertByUniqueKeyRecord::upsertCol('name');
+        $this->assertSame('name', $mysql->name, 'name is the raw (unquoted) column — the map key');
+        $this->assertSame('VALUES(`name`)', $mysql->incoming);
+        $this->assertSame('`name`', $mysql->stored);
+
+        $this->connect(new PgsqlDialect());
+        $pg = UpsertByUniqueKeyRecord::upsertCol('name');
+        $this->assertSame('EXCLUDED."name"', $pg->incoming);
+        $this->assertSame('"name"', $pg->stored);
+    }
+
+    public function testSetRawReturnsSingleEntryMapKeyedByRawName(): void
+    {
+        $this->connect(new MysqlDialect());
+        $c = UpsertByUniqueKeyRecord::upsertCol('name');
+
+        $fragment = $c->setRaw("CONCAT({$c->stored}, ?)", ['-x']);
+        $this->assertSame(['name'], array_keys($fragment), 'keyed by the raw column name');
+        $this->assertInstanceOf(RawSql::class, $fragment['name']);
+        $this->assertSame('CONCAT(`name`, ?)', $fragment['name']->expression);
+        $this->assertSame(['-x'], $fragment['name']->params);
+    }
+
+    public function testSpreadSetRawProducesTheSameSqlAndParamsAsTheMapForm(): void
+    {
+        $this->connect(new MysqlDialect());
+
+        // The interpolation/spread form…
+        $r1 = new UpsertByUniqueKeyRecord();
+        $r1->code = 'slug';
+        $r1->name = 'incoming-name';
+        $c = UpsertByUniqueKeyRecord::upsertCol('name');
+        $r1->upsertByUniqueKey('uniq_code', [
+            ...$c->setRaw("CASE WHEN {$c->incoming} <> ? THEN {$c->incoming} ELSE {$c->stored} END", ['']),
+        ]);
+        $spreadSql = (string) $this->session->lastSql();
+        $spreadParams = $this->session->lastParams();
+
+        $this->session->reset();
+
+        // …must be byte-identical to the explicit map form.
+        $r2 = new UpsertByUniqueKeyRecord();
+        $r2->code = 'slug';
+        $r2->name = 'incoming-name';
+        $r2->upsertByUniqueKey('uniq_code', [
+            'name' => new RawSql('CASE WHEN VALUES(`name`) <> ? THEN VALUES(`name`) ELSE `name` END', ['']),
+        ]);
+
+        $this->assertSame((string) $this->session->lastSql(), $spreadSql);
+        $this->assertSame($this->session->lastParams(), $spreadParams);
+        $this->assertStringContainsString(
+            'ON DUPLICATE KEY UPDATE `name` = CASE WHEN VALUES(`name`) <> ? THEN VALUES(`name`) ELSE `name` END',
+            $spreadSql,
+        );
+    }
 }

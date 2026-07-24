@@ -366,6 +366,17 @@ Persistence:
       'last_seen_at' => new RawSql('CURRENT_TIMESTAMP(6)'),
   ]);
   ```
+  For a more readable form, **`Record::upsertCol('col')`** returns an `UpsertColumn` handle with
+  `->name` (raw, the map key), `->incoming`, and `->stored`; its **`->setRaw($sql, $params)`** returns
+  a spreadable `['col' => RawSql($sql, $params)]` fragment, so the expression can be interpolated and
+  splatted in — the column named once:
+  ```php
+  $n = $rec::upsertCol('plugin_name');
+  $rec->upsertByUniqueKey('uk_slug', [
+      ...$n->setRaw("CASE WHEN {$n->incoming} <> ? THEN {$n->incoming} ELSE {$n->stored} END", ['']),
+      'last_seen_at' => new RawSql('CURRENT_TIMESTAMP(6)'),
+  ]);
+  ```
   A string-keyed value must be a `RawSql` (a bare string is rejected — never treated as raw SQL);
   unknown columns throw `SchemaException`. Expression SET is **not** supported with
   `preserveAutoIncrement: true` (its plain-UPDATE path has no "incoming" row) — it throws.

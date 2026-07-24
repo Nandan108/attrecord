@@ -20,7 +20,10 @@ All notable changes to this project are documented here. The format is based on
   "`SET` is limited to `col = VALUES(col)`" gap. A string-keyed value must be a `RawSql` (a bare
   string is rejected); unknown columns throw `SchemaException`; expression SET is unsupported with
   `preserveAutoIncrement: true` (its plain-UPDATE path has no incoming row). New dialect method
-  `SqlDialect::incomingRef()`; the legacy `list<string>` form is unchanged.
+  `SqlDialect::incomingRef()`; the legacy `list<string>` form is unchanged. `Record::upsertCol($col)`
+  returns an `UpsertColumn` handle (`->name` / `->incoming` / `->stored`) whose `->setRaw($sql, $params)`
+  yields a spreadable `[name => RawSql]` fragment — so a conditional expression can be written by
+  interpolation and splatted in with `...$col->setRaw(…)`, naming the column once.
 - **Insert-or-ignore (`OnConflict::Ignore`).** New `OnConflict` enum threaded through
   `RecordSet::insertAll(…, OnConflict $onConflict = OnConflict::Fail)` and the single-row
   `Record::save(…, OnConflict $onConflict = OnConflict::Fail)`. Under `Ignore` a row that would

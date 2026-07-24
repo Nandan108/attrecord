@@ -490,28 +490,35 @@ the lookup matches; the column is still skipped in the INSERT (the DB recomputes
 an **expression** instead of a straight overwrite. Reference the incoming (would-be-inserted) row and
 the stored row **portably** with `Record::incoming('col')` and `Record::stored('col')` — they render
 `VALUES(col)` on MySQL/MariaDB and `EXCLUDED.col` on PostgreSQL/SQLite. Plain `list<string>`
-entries still mean "overwrite with the incoming value"; the two forms mix. For example, a
-`PluginPolicy` registry row (keyed by a `plugin_slug` unique key named `uk_slug`) that refreshes a
+entries still mean "overwrite with the incoming value"; the forms mix.
+
+For a conditional/computed SET, `Record::upsertCol('col')` returns a small handle that reads better
+than a positional `sprintf`: interpolate its `->incoming` / `->stored` refs straight into the
+expression, and splat the entry in with `...$col->setRaw(…)` — which returns `['col' => RawSql(…)]`,
+so the column name is written **once** (in `upsertCol`) and never repeated as a map key. For example,
+a `PluginPolicy` registry row (keyed by a `plugin_slug` unique key named `uk_slug`) that refreshes a
 `last_seen_at` stamp on every write but keeps the stored `plugin_name` unless a non-empty new one
 arrives:
 
 ```php
 $plugin = PluginPolicy::newWith(['plugin_slug' => $slug, 'plugin_name' => $name]);
+$pName  = PluginPolicy::upsertCol('plugin_name');   // ->name (raw) / ->incoming / ->stored
 
 $plugin->upsertByUniqueKey('uk_slug', [
     // keep the stored display name unless a non-empty new one arrives
-    'plugin_name'  => new RawSql(
-        sprintf(
-            'CASE WHEN %1$s <> ? THEN %1$s ELSE %2$s END',
-            PluginPolicy::incoming('plugin_name'),   // VALUES(`plugin_name`) | EXCLUDED."plugin_name"
-            PluginPolicy::stored('plugin_name'),     // `plugin_name`         | "plugin_name"
-        ),
-        [''],                                        // the '' comparison, bound not inlined
+    ...$pName->setRaw(
+        "CASE WHEN {$pName->incoming} <> ? THEN {$pName->incoming} ELSE {$pName->stored} END",
+        [''],   // the '' comparison, bound not inlined
     ),
     'last_seen_at' => new RawSql('CURRENT_TIMESTAMP(6)'),   // refresh to the DB clock
-    'policy',                                        // plain entry — overwrite with the incoming value
+    'policy',                                               // plain entry — overwrite with the incoming value
 ]);
 ```
+
+`->incoming` renders the incoming-row ref (`VALUES(plugin_name)` on MySQL/MariaDB, `EXCLUDED."plugin_name"`
+on PostgreSQL/SQLite), `->stored` the quoted column, and `->name` the raw column — the map key `setRaw`
+produces. For a one-off single reference, the standalone `Record::incoming('col')` / `Record::stored('col')`
+helpers are more direct.
 
 **Bind** literal values through the `RawSql`'s `?` params (spliced after the INSERT `VALUES` params,
 in map order) rather than inlining them — `<> ''` is a portability trap, since double quotes are

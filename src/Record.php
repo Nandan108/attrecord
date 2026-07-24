@@ -1348,6 +1348,28 @@ abstract class Record
     }
 
     /**
+     * Build an {@see UpsertColumn} handle for `$column`, bundling its raw name with the dialect-rendered
+     * {@see incoming()} / {@see stored()} row references so an {@see upsertByUniqueKey()} SET expression
+     * can be written by **interpolation** — `"CASE WHEN {$c->incoming} … ELSE {$c->stored} END"` — and
+     * splatted in via `...$c->setRaw(…)`, writing the column name exactly once. A more readable sibling
+     * of the standalone `incoming()`/`stored()` helpers for the common conditional-preserve/compute
+     * pattern; the refs resolve against the current connection dialect (build inside any scoped-binding
+     * closure that changes it).
+     *
+     * @api
+     */
+    public static function upsertCol(string $column): UpsertColumn
+    {
+        $dialect = static::connection()->dialect;
+
+        return new UpsertColumn(
+            $column,
+            $dialect->incomingRef($column),
+            $dialect->quoteIdentifier($column),
+        );
+    }
+
+    /**
      * Normalize a caller's `$updateColumns` into the dialect's SET spec + ordered bound params.
      *
      * Accepts a mixed array: an **int-keyed** entry is a plain column name → `col = <incoming>`; a
