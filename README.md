@@ -484,6 +484,41 @@ A conflict key that includes a **generated column** (e.g. a `STORED`
 `IFNULL(scope_id, 0)`) works too — set the property to the value the DB will compute so
 the lookup matches; the column is still skipped in the INSERT (the DB recomputes it).
 
+#### Expression SET — preserve or compute a column on conflict
+
+`$updateColumns` also accepts a **`column => RawSql` map**, so a conflict-UPDATE can set a column to
+an **expression** instead of a straight overwrite. Reference the incoming (would-be-inserted) row and
+the stored row **portably** with `Record::incoming('col')` and `Record::stored('col')` — they render
+`VALUES(col)` on MySQL/MariaDB and `EXCLUDED.col` on PostgreSQL/SQLite. Plain `list<string>`
+entries still mean "overwrite with the incoming value"; the two forms mix. For example, a
+`PluginPolicy` registry row (keyed by a `plugin_slug` unique key named `uk_slug`) that refreshes a
+`last_seen_at` stamp on every write but keeps the stored `plugin_name` unless a non-empty new one
+arrives:
+
+```php
+$plugin = PluginPolicy::newWith(['plugin_slug' => $slug, 'plugin_name' => $name]);
+
+$plugin->upsertByUniqueKey('uk_slug', [
+    // keep the stored display name unless a non-empty new one arrives
+    'plugin_name'  => new RawSql(
+        sprintf(
+            'CASE WHEN %1$s <> ? THEN %1$s ELSE %2$s END',
+            PluginPolicy::incoming('plugin_name'),   // VALUES(`plugin_name`) | EXCLUDED."plugin_name"
+            PluginPolicy::stored('plugin_name'),     // `plugin_name`         | "plugin_name"
+        ),
+        [''],                                        // the '' comparison, bound not inlined
+    ),
+    'last_seen_at' => new RawSql('CURRENT_TIMESTAMP(6)'),   // refresh to the DB clock
+    'policy',                                        // plain entry — overwrite with the incoming value
+]);
+```
+
+**Bind** literal values through the `RawSql`'s `?` params (spliced after the INSERT `VALUES` params,
+in map order) rather than inlining them — `<> ''` is a portability trap, since double quotes are
+*identifier* quotes on PostgreSQL/SQLite. A string-keyed value must be a `RawSql` (a bare string is
+rejected). Expression SET is unavailable with `preserveAutoIncrement: true` (its plain-UPDATE path
+has no incoming row).
+
 ### `updateByUniqueKey($fields = [])`
 
 Direct UPDATE without loading the row first. The WHERE clause is built automatically
@@ -961,6 +996,27 @@ every lock until it commits), so a chunked `upsertAll()` nested in a transaction
 chunk anyway: the chunks then run as separate, smaller **statements** within the outer transaction
 — bounding statement size while staying atomic, but leaving the lock/undo footprint unbounded.
 
+#### Native single-statement upsert — `upsertAll(strategy: Native)`
+
+The default keyed upsert is the deadlock-safe 3-step above. Pass
+`strategy: UpsertStrategy::Native` (`Nandan108\Attrecord\Enum\UpsertStrategy`) to collapse it to
+**one** `INSERT … VALUES (…),(…) ON DUPLICATE KEY UPDATE …` (MySQL/MariaDB) /
+`… ON CONFLICT (pk) DO UPDATE SET …` (PostgreSQL/SQLite) — no `SELECT … FOR UPDATE`:
+
+```php
+// one statement, no row locks — a PK-keyed coalescing outbox/queue write
+(new RecordSet($rows))->upsertAll(strategy: UpsertStrategy::Native);
+```
+
+It is **opt-in** because the caller takes on the concurrency the 3-step otherwise handles — ideal for
+a PK-keyed coalescing queue/outbox, **especially one written inside an already-locked transaction**
+where the 3-step's extra locks are undesirable; riskier for secondary-unique-key contention. Under
+`Native`: the conflict target is the **PK**; the SET is **uniform** (every row writes its incoming
+value to each dirty column — no per-row masking, so for homogeneous batches); ids are **not**
+back-filled; and `SaveResult::$inserted` carries the raw driver affected-row count (`$updated` is `0`
+— no insert/update split). Keep the default (`UpsertStrategy::Locked`) for exact counts, heterogeneous
+partial-record batches, or secondary-unique-key upserts. Composes with the expression SET convention.
+
 ### `insertAll()` — plain insert-only writer for append-only tables
 
 `upsertAll()` gives a plain multi-row `INSERT` only for PK-*null* records; a record that already
@@ -987,6 +1043,24 @@ $result = (new RecordSet([$e1, $e2, $e3]))->insertAll();
   order), or all PK-carrying on a minted-PK table.
 - Returns `null` for an empty set; `updated` in the `SaveResult` is always `0`.
 
+**Insert-or-ignore.** Pass `onConflict: OnConflict::Ignore` (`Nandan108\Attrecord\Enum\OnConflict`) to
+*skip* a row that would collide on a primary or unique key rather than erroring — idempotent seeding:
+
+```php
+// seed recommended defaults only where no row exists; a prior row is left untouched
+(new RecordSet($rows))->insertAll(onConflict: OnConflict::Ignore);
+
+$row->save(onConflict: OnConflict::Ignore);   // single-row sibling
+```
+
+Only **key** conflicts are absorbed — a NOT NULL / CHECK / truncation error still surfaces, because
+attrecord emits `ON DUPLICATE KEY UPDATE col = col` (MySQL/MariaDB) or `ON CONFLICT DO NOTHING`
+(PostgreSQL/SQLite), never the blunt `INSERT IGNORE` / `INSERT OR IGNORE` that would also swallow
+those. A skipped row gets no generated id, so on an auto-increment table the PK is **not** back-filled
+under `Ignore`; `SaveResult::$inserted` counts only rows actually inserted, and a skipped `save()`
+leaves the record unsaved (`_saved === false`) and still new. The default `OnConflict::Fail` throws on
+a collision — correct for append-only ledgers.
+
 ### `upsertAllByUniqueKey($conflictKey)` — bulk burn-free upsert
 
 The loop-free, auto-increment-burn-free counterpart of an
@@ -1005,6 +1079,28 @@ bulk `INSERT` (one id each, none wasted). Returns the same `?SaveResult` as `ups
 (`null` for an empty set). Records that already carry a PK are left untouched. Same
 non-atomic caveat as the single-record burn-free path. Throws `AttrecordException` if
 `$conflictKey` isn't a declared `#[UniqueKey]`.
+
+---
+
+## Reading back DB-computed values — `readBack`
+
+A write can leave the in-memory record diverged from the row the database actually stored — a fired
+`DEFAULT`, an `ON UPDATE CURRENT_TIMESTAMP`, a generated column. `save()`, `insertAll()`, and
+`upsertAll()` take a `readBack` argument to reconcile them in place:
+
+```php
+$order->save(readBack: true);              // reload the whole row (fires afterLoad())
+$order->save(readBack: ['total', 'tax']);  // patch just these columns
+$order->save(readBack: false);             // never
+$order->save();                            // readBack: null (default) = auto
+```
+
+`null` (**auto**, the default) reads back exactly the columns a write is known to have diverged —
+omitted nullable-with-default columns, plus generated columns whose dependencies changed (found by an
+expression-dependency scan) — and **nothing on a plain overwrite**, so it costs nothing on the common
+path. Where the dialect supports it (PostgreSQL, SQLite ≥ 3.35) the read-back is **folded into the
+write's `RETURNING`** — the same round-trip; MySQL/MariaDB fall back to a scoped `SELECT`. Bulk paths
+use one batched `IN (…)` read for the whole set, never per row.
 
 ---
 
@@ -1147,6 +1243,56 @@ Order::transactional(function (Transaction $tx): void {
 ```
 
 Nested `transactional()` calls are safe — only the outermost call issues `BEGIN` / `COMMIT` / `ROLLBACK`.
+
+---
+
+## Scoped connection & session binding
+
+Record operations resolve their connection from the ambient global `Record::connection()` (or a
+per-class override). To run a unit of work against an **explicit** connection or session instead —
+without mutating global state — wrap it in `Record::usingConnection()` or `Record::usingSession()`:
+
+```php
+// bind a specific session for the duration of the closure; restored afterward (even on throw)
+Outbox::usingSession($engineSession, static fn () =>
+    (new RecordSet($rows))->upsertAll(strategy: UpsertStrategy::Native),
+);
+
+// or bind a full Connection (session + dialect)
+Order::usingConnection($conn, static fn () => $order->save());
+```
+
+The scoped binding **wins over** both a per-class and the default connection, and **nests** — an inner
+call restores to the enclosing scope, not the global default. Use it when a component is handed a
+session it must write on (a projection participant given an engine-scoped transaction session), or
+when a store wants its attrecord ops on its own injected session so it — and its tests — don't depend
+on the global bootstrap. `usingSession()` binds only the session and reuses the current dialect (the
+common same-engine case); `usingConnection()` takes a full `Connection` to cross engines.
+
+---
+
+## Optimistic locking — `#[Version]`
+
+Mark an integer column `#[Version]` (`Nandan108\Attrecord\Attribute\Version`) for optimistic
+concurrency control: attrecord seeds it to `1` on insert, and every `save()` UPDATE bumps it
+(`SET version = version + 1`) **guarded by the loaded value** (`WHERE pk = ? AND version = ?`). If
+another writer committed in between, zero rows match and the save throws `OptimisticLockException`
+instead of silently clobbering:
+
+```php
+#[Column(ColumnType::IntUnsigned)]
+#[Version]
+public int $version = 1;
+
+// two processes both loaded this row at version 4…
+$a->qty = 10; $a->save();     // → version 5, OK
+$b->qty = 20; $b->save();     // → OptimisticLockException (guard expected 4, row is now 5)
+```
+
+It **detects** a concurrent write rather than preventing it — pair it with a reload-and-retry, or the
+[`RetryingDbSession`](#retryingdbsession--automatic-retry-of-transient-conflicts). The bump is emitted
+as an expression (never a caller literal), the in-memory property is advanced on success, and it works
+on the `RETURNING` and `SELECT` read-back paths alike.
 
 ---
 
