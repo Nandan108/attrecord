@@ -287,6 +287,43 @@ final class SqliteDialect implements SqlDialect
     }
 
     /**
+     * @param list<string>           $conflictCols
+     * @param list<string>           $columnNames
+     * @param list<list<string>>     $rows
+     * @param array<string, ?string> $updateColumns
+     */
+    #[\Override]
+    public function buildBulkUpsertSql(
+        string $tableName,
+        array $conflictCols,
+        array $columnNames,
+        array $rows,
+        array $updateColumns,
+    ): string {
+        $quotedTable = $this->quoteIdentifier($tableName);
+        $quotedCols = \implode(', ', \array_map($this->quoteIdentifier(...), $columnNames));
+        $valueSets = \array_map(
+            fn (array $row) => '('.\implode(', ', $row).')',
+            $rows,
+        );
+        $sql = "INSERT INTO {$quotedTable} ({$quotedCols}) VALUES\n    "
+            .\implode(",\n    ", $valueSets);
+
+        // No columns to update on conflict → insert-or-ignore (targetless DO NOTHING).
+        if (empty($updateColumns)) {
+            return $sql.$this->insertIgnoreClause($columnNames);
+        }
+
+        $conflictTarget = \implode(', ', \array_map($this->quoteIdentifier(...), $conflictCols));
+        $setParts = [];
+        foreach ($updateColumns as $col => $expr) {
+            $setParts[] = $this->quoteIdentifier($col).' = '.($expr ?? $this->incomingRef($col));
+        }
+
+        return $sql."\nON CONFLICT ({$conflictTarget}) DO UPDATE SET ".\implode(', ', $setParts);
+    }
+
+    /**
      * Emit the `CREATE TABLE` (+ trailing `CREATE INDEX`) statements.
      *
      * SQLite specifics: a single auto-increment PK must be `INTEGER PRIMARY KEY AUTOINCREMENT`

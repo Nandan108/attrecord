@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord\Tests\Integration\Cases;
 
 use Nandan108\Attrecord\Enum\OnConflict;
+use Nandan108\Attrecord\Enum\UpsertStrategy;
 use Nandan108\Attrecord\Exception\AttrecordException;
 use Nandan108\Attrecord\Exception\RecordSaveException;
 use Nandan108\Attrecord\Exception\SchemaException;
@@ -262,5 +263,120 @@ trait UpsertByUniqueKeyCases
         $this->assertFalse($r->isNew());
         $this->assertNotNull($r->id);
         $this->assertSame('Fresh', UpsertByUniqueKeyRecord::findOne('code = ?', ['s2'])?->name);
+    }
+
+    // -----------------------------------------------------------------
+    // Native single-statement bulk upsert (UpsertStrategy::Native)
+    // -----------------------------------------------------------------
+
+    public function testNativeUpsertCoalescesByPrimaryKeyInOneStatement(): void
+    {
+        // Seed id 1.
+        $seed = new UpsertByUniqueKeyRecord();
+        $seed->code = 'k1';
+        $seed->name = 'Original';
+        $seed->save();
+        $this->assertSame(1, $seed->id);
+
+        // A mixed batch: id 1 already exists (→ UPDATE), a PK-null row is new (→ INSERT with an
+        // auto-increment id). Native resolves both in one INSERT … ON DUPLICATE KEY UPDATE /
+        // ON CONFLICT (id) DO UPDATE. readBack re-reads the keyed row (the PK-null one has no id to
+        // key on — no back-fill under Native — so it is skipped).
+        $existing = new UpsertByUniqueKeyRecord();
+        $existing->id = 1;
+        $existing->code = 'k1';
+        $existing->name = 'Updated';
+        $fresh = new UpsertByUniqueKeyRecord();
+        $fresh->code = 'k2';
+        $fresh->name = 'Fresh';
+
+        $result = (new RecordSet([$existing, $fresh]))->upsertAll(readBack: ['name'], strategy: UpsertStrategy::Native);
+
+        $this->assertNotNull($result);
+        $this->assertSame(0, $result->updated, 'native does not split inserted/updated');
+        $this->assertSame('Updated', UpsertByUniqueKeyRecord::findOne('id = ?', [1])?->name, 'existing row coalesced');
+        $this->assertSame('Fresh', UpsertByUniqueKeyRecord::findOne('code = ?', ['k2'])?->name, 'new row inserted');
+        $this->assertSame(2, UpsertByUniqueKeyRecord::countWhere('1=1'));
+
+        // The keyed row read back clean; the PK-null insert is not back-filled under Native.
+        $this->assertFalse($existing->isDirty());
+        $this->assertNull($fresh->id, 'Native does not back-fill the auto-increment id');
+    }
+
+    public function testNativeUpsertRefreshesOnRepeatedUpsert(): void
+    {
+        // Two rounds of the same key coalesce onto one row (the outbox re-enqueue pattern).
+        $first = new UpsertByUniqueKeyRecord();
+        $first->id = 1;
+        $first->code = 'q';
+        $first->name = 'v1';
+        (new RecordSet([$first]))->upsertAll(strategy: UpsertStrategy::Native);
+
+        $again = new UpsertByUniqueKeyRecord();
+        $again->id = 1;
+        $again->code = 'q';
+        $again->name = 'v2';
+        (new RecordSet([$again]))->upsertAll(strategy: UpsertStrategy::Native);
+
+        $this->assertSame(1, UpsertByUniqueKeyRecord::countWhere('1=1'), 're-upsert coalesced, no new row');
+        $this->assertSame('v2', UpsertByUniqueKeyRecord::findOne('id = ?', [1])?->name, 'value refreshed');
+    }
+
+    public function testNativeUpsertHonoursIgnoreColumns(): void
+    {
+        $seed = new UpsertByUniqueKeyRecord();
+        $seed->code = 'k1';
+        $seed->name = 'Original';
+        $seed->note = 'keep-me';
+        $seed->save();
+
+        // `note` is dropped from the write, so its stored value survives while `name` updates.
+        $in = new UpsertByUniqueKeyRecord();
+        $in->id = 1;
+        $in->code = 'k1';
+        $in->name = 'Updated';
+        $in->note = 'discarded';
+        (new RecordSet([$in]))->upsertAll(ignoreColumns: ['note'], strategy: UpsertStrategy::Native);
+
+        $row = UpsertByUniqueKeyRecord::findOne('id = ?', [1]);
+        $this->assertNotNull($row);
+        $this->assertSame('Updated', $row->name);
+        $this->assertSame('keep-me', $row->note, 'ignored column was left untouched');
+    }
+
+    public function testNativeUpsertChunked(): void
+    {
+        // chunkSize splits the batch into multiple native statements (each committed independently
+        // outside a transaction). All rows still land.
+        $records = [];
+        foreach (['a', 'b', 'c'] as $i => $code) {
+            $r = new UpsertByUniqueKeyRecord();
+            $r->id = $i + 1;
+            $r->code = $code;
+            $r->name = strtoupper($code);
+            $records[] = $r;
+        }
+
+        $result = (new RecordSet($records))->upsertAll(chunkSize: 2, strategy: UpsertStrategy::Native);
+
+        $this->assertNotNull($result);
+        $this->assertSame(3, UpsertByUniqueKeyRecord::countWhere('1=1'));
+        $this->assertSame('C', UpsertByUniqueKeyRecord::findOne('id = ?', [3])?->name);
+    }
+
+    public function testNativeChunkedInsideTransactionThrowsWithoutFlag(): void
+    {
+        $r = new UpsertByUniqueKeyRecord();
+        $r->id = 1;
+        $r->code = 'x';
+        $r->name = 'X';
+
+        $session = Record::connection()->session;
+
+        // Per-chunk commit is impossible inside an open transaction — rejected unless explicitly allowed.
+        $this->expectException(AttrecordException::class);
+        $session->transactional(static function () use ($r): void {
+            (new RecordSet([$r]))->upsertAll(chunkSize: 1, strategy: UpsertStrategy::Native);
+        });
     }
 }

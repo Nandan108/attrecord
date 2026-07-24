@@ -114,6 +114,11 @@ final class RecordingInitDialect implements SqlDialect
         return ' ON CONFLICT DO NOTHING';
     }
 
+    public function buildBulkUpsertSql(string $tableName, array $conflictCols, array $columnNames, array $rows, array $updateColumns): string
+    {
+        return $tableName;
+    }
+
     /**
      * @param list<string>           $columnNames
      * @param list<string>           $conflictCols

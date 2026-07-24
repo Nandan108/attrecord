@@ -206,6 +206,34 @@ interface SqlDialect
     ): UpsertSql;
 
     /**
+     * Build a **single-statement** multi-row native upsert:
+     * `INSERT … VALUES (…),(…) ON DUPLICATE KEY UPDATE …` (MySQL/MariaDB) or
+     * `INSERT … VALUES (…),(…) ON CONFLICT (<conflictCols>) DO UPDATE SET …` (PostgreSQL/SQLite).
+     * Unlike {@see buildUpsertSql()}'s deadlock-safe three-step, this takes **no** `SELECT … FOR
+     * UPDATE` — the caller owns the concurrency implications (see {@see Enum\UpsertStrategy}).
+     *
+     * Each SET entry is keyed by column name and carries either `null` — the default "copy the
+     * incoming value" ({@see incomingRef()}: `VALUES(col)` / `EXCLUDED.col`) — or a raw SQL
+     * expression string (already dialect-portable). When `$updateColumns` is empty the statement
+     * degrades to insert-or-ignore ({@see insertIgnoreClause()}): a conflict is a no-op, not an error.
+     * The SET applies uniformly to every conflicting row (no per-row masking, unlike the three-step).
+     *
+     * @param string                 $tableName     Unquoted table name
+     * @param list<string>           $conflictCols  Conflict-target columns (the PK); used by PG/SQLite's
+     *                                              `ON CONFLICT (…)`, ignored by MySQL's targetless form
+     * @param list<string>           $columnNames   All columns written, in row order (PK included)
+     * @param list<list<string>>     $rows          SQL literals per row, in $columnNames order
+     * @param array<string, ?string> $updateColumns Column → SET expression (null = copy the incoming value)
+     */
+    public function buildBulkUpsertSql(
+        string $tableName,
+        array $conflictCols,
+        array $columnNames,
+        array $rows,
+        array $updateColumns,
+    ): string;
+
+    /**
      * Emit a `CREATE TABLE` statement for a compiled {@see TableSchema}.
      *
      * Includes primary key, unique keys, secondary indexes, and FOREIGN KEY

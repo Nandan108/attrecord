@@ -411,14 +411,20 @@ upsert paths deliberately fan into 3–4 statements for deadlock safety. Pick by
 | `Record::upsertByUniqueKey()` (default) | **1×** native `INSERT … ON DUPLICATE KEY UPDATE …` | single-row atomic upsert; `SET` supports plain columns **and** `RawSql` expressions (`incoming()`/`stored()`); `$conflictKey` must be a declared `#[UniqueKey]` (see above) |
 | `Record::upsertByUniqueKey(preserveAutoIncrement: true)` | **2×** `SELECT` + `UPDATE`/`INSERT` | burn-free; small race window |
 | `RecordSet::insertAll()` | **1×** bulk `INSERT … VALUES (…),(…)` | append-only; a key collision **throws** — or is **skipped** with `onConflict: OnConflict::Ignore` |
-| `RecordSet::upsertAll()` | **3×** `INSERT IGNORE` → `SELECT … FOR UPDATE` → join `UPDATE` | bulk keyed upsert, deadlock-safe |
+| `RecordSet::upsertAll()` (default, `Locked`) | **3×** `INSERT IGNORE` → `SELECT … FOR UPDATE` → join `UPDATE` | bulk keyed upsert, deadlock-safe; per-row masked SET |
+| `RecordSet::upsertAll(strategy: Native)` | **1×** `INSERT … VALUES (…),(…) ON DUPLICATE KEY UPDATE …` / `… ON CONFLICT (pk) DO UPDATE` | bulk native upsert, no `FOR UPDATE`; opt-in, caller owns concurrency |
 | `RecordSet::upsertAllByUniqueKey()` | **4×** `SELECT … IN` (resolve PKs) → then `upsertAll`'s 3 | bulk upsert keyed by a unique key |
 
-**There is no bulk *single-statement* `INSERT … VALUES (…),(…) ON DUPLICATE KEY UPDATE`.** For one
-atomic multi-row native upsert (e.g. a coalescing queue/outbox write on a hot path), the bulk keyed
-paths cost 3–4 statements — hand-written SQL is the correct choice there, not a regression to justify
-away. A **single-row** native upsert, by contrast, *is* available as one statement via
-`upsertByUniqueKey()`. `insertAll()` is one statement but has **no** upsert semantics — a PK
+**A bulk single-statement `INSERT … VALUES (…),(…) ON DUPLICATE KEY UPDATE` is available opt-in** as
+`upsertAll(strategy: UpsertStrategy::Native)` — one atomic statement, no `SELECT … FOR UPDATE`, ideal
+for a PK-keyed coalescing queue/outbox write (especially one issued *inside* an already-locked
+projection transaction, where the 3-step's extra locks are undesirable). It is **not the default**:
+the caller owns the concurrency implications the deadlock-safe 3-step (`Locked`) otherwise handles,
+it conflicts on the **PK**, applies a **uniform** SET (no per-row masking — for homogeneous batches),
+does **not** back-fill ids, and reports only a raw affected-row count. Use `Locked` for
+secondary-unique-key contention, heterogeneous partial-record batches, or an exact inserted/updated
+split. A **single-row** native upsert is `upsertByUniqueKey()`. `insertAll()` is one statement but has
+**no** upsert semantics — a PK
 collision surfaces as an error (correct for append-only ledgers/outboxes that never coalesce). The
 one relaxation is **insert-or-ignore**: `insertAll(onConflict: OnConflict::Ignore)` (and the
 single-row `save(onConflict: OnConflict::Ignore)`) *skip* a colliding row instead of throwing —
@@ -429,7 +435,7 @@ skipped row's PK is **not** back-filled, and `SaveResult::$inserted` counts only
 inserted.
 
 Batch persistence (a bounded number of statements per operation — never a per-record loop):
-- `upsertAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false, ?array $ignoreColumns = null, bool|list<string>|null $readBack = null): ?SaveResult`
+- `upsertAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false, ?array $ignoreColumns = null, bool|list<string>|null $readBack = null, UpsertStrategy $strategy = UpsertStrategy::Locked): ?SaveResult`
   (was `saveAll()` — kept as a `@deprecated` forwarding alias) — plain bulk `INSERT` for PK-null
   records; deadlock-safe 3-step upsert for keyed records
   (INSERT-IGNORE/ON-CONFLICT-DO-NOTHING → `SELECT … FOR UPDATE` ascending-PK → join-based
@@ -439,7 +445,16 @@ Batch persistence (a bounded number of statements per operation — never a per-
   called on every dirty record before the write** (exactly like `save()`), so it is *not* a raw
   CASE-UPDATE that bypasses Record hooks: a per-row `save()` loop can be replaced by one `upsertAll()`
   with no loss of validation or timestamp-stamping. For a **write-once** table use `insertAll()` —
-  `upsertAll`'s keyed path silently absorbs a duplicate PK. **Chunking:**
+  `upsertAll`'s keyed path silently absorbs a duplicate PK.
+  **`strategy: UpsertStrategy::Native`** replaces the 3-step with **one** `INSERT … ON DUPLICATE KEY
+  UPDATE` / `… ON CONFLICT (pk) DO UPDATE` statement — no `SELECT … FOR UPDATE`. Opt-in, because the
+  caller then owns the concurrency the 3-step handles; conflicts on the **PK**; applies a **uniform**
+  SET (every row writes its own incoming value to each dirty column — for homogeneous batches; a
+  heterogeneous partial-record batch should stay on `Locked`, which masks per-row); does **not**
+  back-fill ids and reports the raw driver affected-row count in `SaveResult::$inserted` (`$updated`
+  = 0 — no insert/update split; `afterSave(wasInsert:)` is best-effort: PK-null → insert, PK-carrying
+  → update). Ideal for a coalescing outbox/queue, especially inside an already-locked transaction.
+  An empty update set (all columns clean/ignored) degrades to insert-or-ignore. **Chunking:**
   - `$chunkSize === null` (default) — the whole set runs in **one transaction**, all-or-nothing
     (unchanged v0.1 behaviour).
   - `$chunkSize` int — split the write into `$chunkSize`-row slices that **commit independently**,

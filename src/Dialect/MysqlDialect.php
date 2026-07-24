@@ -283,6 +283,43 @@ final class MysqlDialect implements SqlDialect
         return new UpsertSql($create, $lock, $update);
     }
 
+    /**
+     * @param list<string>           $conflictCols
+     * @param list<string>           $columnNames
+     * @param list<list<string>>     $rows
+     * @param array<string, ?string> $updateColumns
+     */
+    #[\Override]
+    public function buildBulkUpsertSql(
+        string $tableName,
+        array $conflictCols,
+        array $columnNames,
+        array $rows,
+        array $updateColumns,
+    ): string {
+        $quotedTable = $this->quoteIdentifier($tableName);
+        $quotedCols = \implode(', ', \array_map($this->quoteIdentifier(...), $columnNames));
+        $valueSets = \array_map(
+            fn (array $row) => '('.\implode(', ', $row).')',
+            $rows,
+        );
+        $sql = "INSERT INTO {$quotedTable} ({$quotedCols}) VALUES\n    "
+            .\implode(",\n    ", $valueSets);
+
+        // No columns to update on conflict → insert-or-ignore (a duplicate key is a no-op).
+        if (empty($updateColumns)) {
+            return $sql.$this->insertIgnoreClause($columnNames);
+        }
+
+        // $conflictCols is unused on MySQL: ON DUPLICATE KEY UPDATE targets every unique/PK key.
+        $setParts = [];
+        foreach ($updateColumns as $col => $expr) {
+            $setParts[] = $this->quoteIdentifier($col).' = '.($expr ?? $this->incomingRef($col));
+        }
+
+        return $sql."\nON DUPLICATE KEY UPDATE ".\implode(', ', $setParts);
+    }
+
     #[\Override]
     public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string
     {

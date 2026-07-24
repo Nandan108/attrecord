@@ -35,6 +35,20 @@ All notable changes to this project are documented here. The format is based on
   batches. New dialect method `SqlDialect::insertIgnoreClause()`; `buildBulkInsert()` gains an
   `bool $ignore` flag; `buildInsertAllSql()` gains an `OnConflict` argument. The default
   (`OnConflict::Fail`) preserves prior behaviour exactly.
+- **Native single-statement bulk upsert (`UpsertStrategy::Native`).** New `UpsertStrategy` enum
+  (`Locked` | `Native`) on `RecordSet::upsertAll(…, UpsertStrategy $strategy = UpsertStrategy::Locked)`.
+  `Native` emits **one** `INSERT … VALUES (…),(…) ON DUPLICATE KEY UPDATE …` (MySQL/MariaDB) /
+  `… ON CONFLICT (pk) DO UPDATE SET …` (PostgreSQL/SQLite) — no `SELECT … FOR UPDATE`. It is the
+  single-statement counterpart of the deadlock-safe 3-step `Locked` default, for a PK-keyed
+  coalescing queue/outbox — especially one written *inside* an already-locked projection
+  transaction, where the extra locks are undesirable. **Opt-in by design** (the tradeoff is a
+  library-owner judgment call): under `Native` the caller owns the concurrency `Locked` handles,
+  the conflict target is the **PK**, the SET is **uniform** (every row writes its incoming value to
+  each dirty column — no per-row masking, so for homogeneous batches), ids are **not** back-filled,
+  and `SaveResult::$inserted` carries the raw driver affected-row count (`$updated` = 0, no split).
+  An empty update set degrades to insert-or-ignore. New dialect method
+  `SqlDialect::buildBulkUpsertSql()`, which composes with the expression/`RawSql` SET convention.
+  The default (`Locked`) preserves prior behaviour exactly.
 
 ## [0.8.0] - 2026-07-22 — Optimistic locking
 
