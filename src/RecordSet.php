@@ -290,7 +290,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      *                                                           `list<string>` those columns, `null` = auto (ignored
      *                                                           nullable-with-default + generated). One batched `IN` query, not per row.
      * @param UpsertStrategy         $strategy                   {@see UpsertStrategy::Locked} (default) — the deadlock-safe 3-step.
-     *                                                           {@see UpsertStrategy::Native} — one `INSERT … ON DUPLICATE KEY UPDATE`
+     *                                                           {@see UpsertStrategy::Lockless} — one `INSERT … ON DUPLICATE KEY UPDATE`
      *                                                           / `… ON CONFLICT (pk) DO UPDATE` statement, no `SELECT … FOR UPDATE`;
      *                                                           opt-in, caller owns concurrency. Conflicts on the **PK**, applies a
      *                                                           **uniform** SET (use for homogeneous batches), does **not** back-fill
@@ -372,11 +372,11 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             ? $this->bulkAutoReadBackColumns($insertedRecords, $updateDirty, $schema, $ignore)
             : $readBackMode;
 
-        // Opt-in native single-statement upsert: one INSERT … ON DUPLICATE KEY UPDATE / ON CONFLICT
+        // Opt-in lockless single-statement upsert: one INSERT … ON DUPLICATE KEY UPDATE / ON CONFLICT
         // DO UPDATE, no SELECT … FOR UPDATE (caller owns concurrency). Diverges from the locked
         // 3-step entirely, so it has its own execute path.
-        if (UpsertStrategy::Native === $strategy) {
-            return $this->upsertAllNative(
+        if (UpsertStrategy::Lockless === $strategy) {
+            return $this->upsertAllLockless(
                 $dirtyRecords,
                 $insertedRecords,
                 $chunkSize,
@@ -463,7 +463,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     }
 
     /**
-     * Execute {@see UpsertStrategy::Native}: one `INSERT … VALUES (…),(…) ON DUPLICATE KEY UPDATE …`
+     * Execute {@see UpsertStrategy::Lockless}: one `INSERT … VALUES (…),(…) ON DUPLICATE KEY UPDATE …`
      * (MySQL) / `… ON CONFLICT (pk) DO UPDATE SET …` (PG/SQLite) per chunk, keyed on the PK. No
      * `SELECT … FOR UPDATE`, no id back-fill (the DB resolves insert-vs-update per row and reports
      * only an affected-row count). Records are already `beforeSave()`/`validate()`'d.
@@ -478,14 +478,14 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * @param array<string, true>     $ignore          columns to drop from the write
      * @param 'all'|list<string>|null $readBackCols    resolved read-back columns (null/[] = none)
      */
-    private function upsertAllNative(array $dirtyRecords, array $insertedRecords, ?int $chunkSize, bool $allowInTransactionChunking, DbSession $session, TableSchema $schema, SqlDialect $dialect, string $pk, string $pkProp, array $ignore, string | array | null $readBackCols): SaveResult
+    private function upsertAllLockless(array $dirtyRecords, array $insertedRecords, ?int $chunkSize, bool $allowInTransactionChunking, DbSession $session, TableSchema $schema, SqlDialect $dialect, string $pk, string $pkProp, array $ignore, string | array | null $readBackCols): SaveResult
     {
         // Chunking here only bounds statement size — there is no FOR UPDATE to order, so no PK sort.
         // The in-transaction guard still applies: per-chunk commit is impossible inside an open
         // transaction, so reject it unless explicitly allowed (mirrors the locked path).
         if (null !== $chunkSize && $session->inTransaction() && !$allowInTransactionChunking) {
             throw new AttrecordException(
-                'upsertAll(strategy: Native, chunkSize:) commits each chunk independently to bound '
+                'upsertAll(strategy: Lockless, chunkSize:) commits each chunk independently to bound '
                 .'statement size, which cannot happen inside an open transaction. Pass '
                 .'allowInTransactionChunking: true to chunk within the outer transaction, or call '
                 .'without chunkSize for a single statement.',
@@ -499,8 +499,8 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $affected = 0;
         foreach ($chunks as $chunk) {
             // array_chunk never yields an empty chunk, and the PK is always in the column set, so
-            // buildNativeUpsertSql() always produces a statement.
-            $sql = $this->buildNativeUpsertSql($chunk, $schema, $dialect, $ignore, $pk);
+            // buildLocklessUpsertSql() always produces a statement.
+            $sql = $this->buildLocklessUpsertSql($chunk, $schema, $dialect, $ignore, $pk);
             try {
                 /** @psalm-suppress MixedAssignment */
                 $affected += $session->transactional(static fn (): int => $session->exec($sql));
@@ -526,7 +526,8 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     }
 
     /**
-     * Build the single native upsert statement for one chunk (keyed on the PK). Column set = the PK
+     * Build the single-statement upsert (the engine's `ON DUPLICATE KEY UPDATE` / `ON CONFLICT DO UPDATE`)
+     * for one chunk (keyed on the PK). Column set = the PK
      * (always present, so the statement is never empty) plus every non-generated, non-ignored column
      * that is non-null or dirty on some record; the SET updates the union of dirty non-PK columns,
      * each to its incoming value ({@see SqlDialect::incomingRef()}). An empty update set degrades to
@@ -535,7 +536,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * @param list<Record>        $records the caller passes a non-empty chunk
      * @param array<string, true> $ignore
      */
-    private function buildNativeUpsertSql(array $records, TableSchema $schema, SqlDialect $dialect, array $ignore, string $pk): string
+    private function buildLocklessUpsertSql(array $records, TableSchema $schema, SqlDialect $dialect, array $ignore, string $pk): string
     {
         $presentCols = [$pk => true];
         /** @var array<string, null> $updateCols col => null (copy the incoming value) */

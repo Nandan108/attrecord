@@ -433,11 +433,11 @@ upsert paths deliberately fan into 3–4 statements for deadlock safety. Pick by
 | `Record::upsertByUniqueKey(preserveAutoIncrement: true)` | **2×** `SELECT` + `UPDATE`/`INSERT` | burn-free; small race window |
 | `RecordSet::insertAll()` | **1×** bulk `INSERT … VALUES (…),(…)` | append-only; a key collision **throws** — or is **skipped** with `onConflict: OnConflict::Ignore` |
 | `RecordSet::upsertAll()` (default, `Locked`) | **3×** `INSERT IGNORE` → `SELECT … FOR UPDATE` → join `UPDATE` | bulk keyed upsert, deadlock-safe; per-row masked SET |
-| `RecordSet::upsertAll(strategy: Native)` | **1×** `INSERT … VALUES (…),(…) ON DUPLICATE KEY UPDATE …` / `… ON CONFLICT (pk) DO UPDATE` | bulk native upsert, no `FOR UPDATE`; opt-in, caller owns concurrency |
+| `RecordSet::upsertAll(strategy: Lockless)` | **1×** `INSERT … VALUES (…),(…) ON DUPLICATE KEY UPDATE …` / `… ON CONFLICT (pk) DO UPDATE` | bulk single-statement upsert, no `FOR UPDATE`; opt-in, caller owns concurrency |
 | `RecordSet::upsertAllByUniqueKey()` | **4×** `SELECT … IN` (resolve PKs) → then `upsertAll`'s 3 | bulk upsert keyed by a unique key |
 
 **A bulk single-statement `INSERT … VALUES (…),(…) ON DUPLICATE KEY UPDATE` is available opt-in** as
-`upsertAll(strategy: UpsertStrategy::Native)` — one atomic statement, no `SELECT … FOR UPDATE`, ideal
+`upsertAll(strategy: UpsertStrategy::Lockless)` — one atomic statement, no `SELECT … FOR UPDATE`, ideal
 for a PK-keyed coalescing queue/outbox write (especially one issued *inside* an already-locked
 projection transaction, where the 3-step's extra locks are undesirable). It is **not the default**:
 the caller owns the concurrency implications the deadlock-safe 3-step (`Locked`) otherwise handles,
@@ -467,7 +467,7 @@ Batch persistence (a bounded number of statements per operation — never a per-
   CASE-UPDATE that bypasses Record hooks: a per-row `save()` loop can be replaced by one `upsertAll()`
   with no loss of validation or timestamp-stamping. For a **write-once** table use `insertAll()` —
   `upsertAll`'s keyed path silently absorbs a duplicate PK.
-  **`strategy: UpsertStrategy::Native`** replaces the 3-step with **one** `INSERT … ON DUPLICATE KEY
+  **`strategy: UpsertStrategy::Lockless`** replaces the 3-step with **one** `INSERT … ON DUPLICATE KEY
   UPDATE` / `… ON CONFLICT (pk) DO UPDATE` statement — no `SELECT … FOR UPDATE`. Opt-in, because the
   caller then owns the concurrency the 3-step handles; conflicts on the **PK**; applies a **uniform**
   SET (every row writes its own incoming value to each dirty column — for homogeneous batches; a

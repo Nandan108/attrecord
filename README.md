@@ -1003,22 +1003,24 @@ every lock until it commits), so a chunked `upsertAll()` nested in a transaction
 chunk anyway: the chunks then run as separate, smaller **statements** within the outer transaction
 — bounding statement size while staying atomic, but leaving the lock/undo footprint unbounded.
 
-#### Native single-statement upsert — `upsertAll(strategy: Native)`
+#### Lockless single-statement upsert — `upsertAll(strategy: Lockless)`
 
 The default keyed upsert is the deadlock-safe 3-step above. Pass
-`strategy: UpsertStrategy::Native` (`Nandan108\Attrecord\Enum\UpsertStrategy`) to collapse it to
+`strategy: UpsertStrategy::Lockless` (`Nandan108\Attrecord\Enum\UpsertStrategy`) to collapse it to
 **one** `INSERT … VALUES (…),(…) ON DUPLICATE KEY UPDATE …` (MySQL/MariaDB) /
-`… ON CONFLICT (pk) DO UPDATE SET …` (PostgreSQL/SQLite) — no `SELECT … FOR UPDATE`:
+`… ON CONFLICT (pk) DO UPDATE SET …` (PostgreSQL/SQLite) — the engine's own upsert, with no
+`SELECT … FOR UPDATE`:
 
 ```php
 // one statement, no row locks — a PK-keyed coalescing outbox/queue write
-(new RecordSet($rows))->upsertAll(strategy: UpsertStrategy::Native);
+(new RecordSet($rows))->upsertAll(strategy: UpsertStrategy::Lockless);
 ```
 
-It is **opt-in** because the caller takes on the concurrency the 3-step otherwise handles — ideal for
-a PK-keyed coalescing queue/outbox, **especially one written inside an already-locked transaction**
-where the 3-step's extra locks are undesirable; riskier for secondary-unique-key contention. Under
-`Native`: the conflict target is the **PK**; the SET is **uniform** (every row writes its incoming
+It is **opt-in** because, taking no locks, the caller owns the concurrency the 3-step otherwise
+handles — ideal for a PK-keyed coalescing queue/outbox, **especially one written inside an
+already-locked transaction** where the 3-step's extra locks are undesirable; riskier for
+secondary-unique-key contention. Under `Lockless`: the conflict target is the **PK**; the SET is
+**uniform** (every row writes its incoming
 value to each dirty column — no per-row masking, so for homogeneous batches); ids are **not**
 back-filled; and `SaveResult::$inserted` carries the raw driver affected-row count (`$updated` is `0`
 — no insert/update split). Keep the default (`UpsertStrategy::Locked`) for exact counts, heterogeneous
@@ -1262,7 +1264,7 @@ without mutating global state — wrap it in `Record::usingConnection()` or `Rec
 ```php
 // bind a specific session for the duration of the closure; restored afterward (even on throw)
 Outbox::usingSession($engineSession, static fn () =>
-    (new RecordSet($rows))->upsertAll(strategy: UpsertStrategy::Native),
+    (new RecordSet($rows))->upsertAll(strategy: UpsertStrategy::Lockless),
 );
 
 // or bind a full Connection (session + dialect)

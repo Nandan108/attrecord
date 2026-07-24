@@ -18,12 +18,12 @@ use Nandan108\Attrecord\Tests\Fixtures\UpsertByUniqueKeyRecord;
 use PHPUnit\Framework\TestCase;
 
 /**
- * SQL-shape + statement-count verification for the native single-statement bulk upsert
- * ({@see UpsertStrategy::Native}) per dialect, without a live database.
+ * SQL-shape + statement-count verification for the lockless single-statement bulk upsert
+ * ({@see UpsertStrategy::Lockless}) per dialect, without a live database.
  *
  * @psalm-suppress PropertyNotSetInConstructor
  */
-final class NativeUpsertSqlTest extends TestCase
+final class LocklessUpsertSqlTest extends TestCase
 {
     private CapturingDbSession $session;
 
@@ -41,7 +41,7 @@ final class NativeUpsertSqlTest extends TestCase
         TableSchema::clearCache();
     }
 
-    /** Two keyed (PK-carrying) records, so they route through the native upsert. */
+    /** Two keyed (PK-carrying) records, so they route through the lockless upsert. */
     private function keyedSet(): RecordSet
     {
         $a = new UpsertByUniqueKeyRecord();
@@ -66,21 +66,21 @@ final class NativeUpsertSqlTest extends TestCase
         return array_map(static fn (array $c): string => $c['sql'], $this->session->allCalls());
     }
 
-    public function testMysqlNativeIsOneStatementWithOnDuplicateKeyUpdate(): void
+    public function testMysqlLocklessIsOneStatementWithOnDuplicateKeyUpdate(): void
     {
         $this->connect(new MysqlDialect());
 
-        $result = $this->keyedSet()->upsertAll(strategy: UpsertStrategy::Native);
+        $result = $this->keyedSet()->upsertAll(strategy: UpsertStrategy::Lockless);
 
         $calls = $this->sqlCalls();
-        $this->assertCount(1, $calls, 'native upsert is a single statement — no SELECT … FOR UPDATE');
+        $this->assertCount(1, $calls, 'lockless upsert is a single statement — no SELECT … FOR UPDATE');
         $sql = $calls[0];
         $this->assertStringContainsString('INSERT INTO `attrecord_upsert` (`id`, `code`, `name`) VALUES', $sql);
         $this->assertStringContainsString('(1, ', $sql);
         $this->assertStringContainsString('ON DUPLICATE KEY UPDATE `code` = VALUES(`code`), `name` = VALUES(`name`)', $sql);
         $this->assertStringNotContainsString('FOR UPDATE', $sql);
         $this->assertNotNull($result);
-        $this->assertSame(0, $result->updated, 'native reports the raw affected count in inserted; updated is 0');
+        $this->assertSame(0, $result->updated, 'lockless reports the raw affected count in inserted; updated is 0');
     }
 
     public function testLockedDefaultIsStillThreeStatements(): void
@@ -96,29 +96,29 @@ final class NativeUpsertSqlTest extends TestCase
         $this->assertStringStartsWith('UPDATE', $calls[2]);
     }
 
-    public function testPgsqlNativeUsesOnConflictPkDoUpdateWithExcluded(): void
+    public function testPgsqlLocklessUsesOnConflictPkDoUpdateWithExcluded(): void
     {
         $this->connect(new PgsqlDialect());
 
-        $this->keyedSet()->upsertAll(strategy: UpsertStrategy::Native);
+        $this->keyedSet()->upsertAll(strategy: UpsertStrategy::Lockless);
 
         $calls = $this->sqlCalls();
         $this->assertCount(1, $calls);
         $this->assertStringContainsString('ON CONFLICT ("id") DO UPDATE SET "code" = EXCLUDED."code", "name" = EXCLUDED."name"', $calls[0]);
     }
 
-    public function testSqliteNativeUsesOnConflictPkDoUpdateWithExcludedLowercase(): void
+    public function testSqliteLocklessUsesOnConflictPkDoUpdateWithExcludedLowercase(): void
     {
         $this->connect(new SqliteDialect());
 
-        $this->keyedSet()->upsertAll(strategy: UpsertStrategy::Native);
+        $this->keyedSet()->upsertAll(strategy: UpsertStrategy::Lockless);
 
         $calls = $this->sqlCalls();
         $this->assertCount(1, $calls);
         $this->assertStringContainsString('ON CONFLICT ("id") DO UPDATE SET "code" = excluded."code", "name" = excluded."name"', $calls[0]);
     }
 
-    public function testNativeEmptyUpdateSetDegradesToInsertOrIgnore(): void
+    public function testLocklessEmptyUpdateSetDegradesToInsertOrIgnore(): void
     {
         // A dialect-level check: no update columns → insert-or-ignore, not an error.
         $dialect = new MysqlDialect();

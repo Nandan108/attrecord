@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-07-24
+
+### Changed
+
+- **Renamed `UpsertStrategy::Native` → `UpsertStrategy::Lockless`.** "Native" begged the question
+  "native to what?"; `Lockless` names the property the caller actually reasons about — it takes **no**
+  `SELECT … FOR UPDATE` row locks, and so hands the caller the concurrency the default `Locked`
+  strategy otherwise handles. Behaviour is unchanged. **Breaking** for the (one-day-old) `Native`
+  case: replace `UpsertStrategy::Native` with `UpsertStrategy::Lockless` in `upsertAll(strategy:)`.
+
 ## [0.9.0] - 2026-07-24 — Single-table write gaps & scoped connection binding
 
 ### Added
