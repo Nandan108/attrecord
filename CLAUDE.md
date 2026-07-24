@@ -76,8 +76,14 @@ updated through the Locked keyed-upsert path on PG, add typed literals to the de
   so the tag must be a *product* of green CI, not a precondition. Flow: promote the CHANGELOG section →
   push the release commit to `main` → run the **Release** workflow (Actions → Release → Run workflow →
   `version: X.Y.Z`; see `.github/workflows/release.yml`). It re-runs the full matrix and only then
-  creates the annotated tag + GitHub release, so a red build never reaches Packagist. A manual
-  `git tag && git push` bypasses this gate — don't (and ideally a `v*` tag ruleset rejects it; set one
-  via repo Settings → Rules if not yet configured). Still run `docker compose up -d && composer test`
-  locally first so the workflow doesn't fail on something you could have caught. Pre-1.0: a minor may
-  break — mark it `!` + **Breaking** in the CHANGELOG.
+  creates the annotated tag + GitHub release, so a red build never reaches Packagist. Still run
+  `docker compose up -d && composer test` locally first so the workflow doesn't fail on something you
+  could have caught. Pre-1.0: a minor may break — mark it `!` + **Breaking** in the CHANGELOG.
+- **`v*` tag ruleset** ("Protect release tags (v\*)", id 19694561): restricts creation/deletion of
+  `v*` tags to the admin-role bypass, so a stray `git push origin vX.Y.Z` from a laptop or a bot's
+  `GITHUB_TOKEN` is rejected. Because `GITHUB_TOKEN` is *not* a bypass actor, the Release workflow
+  authenticates with a **`RELEASE_TOKEN`** secret — a fine-grained PAT (owner; Contents: read & write
+  on attrecord) that bypasses as admin. **If you rotate/lose it, the Release workflow fails at the tag
+  push** (add a new PAT as `RELEASE_TOKEN`). Residual: the owner *can* still bypass with their own
+  credentials — to also block owner manual tags, move the bypass from the admin role to a dedicated
+  GitHub App used only by the workflow.

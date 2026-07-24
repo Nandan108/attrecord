@@ -35,9 +35,22 @@ jobs:
     permissions:
       contents: write # create the tag + GitHub release
     steps:
+      - name: Require RELEASE_TOKEN (the v* tag ruleset blocks the default GITHUB_TOKEN)
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::error::RELEASE_TOKEN secret is not set. The 'Protect release tags (v*)' ruleset"
+            echo "::error::restricts tag creation to admin bypass actors, and GITHUB_TOKEN is not one."
+            echo "::error::Create a fine-grained PAT (owner; Contents: read & write on attrecord) and add"
+            echo "::error::it as the RELEASE_TOKEN repository secret. See CLAUDE.md § Commit & release."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }} # owner PAT — bypasses the v* tag ruleset (admin role)
 
       - name: Validate version, CHANGELOG entry, and tag availability
         env:
@@ -62,7 +75,7 @@ jobs:
 
       - name: Create annotated tag and GitHub release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           VERSION: ${{ github.event.inputs.version }}
         run: |
           set -euo pipefail
