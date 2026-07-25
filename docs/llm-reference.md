@@ -30,7 +30,7 @@ prose and worked examples, and the topic docs in this directory for deep dives
 |---|---|
 | `Nandan108\Attrecord` | `Record`, `RecordSet`, `WhereClause`, `RawSql`, `Connection`, `DbSession`, `SqlDialect`, `AppendOnly` (marker), `ColumnSerializer` (internal), `ColumnCaster`, `JsonCastable`, `BinaryParam`, `LockSet`, `Transaction`, `SaveResult`, `UpsertSql`, `NamedPlaceholderSql` (internal) |
 | `Nandan108\Attrecord\Attribute` | `Table`, `Column`, `ForeignKey`, `Index`, `UniqueKey`, `Relation`, `LockTier`, `MysqlTableOptions`, `Cast` (abstract base) |
-| `Nandan108\Attrecord\Caster` | `DateTimeCaster`, `EpochCaster`, `JsonCaster`, `EnumCaster` |
+| `Nandan108\Attrecord\Caster` | `DateTimeCaster`, `EpochCaster`, `JsonCaster`, `EnumCaster`, `BitmaskCaster`, `SetCaster` |
 | `Nandan108\Attrecord\Dialect` | `MysqlDialect`, `PgsqlDialect`, `SqliteDialect`, `UpsertJoinBuilder` (trait) |
 | `Nandan108\Attrecord\Session` | `PdoDbSession`, `MysqliDbSession`, `WpDbSession`, `RetryingDbSession` |
 | `Nandan108\Attrecord\Schema` | `TableSchema`, `ColumnDefinition`, `ForeignKeyDefinition`, `RelationDefinition` |
@@ -571,6 +571,19 @@ Built-in casters (all extend abstract `Cast implements ColumnCaster`, used as at
   value list from the enum's cases** (the caster already names the enum; an inline list would just
   duplicate it and could drift). Provide `enumValues:` only to intentionally narrow the column to a
   subset of the enum's cases.
+- `#[BitmaskCaster(class-string<\BackedEnum> $enum)]` — integer column ↔ a **flag-set** (`list<E>`)
+  stored as a bitmask. **Portable** (the column is a plain `Int*`, works on all three backends). The
+  enum must be int-backed with distinct positive **power-of-two** values (one bit per case), validated
+  at construction. `toDb` OR-s the members (so the snapshot is order/duplicate-independent — canonical
+  by construction); `fromDb` decomposes in declaration order and ignores stale bits. Empty set = `0`;
+  a nullable column separates "unset" (`NULL`) from "empty set" (`0`). Query with bitwise predicates
+  (`WHERE (col & 4) = 4`).
+- `#[SetCaster(class-string<\BackedEnum> $enum)]` — `ColumnType::Set` column ↔ a **flag-set**
+  (`list<E>`) stored as a native MySQL `SET(...)`. **MySQL-only** (the `Set` column type already throws
+  on PostgreSQL/SQLite) — the self-documenting counterpart to `BitmaskCaster`. The enum must be
+  string-backed (case values are the SET members; no commas). On a `ColumnType::Set` column, **omit
+  `enumValues:` — the `SET(...)` member list is derived from the enum's cases** (like `EnumCaster` on
+  an `Enum` column). Joins/splits in declaration order (canonical); empty set = `''`.
 
 `JsonCastable` interface (for value objects stored as JSON): `static fromJson(array $data): static`.
 

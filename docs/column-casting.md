@@ -98,6 +98,66 @@ For a timestamp stored as an integer column:
 public ?\DateTimeImmutable $logged_at = null;
 ```
 
+### `BitmaskCaster` — flag-set ⇄ integer bitmask (portable)
+
+Stores a **set of enum members** (`list<E>`) as an integer bitmask — one bit per member. The column
+is a plain `Int*` type, so this works on **every backend** (MySQL/MariaDB, PostgreSQL, SQLite).
+
+The enum must be **int-backed with distinct positive power-of-two values** (`1, 2, 4, 8, …`); each
+case owns one bit. This is validated once, at schema-build. The empty set is the zero mask (a
+"none"/`0` pseudo-member has no place — `0` is not a power of two).
+
+```php
+enum StockConcern: int
+{
+    case Deficit = 1;
+    case Overstock = 2;
+    case Stale = 4;
+    case NoCost = 8;
+}
+
+#[Column(ColumnType::BigIntUnsigned, default: 0)]
+#[BitmaskCaster(StockConcern::class)]
+public array $concerns = [];        // e.g. [StockConcern::Deficit, StockConcern::NoCost] → 9
+```
+
+On write the members are OR-ed into one integer; on read the integer is decomposed back into the
+members whose bit is set, **in the enum's declaration order** (canonical). Because the stored value
+is the mask, dirty tracking is order- and duplicate-independent for free — `[A, B]` and `[B, A]` are
+the same integer, hence the same snapshot. A **nullable** column distinguishes "unset" (`NULL`) from
+"empty set" (`0`). Stale bits with no matching case are ignored on read.
+
+Membership queries are portable bitwise predicates: `WHERE (concerns & 4) = 4` (`Stale` is set).
+
+### `SetCaster` — flag-set ⇄ MySQL `SET` (MySQL-only)
+
+The **self-documenting, MySQL-native** counterpart to `BitmaskCaster`: stores a `list<E>` in a
+`ColumnType::Set` column — a native `SET('a','b',…)` — where members are visible by name in the DDL
+and queryable with `FIND_IN_SET`. Because `ColumnType::Set` throws at schema-build on
+PostgreSQL/SQLite, a Record using this caster is **MySQL-family by construction**; reach for
+`BitmaskCaster` when you need portability.
+
+The enum must be **string-backed** (each case value is a `SET` member, so it may not contain a
+comma). Declare the caster on a `Set`-typed `array` property and **omit `enumValues:`** — the
+`SET(...)` member list is derived from the enum's cases (mirroring `EnumCaster` on an `Enum` column).
+
+```php
+enum AccessRight: string
+{
+    case Read = 'read';
+    case Write = 'write';
+    case Admin = 'admin';
+}
+
+#[Column(ColumnType::Set)]                       // → SET('read', 'write', 'admin')
+#[SetCaster(AccessRight::class)]
+public array $rights = [];
+```
+
+Members are joined in **declaration order** (canonical, de-duplicated) on write and split back in
+declaration order on read, so dirty tracking is likewise order- and duplicate-independent. The empty
+set is the empty string.
+
 ---
 
 ## JSON columns and `JsonCastable` value objects

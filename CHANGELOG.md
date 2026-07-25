@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-07-25
+
+### Added
+
+- **Flag-set casters — a set of enum members in one column.** Two new `#[Cast]`-family attributes map
+  a PHP `list<E>` (a set of flags) to/from a single column:
+  - **`#[BitmaskCaster(EnumClass::class)]` (portable).** Stores the set as an **integer bitmask** on a
+    plain `Int*` column — works on MySQL/MariaDB, PostgreSQL and SQLite. The enum must be int-backed
+    with distinct positive **power-of-two** case values (one bit each), validated at schema-build.
+    `toDb` OR-s the members, so the stored value is canonical (order- and duplicate-independent) and
+    dirty tracking is stable for free; `fromDb` decomposes in declaration order and ignores stale bits.
+    Empty set = `0`; a nullable column separates "unset" (`NULL`) from "empty set". Membership is a
+    portable bitwise predicate (`WHERE (col & 4) = 4`).
+  - **`#[SetCaster(EnumClass::class)]` (MySQL-only).** The self-documenting counterpart: stores the set
+    in a native `ColumnType::Set` (`SET('a','b',…)`) column — members visible by name, queryable with
+    `FIND_IN_SET`. MySQL-family by construction (the `Set` column type already throws on
+    PostgreSQL/SQLite). The enum must be string-backed; on a `Set` column **omit `enumValues:`** — the
+    `SET(...)` member list is derived from the enum's cases (mirroring `EnumCaster` on an `Enum`
+    column). Canonical declaration-order join/split; empty set = `''`.
+
+  Both share one PHP-side shape (a set of enum members); pick the storage: portable integer bitmask, or
+  self-documenting MySQL `SET`. Docs: [README](README.md#column-casting),
+  [docs/column-casting.md](docs/column-casting.md).
+
 ## [0.9.2] - 2026-07-24
 
 ### Fixed

@@ -18,6 +18,7 @@ use Nandan108\Attrecord\Attribute\UpdatedAt;
 use Nandan108\Attrecord\Attribute\Version;
 use Nandan108\Attrecord\Caster\EnumCaster;
 use Nandan108\Attrecord\Caster\JsonCaster;
+use Nandan108\Attrecord\Caster\SetCaster;
 use Nandan108\Attrecord\ColumnCaster;
 use Nandan108\Attrecord\Enum\ColumnType;
 use Nandan108\Attrecord\Enum\GeneratedColumnMode;
@@ -331,11 +332,15 @@ final class TableSchema
                     ));
                 }
 
-                // An Enum column with an #[EnumCaster] but no explicit `enumValues:` derives its
-                // allowed-value list from the enum's cases — the caster already names the enum, so
-                // the inline list would just duplicate it (and could drift out of sync).
+                // An Enum column with an #[EnumCaster] (or a Set column with a #[SetCaster]) and no
+                // explicit `enumValues:` derives its allowed-value list from the enum's cases — the
+                // caster already names the enum, so the inline list would just duplicate it (and could
+                // drift out of sync).
                 $enumValues = $colAttr->enumValues;
-                if (null === $enumValues && ColumnType::Enum === $colAttr->type && $caster instanceof EnumCaster) {
+                if (null === $enumValues && (
+                    (ColumnType::Enum === $colAttr->type && $caster instanceof EnumCaster)
+                    || (ColumnType::Set === $colAttr->type && $caster instanceof SetCaster)
+                )) {
                     $enumValues = $caster->enumValues();
                 }
 

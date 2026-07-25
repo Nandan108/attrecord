@@ -836,15 +836,23 @@ public ?array $audit = null;
 #[Column(ColumnType::BigIntUnsigned, nullable: true)]
 #[EpochCaster]
 public ?\DateTimeImmutable $logged_at = null;
+
+// flag-set ⇄ integer bitmask — portable across all three backends
+#[Column(ColumnType::BigIntUnsigned, default: 0)]
+#[BitmaskCaster(StockConcern::class)]   // int-backed, power-of-two enum
+public array $concerns = [];            // e.g. [StockConcern::Deficit, StockConcern::NoCost]
 ```
 
-A caster *is* its attribute: `JsonCaster` / `DateTimeCaster` / `EpochCaster` / `EnumCaster` ship
-built-in, and custom casters extend the `Cast` base (which implements the two-method
-`ColumnCaster` contract). `#[EnumCaster(MyEnum::class)]` maps a scalar column to/from a backed enum
-(see the `$status` field in [Define your records](#1--define-your-records)); on a `ColumnType::Enum`
-column it also derives the `ENUM(...)` value set from the enum's cases. Casting integrates with dirty
-tracking — including mutable value objects — and with bulk `upsertAll()`, and has no effect on
-generated DDL — except the `EnumCaster`-derived `ENUM(...)` set just noted.
+A caster *is* its attribute: `JsonCaster` / `DateTimeCaster` / `EpochCaster` / `EnumCaster` /
+`BitmaskCaster` / `SetCaster` ship built-in, and custom casters extend the `Cast` base (which
+implements the two-method `ColumnCaster` contract). `#[EnumCaster(MyEnum::class)]` maps a scalar
+column to/from a backed enum (see the `$status` field in [Define your records](#1--define-your-records));
+on a `ColumnType::Enum` column it also derives the `ENUM(...)` value set from the enum's cases. For a
+**set of flags**, `#[BitmaskCaster]` stores a `list<E>` as an integer bitmask (portable, order- and
+duplicate-independent), and `#[SetCaster]` stores one in a native MySQL `SET(...)` column
+(self-documenting, MySQL-only). Casting integrates with dirty tracking — including mutable value
+objects — and with bulk `upsertAll()`, and has no effect on generated DDL — except the
+`EnumCaster`-derived `ENUM(...)` and `SetCaster`-derived `SET(...)` sets just noted.
 
 → See [docs/column-casting.md](docs/column-casting.md) for the full reference: the
 `ColumnCaster` contract, `JsonCastable` value objects, discriminated payloads, auto-attach
