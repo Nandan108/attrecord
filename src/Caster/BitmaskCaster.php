@@ -64,6 +64,9 @@ final class BitmaskCaster extends Cast
                     $bit,
                 ));
             }
+            // Reject two cases sharing a bit. PHP 8.1 forbids duplicate backed-enum values at compile
+            // time, but 8.2+ defers that check to the first `from()`/`tryFrom()` — so a collision can
+            // reach here (via `cases()`) and would otherwise be silently swallowed. Catch it early.
             if (isset($casesByBit[$bit])) {
                 throw new \InvalidArgumentException(sprintf(
                     'BitmaskCaster: %s has two cases sharing bit %d (%s and %s).',

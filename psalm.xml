@@ -42,11 +42,11 @@
                 <directory name="tests" />
             </errorLevel>
         </PossiblyUnusedProperty>
-        <!-- A test fixture deliberately declares two enum cases sharing a value (PHP permits it) to
-             exercise BitmaskCaster's collision guard; the duplication is the point of the test. -->
+        <!-- FlagDupBitEnum deliberately declares two enum cases sharing a value to exercise
+             BitmaskCaster's collision guard (see the version-gated test); the duplication is the point. -->
         <DuplicateEnumCaseValue>
             <errorLevel type="suppress">
-                <file name="tests/Unit/FlagSetCasterTest.php" />
+                <file name="tests/Fixtures/FlagDupBitEnum.php" />
             </errorLevel>
         </DuplicateEnumCaseValue>
     </issueHandlers>

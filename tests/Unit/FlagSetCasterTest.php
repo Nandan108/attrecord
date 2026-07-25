@@ -10,6 +10,7 @@ use Nandan108\Attrecord\Schema\ColumnDefinition;
 use Nandan108\Attrecord\Schema\TableSchema;
 use Nandan108\Attrecord\Tests\Fixtures\AccessRight;
 use Nandan108\Attrecord\Tests\Fixtures\BitmaskRecord;
+use Nandan108\Attrecord\Tests\Fixtures\FlagDupBitEnum;
 use Nandan108\Attrecord\Tests\Fixtures\SetFlagsRecord;
 use Nandan108\Attrecord\Tests\Fixtures\StockConcern;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -26,19 +27,6 @@ enum FlagNotPow2Enum: int
 {
     case A = 1;
     case B = 3;
-}
-
-/**
- * Int-backed, two cases sharing a bit — BitmaskCaster must reject. PHP permits duplicate backed-enum
- * values (unlike a fatal); the caster is what rejects the collision.
- *
- * @psalm-suppress DuplicateEnumCaseValue intentional — the fixture exists to exercise that rejection.
- */
-enum FlagDupBitEnum: int
-{
-    case A = 2;
-    // Same value as A on purpose — suppressed in psalm.xml (see DuplicateEnumCaseValue handler).
-    case B = 2;
 }
 
 /** Int-backed — SetCaster must reject (needs string backing). */
@@ -85,6 +73,13 @@ final class FlagSetCasterTest extends TestCase
 
     public function testBitmaskRejectsDuplicateBit(): void
     {
+        // The fixture declares two enum cases sharing a value, which PHP 8.1 rejects at compile time —
+        // so skip there (the fixture is PSR-4-lazy and never loads on 8.1). On 8.2+ the duplicate check
+        // is deferred to from()/tryFrom(), so cases() reaches the caster and the guard fires.
+        if (\PHP_VERSION_ID < 80200) {
+            self::markTestSkipped('PHP 8.1 rejects duplicate enum values at compile time.');
+        }
+
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('bit');
         new BitmaskCaster(FlagDupBitEnum::class);
