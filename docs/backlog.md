@@ -12,28 +12,23 @@ lock-wait / `SQLITE_BUSY`), and `FOR UPDATE` dialect-gating. Positioned as "prod
 reality from SQLite to MySQL to PG, as opt-in/prunable composition." See that note for the pinned
 decisions.
 
-## Migration system — *biggest missing feature; deferred by design*
+## Migration system — *designed; see [arch-migrations.md](arch-migrations.md)*
 
 Today the DDL producer emits **fresh-install** `CREATE TABLE` only. There is no schema diffing,
 no `ALTER TABLE` generation, and no migration tracking/versioning. For evolving a live schema,
 a consumer currently hand-writes migrations (or regenerates and diffs manually).
 
-A first-class migration system is the largest feature gap. Rough shape if/when built:
+The design contract now exists: **[arch-migrations.md](arch-migrations.md)** — the
+`attrecord-migrations` companion package. It deliberately deviates from the earlier rough shape
+(versioned migration files + up/down runner) in favour of **declarative convergence**: introspect
+the live schema, normalize, diff against the attribute-derived `TableSchema`, and apply a
+classified `plan()`/`apply()` (Safe / Destructive / Manual change classes; declared renames via
+`#[Column(renamedFrom:)]`; audit ledger, not a source-of-truth chain; no down scripts — rollback =
+converge toward older Records). Core seams needed: promote the dialect DDL fragment builders to
+public + the inert `renamedFrom` attribute field. See the doc for the full pipeline, the SQLite
+rebuild phasing, and the non-goals fence.
 
-- **Schema diff** — compare the attribute-derived `TableSchema` for a Record against the live
-  table (via `information_schema` introspection) and emit the `ALTER TABLE` delta:
-  add/drop/modify columns, add/drop indexes & unique keys, add/drop FK constraints.
-- **Migration tracking** — a `migrations` ledger table + an ordered, idempotent apply/rollback
-  runner (forward diffs are mechanical; safe down-migrations are the hard part).
-- **Dialect-aware** — both MySQL/MariaDB and PostgreSQL, mirroring the dual-dialect DDL producer.
-
-**Why deferred for 0.1.0:** diffing + reversible migrations is a large, correctness-sensitive
-subsystem (destructive `ALTER`s, data-preserving column changes, online-DDL concerns) that is
-better designed against real evolution needs than speculatively. The fresh-install producer
-already covers install/bootstrap, which is what consumers need first. Likely a separate,
-opt-in companion package rather than core, to keep attrecord dependency-free and small.
-
-- **Status:** acknowledged as the top roadmap item; not yet scheduled.
+- **Status:** design contract written (2026-07-25); build not yet scheduled.
 
 ## DDL features not yet modelled by the producer
 

@@ -126,6 +126,7 @@ This README is the narrative guide. Deeper references live in [`docs/`](docs/):
 - [arch-concurrency.md](docs/arch-concurrency.md) — production locking model, retryable-error classification, `RetryingDbSession`
 - [arch-bulk-update-scaling.md](docs/arch-bulk-update-scaling.md) — the join-based bulk-`UPDATE` emitter and `upsertAll()` chunking rationale
 - [arch-unit-of-work.md](docs/arch-unit-of-work.md) — the planned `attrecord-uow` companion package: opt-in identity map + state-derived flush (and the non-goals fence)
+- [arch-migrations.md](docs/arch-migrations.md) — the planned `attrecord-migrations` companion package: declarative schema convergence (introspect → diff → classified `plan()`/`apply()`), not migration files
 - [design-note-no-name-auto-conversion.md](docs/design-note-no-name-auto-conversion.md) — why no auto snake/camel conversion
 
 ---
@@ -771,7 +772,9 @@ determines nullability. Use this for portable schemas across both engines.
 
 `ALTER TABLE` generation, schema diffing, and migration tracking are
 **deliberately out of scope** of attrecord itself. They belong in a separate
-package built on top of `TableSchema`.
+package built on top of `TableSchema` — designed as the `attrecord-migrations`
+companion (declarative convergence, not migration files); see
+[docs/arch-migrations.md](docs/arch-migrations.md).
 
 → See [docs/ddl-generation.md](docs/ddl-generation.md) for the full reference
 (type rendering table, column-line format, validation rules, testing strategy).

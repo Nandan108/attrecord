@@ -386,8 +386,9 @@ $sql = (new PgsqlDialect())->buildCreateTable(TableSchema::fromClass(OrderRecord
 
 ## What's deliberately not in scope
 
-- **`ALTER TABLE` generation** — separate package, see migrations doc.
-- **Schema introspection** — separate package.
+- **`ALTER TABLE` generation** — separate package; designed in
+  [arch-migrations.md](arch-migrations.md) (the `attrecord-migrations` companion).
+- **Schema introspection** — same separate package (the converge pipeline's live side).
 - **Generated indexes / unique keys from `#[Relation]`** — declare indexes
   explicitly. (MySQL adds an implicit index for the FK column anyway; explicit
   declarations match other concerns like compound query patterns.)
