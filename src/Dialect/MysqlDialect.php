@@ -367,7 +367,8 @@ final class MysqlDialect implements SqlDialect
         return $sql;
     }
 
-    private function buildColumnLine(ColumnDefinition $col): string
+    #[\Override]
+    public function buildColumnLine(ColumnDefinition $col): string
     {
         $parts = [$this->quoteIdentifier($col->name), $this->renderColumnType($col)];
 
@@ -440,7 +441,8 @@ final class MysqlDialect implements SqlDialect
         ));
     }
 
-    private function buildForeignKeyLine(ForeignKeyDefinition $fk): string
+    #[\Override]
+    public function buildForeignKeyLine(ForeignKeyDefinition $fk): string
     {
         return 'CONSTRAINT '.$this->quoteIdentifier($fk->constraintName)
             .' FOREIGN KEY ('.$this->quoteIdentifier($fk->localColumn).')'

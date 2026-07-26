@@ -8,6 +8,7 @@ use Nandan108\Attrecord\Connection;
 use Nandan108\Attrecord\Dialect\MysqlDialect;
 use Nandan108\Attrecord\Dialect\PgsqlDialect;
 use Nandan108\Attrecord\Schema\ColumnDefinition;
+use Nandan108\Attrecord\Schema\ForeignKeyDefinition;
 use Nandan108\Attrecord\Schema\TableSchema;
 use Nandan108\Attrecord\SqlDialect;
 use Nandan108\Attrecord\Test\CapturingDbSession;
@@ -143,5 +144,15 @@ final class RecordingInitDialect implements SqlDialect
     public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string
     {
         return $schema->tableName;
+    }
+
+    public function buildColumnLine(ColumnDefinition $col): string
+    {
+        return $col->name;
+    }
+
+    public function buildForeignKeyLine(ForeignKeyDefinition $fk): string
+    {
+        return $fk->constraintName;
     }
 }

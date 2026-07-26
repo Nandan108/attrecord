@@ -353,7 +353,8 @@ final class PgsqlDialect implements SqlDialect
         return \implode(";\n", $statements);
     }
 
-    private function buildColumnLine(ColumnDefinition $col): string
+    #[\Override]
+    public function buildColumnLine(ColumnDefinition $col): string
     {
         $parts = [$this->quoteIdentifier($col->name), $this->renderColumnType($col)];
 
@@ -440,7 +441,8 @@ final class PgsqlDialect implements SqlDialect
         return \implode(', ', \array_map($this->escapeStringLiteral(...), $values));
     }
 
-    private function buildForeignKeyLine(ForeignKeyDefinition $fk): string
+    #[\Override]
+    public function buildForeignKeyLine(ForeignKeyDefinition $fk): string
     {
         return 'CONSTRAINT '.$this->quoteIdentifier($fk->constraintName)
             .' FOREIGN KEY ('.$this->quoteIdentifier($fk->localColumn).')'

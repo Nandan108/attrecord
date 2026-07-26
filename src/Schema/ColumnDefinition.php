@@ -70,6 +70,8 @@ final class ColumnDefinition
         public readonly ?GeneratedColumnMode $generatedMode = null,
         public readonly ?string $phpType = null,
         public readonly ?ColumnCaster $caster = null,
+        /** Previous column name for schema-evolution tooling; inert in core (see Attribute\Column::$renamedFrom). */
+        public readonly ?string $renamedFrom = null,
     ) {
         $this->isInteger = $type->isInteger();
         $this->isBool = $type->isBool();

@@ -345,7 +345,7 @@ final class SqliteDialect implements SqlDialect
 
         $lines = [];
         foreach ($schema->columns as $col) {
-            $lines[] = '  '.$this->buildColumnLine($col, $inlinePk && $col->name === $schema->pk);
+            $lines[] = '  '.$this->renderColumnLine($col, $inlinePk && $col->name === $schema->pk);
         }
         if (!$inlinePk) {
             $lines[] = '  PRIMARY KEY ('.$this->quoteIdentifier($schema->pk).')';
@@ -371,7 +371,16 @@ final class SqliteDialect implements SqlDialect
         return \implode(";\n", $statements);
     }
 
-    private function buildColumnLine(ColumnDefinition $col, bool $isInlineAutoincrementPk): string
+    #[\Override]
+    public function buildColumnLine(ColumnDefinition $col): string
+    {
+        // Public fragment form (see SqlDialect): always the non-PK rendering — the inline
+        // `INTEGER PRIMARY KEY AUTOINCREMENT` form is a CREATE-TABLE-only concern, and an
+        // ALTER-added column is never the PK.
+        return $this->renderColumnLine($col, false);
+    }
+
+    private function renderColumnLine(ColumnDefinition $col, bool $isInlineAutoincrementPk): string
     {
         if ($isInlineAutoincrementPk) {
             // SQLite's rowid alias: must be exactly INTEGER PRIMARY KEY (AUTOINCREMENT adds the
@@ -432,7 +441,8 @@ final class SqliteDialect implements SqlDialect
         return \implode(', ', \array_map($this->escapeStringLiteral(...), $values));
     }
 
-    private function buildForeignKeyLine(ForeignKeyDefinition $fk): string
+    #[\Override]
+    public function buildForeignKeyLine(ForeignKeyDefinition $fk): string
     {
         return 'CONSTRAINT '.$this->quoteIdentifier($fk->constraintName)
             .' FOREIGN KEY ('.$this->quoteIdentifier($fk->localColumn).')'

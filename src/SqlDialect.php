@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord;
 
 use Nandan108\Attrecord\Schema\ColumnDefinition;
+use Nandan108\Attrecord\Schema\ForeignKeyDefinition;
 use Nandan108\Attrecord\Schema\TableSchema;
 
 /**
@@ -246,4 +247,30 @@ interface SqlDialect
      * @throws Exception\SchemaException for invalid metadata that the schema builder did not already catch
      */
     public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string;
+
+    /**
+     * Render one column as a DDL fragment — the `name TYPE [NOT NULL] [DEFAULT …] …` line used
+     * inside {@see buildCreateTable()}, without leading indentation or a trailing comma.
+     *
+     * Public so schema-evolution tooling (the `attrecord-migrations` companion) can compose
+     * `ALTER TABLE … ADD/MODIFY COLUMN {fragment}` from the **same rendering authority** as
+     * CREATE — a column renders identically in both, forever. On SQLite the fragment is rendered
+     * as a *non-PK* column (the inline `INTEGER PRIMARY KEY AUTOINCREMENT` form is a
+     * CREATE-TABLE-only concern, and an ALTER-added column is never the PK).
+     *
+     * @see docs/arch-migrations.md §8.1
+     */
+    public function buildColumnLine(ColumnDefinition $col): string;
+
+    /**
+     * Render one foreign-key constraint as a DDL fragment — the
+     * `CONSTRAINT name FOREIGN KEY (…) REFERENCES … ON DELETE … ON UPDATE …` line used inside
+     * {@see buildCreateTable()}, without leading indentation or a trailing comma.
+     *
+     * Public for the same reason as {@see buildColumnLine()}: `ALTER TABLE … ADD {fragment}`
+     * must render identically to CREATE.
+     *
+     * @see docs/arch-migrations.md §8.1
+     */
+    public function buildForeignKeyLine(ForeignKeyDefinition $fk): string;
 }

@@ -387,14 +387,21 @@ The same two costs that sent the UoW out of core apply, plus a third specific to
 
 ### 8.1 The seams core must expose
 
-Two, both small; they ship in core and are useful independently of the companion:
+Two, both small; they ship in core and are useful independently of the companion. *(Both landed —
+see the CHANGELOG's Unreleased section.)*
 
 1. **Promote the DDL fragment builders to the `SqlDialect` interface.** `buildColumnLine(ColumnDefinition): string`
-   and `buildForeignKeyLine(ForeignKeyDefinition): string` exist today as private methods inside
-   each dialect's `buildCreateTable()`; add public `buildIndexClause()` / `buildUniqueKeyClause()`
-   siblings (trivial extractions of the two inline `implode` lines). The companion composes
+   and `buildForeignKeyLine(ForeignKeyDefinition): string` existed as private methods inside each
+   dialect's `buildCreateTable()`; they are now interface methods. The companion composes
    `ALTER TABLE … ADD COLUMN {buildColumnLine(...)}` etc. from them — one rendering authority, so
-   a column renders identically in CREATE and in ALTER, forever.
+   a column renders identically in CREATE and in ALTER, forever. (On SQLite the public fragment is
+   always the non-PK form; the inline `INTEGER PRIMARY KEY AUTOINCREMENT` alias is a
+   CREATE-TABLE-only concern.) An earlier draft also planned `buildIndexClause()` /
+   `buildUniqueKeyClause()` siblings — dropped: implementation showed there is no uniform "clause"
+   across dialects (MySQL renders both inline; PG renders uniques as inline `CONSTRAINT … UNIQUE`
+   but indexes as standalone `CREATE INDEX` statements), and the portable forms the companion
+   actually emits (`CREATE [UNIQUE] INDEX … ON …`, `ADD CONSTRAINT … UNIQUE`) are one-liners over
+   `quoteIdentifier()` that the companion owns.
 2. **`#[Column(renamedFrom: …)]`** — an inert `?string` on the attribute and `ColumnDefinition`
    (like `comment`). Core stores it; only the companion reads it.
 

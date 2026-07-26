@@ -367,6 +367,7 @@ final class TableSchema
                     generatedMode: null !== $colAttr->generatedAs
                         ? ($colAttr->generatedMode ?? GeneratedColumnMode::Stored)
                         : null,
+                    renamedFrom: $colAttr->renamedFrom,
                 );
 
                 if (true === $colAttr->trimOnSave && !$col->isString) {

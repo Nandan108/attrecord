@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Schema-evolution seams for the `attrecord-migrations` companion** (design:
+  [docs/arch-migrations.md](docs/arch-migrations.md) §8.1):
+  - `SqlDialect::buildColumnLine(ColumnDefinition): string` and
+    `SqlDialect::buildForeignKeyLine(ForeignKeyDefinition): string` are now part of the dialect
+    interface (previously private inside each dialect's `buildCreateTable()`). They render the exact
+    DDL fragments CREATE embeds, so evolution tooling composes `ALTER TABLE … ADD/MODIFY …` from the
+    same rendering authority. On SQLite, `buildColumnLine()` always renders the non-PK form (the
+    inline `INTEGER PRIMARY KEY AUTOINCREMENT` alias is a CREATE-TABLE-only concern).
+    **Breaking for external `SqlDialect` implementers** (two new interface methods) — none known;
+    the shipped dialects and test doubles are updated.
+  - `#[Column(renamedFrom: 'old_name')]` — inert `?string` carried through to
+    `ColumnDefinition::$renamedFrom`. Declares a column rename for the migrations differ (emitted as
+    data-preserving `RENAME COLUMN` instead of destructive drop+add); never read by core CRUD or the
+    DDL producer.
+
 ## [0.10.0] - 2026-07-25
 
 ### Added

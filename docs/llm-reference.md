@@ -142,6 +142,7 @@ All attributes are `readonly`. Param order below matches the constructor.
 | `enumValues` | `?list<string>` | `null` | Required for `Enum`/`Set`. |
 | `generatedAs` | `?string` | `null` | Raw SQL expression → `GENERATED ALWAYS AS (...)`. Column excluded from writes. **Dialect-specific SQL.** |
 | `generatedMode` | `?GeneratedColumnMode` | `null` | `Stored` / `Virtual`. PG supports `Stored` only. |
+| `renamedFrom` | `?string` | `null` | Previous column name, for schema-evolution tooling (`attrecord-migrations`): a declared rename becomes data-preserving `RENAME COLUMN` instead of drop+add. **Inert in core** — stored on `ColumnDefinition`, never read by CRUD or the DDL producer. See docs/arch-migrations.md §4.3. |
 
 Property-level `#[UniqueKey('name')]` / `#[Index('name')]` (no `columns`) attach the property's
 column to a single-column key.
@@ -631,7 +632,11 @@ string works and wrapping is unnecessary (but harmless).
 `forUpdateClause(): string`, `connectionInitStatements(): array` (`list<string>`),
 `buildBulkInsert(...)`, `buildSingleUpsertSql(...)`,
 `buildUpsertSql(string $tableName, string $pkColumn, array $columnNames, array $rows, array $updateColumns, array $rowDirtyColumns = []): UpsertSql`,
-`buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string`.
+`buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string`,
+`buildColumnLine(ColumnDefinition $col): string`, `buildForeignKeyLine(ForeignKeyDefinition $fk): string`
+(public DDL fragment builders — the exact `name TYPE …` / `CONSTRAINT … FOREIGN KEY …` lines
+`buildCreateTable()` embeds, exposed so schema-evolution tooling composes `ALTER TABLE … ADD/MODIFY …`
+from the same rendering authority; on SQLite the column fragment is always the non-PK form).
 
 New in v0.2.0:
 - `forUpdateClause(): string` — the row-locking suffix for a `SELECT … FOR UPDATE` read.
