@@ -34,8 +34,37 @@ three reasons that only became clear against a real consumer:
    unrecoverable in either model; convergence just stops pretending otherwise.
 
 The trade: convergence cannot express **data** transformations (backfills, splits, cross-table
-moves) or resolve **rename ambiguity** on its own. §4.3 (declared renames) and §6 (hooks) address
-those honestly rather than smuggling a script-chain back in.
+moves) or resolve **rename ambiguity** on its own. §4.3 (declared renames) and §6 (hooks + the
+run-once data-step registry) address those honestly rather than smuggling a schema chain back in.
+
+### 1.1 Prior art
+
+The paradigm is mainstream, and its failure modes are documented — the design leans on both:
+
+- **Skeema** (declarative MySQL schema management, in production at scale) — repo-as-desired-state
+  + diff/push with **unsafe-change gating** (`--allow-unsafe`): the same shape as §3.1's change
+  classes. It also documents that it **cannot infer renames** (drop+add is emitted) — independent
+  confirmation of §4.3's declared-renames rule.
+- **Atlas** ("Terraform for databases") — declarative plan/apply with diff linting; notably it
+  later *added* a versioned mode, chiefly for data migrations and review workflows — the exact
+  boundary §6 concedes with the data-step registry.
+- **WordPress `dbDelta()`** — the flagship consumer's own platform has shipped converge-on-upgrade
+  for two decades across millions of sites (WooCommerce's installer runs on it), which is the
+  deployment-model argument (§1, reason 2) proven in the field. Its fragility — string-parsing
+  hand-written `CREATE TABLE` text, whitespace-sensitive, silently skipping what it cannot parse —
+  is the anti-pattern this package corrects: typed metadata in, loud **Manual** classification for
+  anything unsure. "dbDelta done right."
+- **Doctrine `orm:schema-tool:update`** — the cautionary tale: the same
+  introspect-diff-ALTER pipeline, but with no change classification, no inspectable plan, and a
+  comparator prone to false positives — which is why Doctrine's own docs steer production users
+  away from it and toward migrations. The lesson is not "convergence is unsafe"; it is that
+  **normalization (§4.2) and classification (§3.1) are the load-bearing parts**, not the diff.
+- **Django `makemigrations`** — a hybrid (models authoritative, chain generated) that
+  **interactively prompts** on suspected renames — a third independent confirmation that rename
+  inference is not automatable.
+- **Prisma** — `db push` (declarative, dev-oriented) beside `migrate` (files, production): the
+  ecosystem repeatedly converging on "declarative for schema; something versioned at the data
+  boundary."
 
 ## 2. Why it is cheap here
 
@@ -235,33 +264,89 @@ Its two jobs: **support forensics** ("what did the upgrade run on this site, and
 for a plugin fleet you cannot shell into — and the **fingerprint fast path**: a canonical hash of
 the desired model set. A consumer stores the last-converged fingerprint (the ledger's, or its own
 option — InvFlux's `invflux_bootstrap_version` pattern) and skips even `plan()`'s introspection
-when the code's fingerprint matches. What the ledger is **not**: consulted by the differ. Truth
+when the code's fingerprint matches. What the ledger is **not**: consulted by the *differ*. Truth
 about the live schema comes from the live schema; a ledger row saying "applied" proves nothing
 after a host restore from backup. (This is the same "pure function of state, no change-log"
-principle as UoW §3, applied to DDL.)
+principle as UoW §3, applied to DDL.) The scoped exception is §6.2's run-once **data steps**,
+whose executed-keys *do* read from the ledger — precisely because data shape has no live state to
+introspect. A *full* restore keeps ledger and data consistent (both rewind together, and the step
+correctly re-runs); the residual risk is a **partial** restore — data tables without the ledger,
+or vice versa — which desynchronizes "ran" from "applied". One more reason data steps should be
+written idempotently where the transform allows it.
 
-## 6. Data backfills: hooks, not migrations
+## 6. The data boundary: hooks, run-once steps, and the down() reality
 
-Some schema changes are only *half* schema: `ADD COLUMN new_total NOT NULL` on a populated table
-needs the values computed before tightening; a declared rename may need value rewriting. The
-package does **not** grow a data-migration framework for these (§7). It exposes exactly one
-mechanism: a planned change can carry a consumer-supplied **companion step** —
+Schema state is **introspectable** — the database can always tell you where it is, which is why
+schema needs no version ledger (§5.3). Data shape is **not**: nothing in `information_schema` says
+whether a `TEXT` column holds plain strings or JSON envelopes, and asking the rows is a table
+scan. That asymmetry, not taste, dictates the split below: schema converges; data transforms are
+explicitly versioned. (Prior art reached the same split — §1.1.)
+
+### 6.1 Change-attached hooks (shape change *with* a schema delta)
+
+When the transform rides a schema change, the schema state itself is the shape marker — a `TEXT`
+column *is* the "unwrapped" state, the `JSON` column the "wrapped" one — so no extra versioning is
+needed. The plan accepts consumer steps attached **before or after** a planned change:
 
 ```php
-$plan->withStep(after: 'ADD COLUMN orders.new_total', run: fn (DbSession $s) => /* backfill */);
+// TEXT → JSON: wrap first (MySQL's MODIFY … JSON validates existing values and
+// rejects non-JSON), then let the planned ALTER run.
+$plan->withStep(
+    before: 'MODIFY COLUMN orders.payload',
+    run: fn (DbSession $s) => $s->exec(
+        "UPDATE orders SET payload = JSON_OBJECT('data', payload) WHERE …",
+    ),
+);
+// after: is the other placement — e.g. backfill a freshly-added nullable column,
+// after which a follow-up release can tighten it to NOT NULL.
 ```
 
-— executed at that point in the apply order and recorded in the ledger run. The closure is the
-consumer's code, in the consumer's repo, versioned with the Records it serves. If a consumer needs
-ordered, reusable, cross-release data transformations, that is a real migrations framework and out
-of scope by design.
+Placement matters and is the consumer's call: wrap-before-ALTER vs backfill-after-ADD are both
+real. Steps run at their position in the apply order and are recorded in the ledger run. A planned
+change that only makes sense *with* its step (the `NOT NULL`-no-default Manual case of §4.3) is
+exactly what this unlocks: attach the backfill, and the pair applies as a unit.
+
+### 6.2 Run-once data steps (shape change *without* a schema delta)
+
+Your `TEXT` column's *content* migrating from plain text to `{data: "…"}` with the column type
+unchanged is invisible to the differ — there is no delta to attach a hook to. For this case the
+package offers a minimal **run-once step registry**:
+
+```php
+$migrator->dataStep('2026-07-wrap-payload-json', function (DbSession $s): void {
+    $s->exec("UPDATE orders SET payload = JSON_OBJECT('data', payload) WHERE …");
+});
+```
+
+Keyed, ordered by registration, executed at most once — the ledger records the key, and **for
+these steps only, the ledger is authoritative** (there is nothing live to introspect; that is the
+whole reason this mechanism exists). This is a deliberate, bounded chain: it is the concession
+every mature declarative tool ended up making at the data boundary (§1.1), kept minimal — no
+`up()`/`down()` pairs, no cross-file dependency graph, no reusable abstractions. If a consumer
+needs those, that is a real migrations framework and out of scope (§7).
+
+### 6.3 Why there is no down()
+
+On the flagship deployment model, down() scripts are a fiction **in any paradigm**. A WordPress
+rollback is "install the previous plugin zip": the old code predates the transform and cannot
+contain its inverse, and there is no orchestrator moment in which the *new* code runs its down()
+before being replaced by files. (A framework app with `migrate:rollback` has that moment; a
+file-replaced plugin does not.) So the honest postures are the ones operators already use:
+
+- **roll forward** — ship a new forward step that unwraps (`dataStep('…-unwrap-payload', …)`);
+- **restore the backup** — which every WP upgrade guide mandates anyway, and which is the only
+  thing that recovers *destroyed* data in either model.
+
+Offering a down() API would be promising a moment of execution that the deployment model cannot
+provide. Schema-side rollback remains what §1 said: converge toward the older Records, same rules.
 
 ## 7. Non-goals (the fence)
 
 - **No migration-file chain, no version numbers on changes.** The desired state is versioned by
   the consumer's VCS already. One authority.
 - **No down scripts.** Rollback = converge toward older Records, same rules (a destructive
-  forward change is a destructive rollback too, and requires the same opt-in).
+  forward change is a destructive rollback too, and requires the same opt-in). For data, down() is
+  a promise the file-replacement deployment model cannot keep — §6.3; roll forward or restore.
 - **No auto-converge.** `apply()` is always an explicit call — never a bootstrap side effect,
   never triggered by a failed query. (The consumer may *choose* to call it from its upgrade hook;
   the package never does it for them.) The UoW's "no auto-flush" line, verbatim.
@@ -273,7 +358,9 @@ of scope by design.
 - **No online-DDL orchestration** (`pt-online-schema-change`, `gh-ost`, `ALGORITHM=INSTANT`
   negotiation). The plan is plain `ALTER` statements; a consumer operating at
   lock-a-huge-table scale brings their own tooling and feeds it the plan's SQL.
-- **No data-migration framework** — §6's single hook is the whole concession.
+- **No data-migration framework** — §6's two mechanisms (change-attached hooks, run-once keyed
+  steps) are the whole concession: no `up()`/`down()` pairs, no dependency graph between steps,
+  no reusable transform abstractions.
 - **No convergence of table options** (engine/charset/collation) — reported as Manual drift only.
   Host-managed, expensive to change, and wrong to churn on shared hosting.
 - **Producer parity is the scope ratchet:** the differ manages exactly what `buildCreateTable()`
