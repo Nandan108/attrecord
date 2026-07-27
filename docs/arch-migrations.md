@@ -6,8 +6,11 @@
 > v0.1 realities discovered in the build (all fail-safe per §4.2): SQLite column-modify/FK changes
 > are Manual (the §4.4 rebuild is still phase 2); enum members are introspectable on MySQL-family
 > only (PG/SQLite keep them in unmodeled CHECK constraints); MariaDB stores JSON as LONGTEXT, so
-> that family folds; MySQL's implicit per-FK supporting index is recognized as FK plumbing, not
-> drift; the advisory lock is bypassed on SQLite (single-writer, no GET_LOCK).
+> that family folds; an index whose leading columns are a live FK's columns is recognized as that
+> FK's supporting plumbing and never proposed for dropping — **by shape, not by name**, because an
+> engine-created index outlives the constraint it was named after and can remain load-bearing for a
+> *different* FK on the same column (MySQL then refuses the `DROP INDEX`); the advisory lock is
+> bypassed on SQLite (single-writer, no GET_LOCK).
 > **Theme:** the Record class is already the schema. Evolution is therefore **convergence** —
 > introspect the live database, diff it against the attribute-derived `TableSchema`, and apply a
 > classified, guarded `ALTER` plan — not a second source of truth maintained as a chain of
