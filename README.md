@@ -635,6 +635,34 @@ $sql = (new SqliteDialect())->buildCreateTable(TableSchema::fromClass(Order::cla
 // CREATE INDEX "idx_status_date" ON "orders" ("status", "created_at")
 ```
 
+### Two seams for evolution tooling
+
+Both added in 0.12.0 for the [attrecord-migrations](https://github.com/Nandan108/attrecord-migrations)
+companion, and inert unless you ask for them.
+
+**Creating a cycle.** Two tables that reference each other have no creation order that works while
+every FK is inline. Leave one edge out, then add it once both tables exist:
+
+```php
+$sql = $dialect->buildCreateTable($schema, omitForeignKeys: ['fk_b_a_id']);
+// … create both tables, then:
+$sql = "ALTER TABLE `b` ADD ".$dialect->buildForeignKeyLine($fk);
+```
+
+**Columns a class cannot declare.** For a table whose shape is only known at runtime — a registry
+with a column per registered dimension, a plugin's extension columns:
+
+```php
+$schema = TableSchema::fromClass(SlotSpace::class)->extendedWith(
+    columns: ['dim_loc' => new ColumnDefinition(name: 'dim_loc', propertyName: 'dim_loc', /* … */)],
+    indexes: ['idx_active_loc' => ['active', 'dim_loc', 'id']],
+);
+```
+
+A derivation, not a from-scratch builder: the Record stays the source of truth for the table name,
+primary key, foreign keys and reflection data, so the result is an ordinary schema that happens to
+carry extra columns. Adding a name the class already declares throws.
+
 ### Attribute fields used in DDL emission
 
 `#[Column]` additions beyond type/length/nullable:

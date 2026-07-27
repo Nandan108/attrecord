@@ -394,8 +394,9 @@ The same two costs that sent the UoW out of core apply, plus a third specific to
 
 ### 8.1 The seams core must expose
 
-Two, both small; they ship in core and are useful independently of the companion. *(Both landed —
-see the CHANGELOG's Unreleased section.)*
+Two were foreseen; building the companion against a real schema turned up two more. All four ship
+in core and are useful independently of the companion. *(All landed — 1 and 2 in 0.11.0, 3 and 4
+in 0.12.0.)*
 
 1. **Promote the DDL fragment builders to the `SqlDialect` interface.** `buildColumnLine(ColumnDefinition): string`,
    `buildForeignKeyLine(ForeignKeyDefinition): string` and `renderColumnType(ColumnDefinition): string`
@@ -412,6 +413,25 @@ see the CHANGELOG's Unreleased section.)*
    `quoteIdentifier()` that the companion owns.
 2. **`#[Column(renamedFrom: …)]`** — an inert `?string` on the attribute and `ColumnDefinition`
    (like `comment`). Core stores it; only the companion reads it.
+
+The next two were **not** foreseen here. Both surfaced only when the companion was pointed at a
+real schema rather than at fixtures, which is worth recording: the design predicted the *rendering*
+seams correctly and missed both *structural* ones.
+
+3. **`buildCreateTable(…, array $omitForeignKeys = [])`** — a cycle (`a` references `b` references
+   `a`) has no creation order at all while every FK is emitted inline. The companion breaks one
+   edge per loop: create that table without the constraint, add it once both exist. Without this
+   seam the only alternatives were to refuse cyclic models or to post-process generated SQL by
+   string surgery — the companion cannot re-render a `CREATE TABLE` minus one constraint on its
+   own. **Breaking for external `SqlDialect` implementers** (signature change); none known.
+4. **`TableSchema::extendedWith(columns:, indexes:, uniqueKeys:)`** — a table whose shape is only
+   known at runtime (a registry with a column per registered dimension) cannot be described by a
+   class at all, so those columns were invisible to the differ: never created, never diffed, never
+   fingerprinted. A *derivation* rather than a public constructor or builder — the Record stays the
+   source of truth for everything static, and the result is an ordinary schema, so nothing
+   downstream has to cope with a class-less `TableSchema`. `plan()` / `fingerprint()` accept such a
+   schema alongside class-strings, which is also why the companion's ordering is keyed by table
+   name rather than by class.
 
 Everything else the companion needs — `TableSchema`'s public readonly model, `quoteIdentifier`,
 `toLiteral`, `withAdvisoryLock`, `buildCreateTable` for new tables and its own ledger — is already

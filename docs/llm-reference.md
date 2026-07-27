@@ -632,7 +632,7 @@ string works and wrapping is unnecessary (but harmless).
 `forUpdateClause(): string`, `connectionInitStatements(): array` (`list<string>`),
 `buildBulkInsert(...)`, `buildSingleUpsertSql(...)`,
 `buildUpsertSql(string $tableName, string $pkColumn, array $columnNames, array $rows, array $updateColumns, array $rowDirtyColumns = []): UpsertSql`,
-`buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string`,
+`buildCreateTable(TableSchema $schema, bool $ifNotExists = false, array $omitForeignKeys = []): string`,
 `buildColumnLine(ColumnDefinition $col): string`, `buildForeignKeyLine(ForeignKeyDefinition $fk): string`,
 `renderColumnType(ColumnDefinition $col): string` (the bare TYPE token alone)
 (public DDL fragment builders — the exact `name TYPE …` / `CONSTRAINT … FOREIGN KEY …` lines
@@ -675,6 +675,9 @@ new SqliteDialect(
 ```php
 $sql = (new MysqlDialect())->buildCreateTable(TableSchema::fromClass(Order::class), ifNotExists: true);
 $sql = (new PgsqlDialect())->buildCreateTable(TableSchema::fromClass(Order::class));
+
+// v0.12.0: leave named FK constraints out, to break a creation cycle (see below).
+$sql = (new MysqlDialect())->buildCreateTable($schema, omitForeignKeys: ['fk_b_a_id']);
 ```
 MySQL returns a single statement (indexes/comments inline). PostgreSQL returns a
 **semicolon-separated batch** (`CREATE TABLE` + trailing `CREATE INDEX` / `COMMENT ON`),
@@ -682,6 +685,36 @@ runnable in one `PDO::exec()`. SQLite likewise returns a semicolon-separated bat
 + trailing `CREATE INDEX`; no comments), with a single auto-increment PK declared inline as
 `INTEGER PRIMARY KEY AUTOINCREMENT` (and the separate `PRIMARY KEY (...)` clause then omitted).
 Full mapping + rejections: [ddl-generation.md](ddl-generation.md).
+
+#### `omitForeignKeys` — creating a cycle (v0.12.0)
+Two tables that reference each other have **no** creation order that works while every FK is
+inline. Pass the constraint names to leave out, create the tables, then add each omitted one with
+`ALTER TABLE … ADD {buildForeignKeyLine($fk)}`. A name matching no constraint is ignored, so a
+caller may pass a set computed across the whole model rather than per table. Omitting nothing is
+byte-identical to the plain call.
+
+**Breaking for external `SqlDialect` implementers** — the interface signature changed.
+
+### `TableSchema::extendedWith()` — columns a class cannot declare (v0.12.0)
+```php
+$schema = TableSchema::fromClass(SlotSpace::class)->extendedWith(
+    columns:    ['dim_loc' => new ColumnDefinition(name: 'dim_loc', propertyName: 'dim_loc', /* … */)],
+    indexes:    ['idx_active_loc' => ['active', 'dim_loc', 'id']],
+    uniqueKeys: [],
+);
+```
+For a table whose shape is only known at **runtime** — a registry with a column per registered
+dimension, a plugin's extension columns. Returns a new schema; the original is untouched.
+
+It is a *derivation*, not construction from scratch: the Record stays the single source of truth
+for the table name, primary key, foreign keys and reflection data, and only the added columns lack
+a `ReflectionProperty` (which matters solely to CRUD paths, and a computed column is not one a
+Record instance reads or writes by property). Adding a name the class already declares throws
+`SchemaException` rather than silently winning or losing.
+
+`attrecord-migrations`' `plan()` / `fingerprint()` accept such a schema alongside class-strings, so
+those columns get created, converged and diffed like any other instead of living in a hand-written
+`ALTER` no tooling can see.
 
 ### `buildUpsertSql()` — join-based multi-mask upsert (step 3)
 As of v0.2.0 step 3 (the `UPDATE`) is a **derived-table join with per-row integer masks**, not a
@@ -884,4 +917,6 @@ raw fragment with optional bound params for the WHERE/SET escape hatch.
   column paths wrap automatically.
 - **`__()`/textdomain note** is a *consumer* (WordPress) concern, not attrecord's — attrecord
   has no i18n surface.
-- **No schema diffing / migrations.** `buildCreateTable()` is fresh-install DDL only.
+- **No schema diffing / migrations.** `buildCreateTable()` is fresh-install DDL only; schema
+  *evolution* lives in the separate [attrecord-migrations](https://github.com/Nandan108/attrecord-migrations)
+  package, which builds on the fragment seams above.

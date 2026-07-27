@@ -38,6 +38,40 @@ The method lives on `SqlDialect` and both dialects implement it. `PgsqlDialect`
 emits the PostgreSQL equivalent of the same schema — see
 [PostgreSQL output](#postgresql-output) below.
 
+### Two seams for evolution tooling (v0.12.0)
+
+Both exist because the `attrecord-migrations` companion needed them against a real schema, and
+both are inert unless you ask for them.
+
+**`omitForeignKeys:`** — emit the `CREATE TABLE` with named FK constraints left out:
+
+```php
+$sql = $dialect->buildCreateTable($schema, omitForeignKeys: ['fk_b_a_id']);
+```
+
+Two tables that reference each other have **no** creation order that works while every FK is
+inline — whichever goes first points at a table that does not exist. Omitting one edge of the
+loop, creating both tables, then adding the constraint with
+`ALTER TABLE … ADD {buildForeignKeyLine($fk)}` resolves it. A name matching no constraint is
+ignored, so a caller may pass a set computed across the whole model rather than per table;
+omitting nothing is byte-identical to the plain call.
+
+**`TableSchema::extendedWith()`** — describe columns the class cannot:
+
+```php
+$schema = TableSchema::fromClass(SlotSpace::class)->extendedWith(
+    columns: ['dim_loc' => new ColumnDefinition(name: 'dim_loc', propertyName: 'dim_loc', /* … */)],
+    indexes: ['idx_active_loc' => ['active', 'dim_loc', 'id']],
+);
+```
+
+For a table whose shape is only known at runtime — a registry with a column per registered
+dimension, a plugin's extension columns. A *derivation*, not construction from scratch: the
+Record stays the source of truth for the table name, primary key, foreign keys and reflection
+data, so the result is an ordinary schema that happens to carry extra columns. Adding a name the
+class already declares throws. Without it, such columns can only exist as a hand-written `ALTER`
+that no schema tooling can see, diff or verify.
+
 ---
 
 ## Attribute surface
