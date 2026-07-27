@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-27
+
+Two seams for schema-evolution tooling, both driven by a real consumer
+([attrecord-migrations](https://github.com/Nandan108/attrecord-migrations) converging InvFlux's
+schema): describing a table whose shape is only known at runtime, and creating one whose foreign
+keys form a cycle.
+
 ### Added
 
 - **`TableSchema::extendedWith(columns:, indexes:, uniqueKeys:)`** — derive a schema carrying extra
@@ -494,6 +501,7 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/Nandan108/attrecord/compare/v0.11.0...v0.12.0
 [0.1.1]: https://github.com/Nandan108/attrecord/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Nandan108/attrecord/releases/tag/v0.1.0
