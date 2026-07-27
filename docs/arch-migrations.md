@@ -1,9 +1,13 @@
 # Schema evolution (design note — the `attrecord-migrations` companion package)
 
-> **Status:** PLANNED — to be built as **`attrecord-migrations`**, a companion package, with two
-> small seams added to core (§8.1). Nothing implemented yet; this note is the design contract for
-> that build. It is deliberately *capped*: §7 (Non-goals) is the fence, and §8 explains why the
-> companion package — not core — is the vehicle.
+> **Status:** BUILT as **`attrecord-migrations`** (v0.1, sibling repo) against this contract; the
+> core seams of §8.1 shipped in attrecord. This note remains the design authority — §7 (Non-goals)
+> is the fence, and §8 explains why the companion package — not core — is the vehicle. Notable
+> v0.1 realities discovered in the build (all fail-safe per §4.2): SQLite column-modify/FK changes
+> are Manual (the §4.4 rebuild is still phase 2); enum members are introspectable on MySQL-family
+> only (PG/SQLite keep them in unmodeled CHECK constraints); MariaDB stores JSON as LONGTEXT, so
+> that family folds; MySQL's implicit per-FK supporting index is recognized as FK plumbing, not
+> drift; the advisory lock is bypassed on SQLite (single-writer, no GET_LOCK).
 > **Theme:** the Record class is already the schema. Evolution is therefore **convergence** —
 > introspect the live database, diff it against the attribute-derived `TableSchema`, and apply a
 > classified, guarded `ALTER` plan — not a second source of truth maintained as a chain of
