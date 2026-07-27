@@ -67,3 +67,46 @@ pruning + near-free retention via `DROP PARTITION` (vs. expensive `DELETE`).
 
 `FULLTEXT KEY (…)` for natural-language search columns. No consumer need on the horizon;
 captured only for completeness.
+
+### Composite primary keys, DDL-only — *wanted by a real consumer, contained*
+
+`#[Table(primaryKey:)]` takes a single **column name**, so `PRIMARY KEY (subject_id, slot_id)`
+cannot be declared at all. Every junction table, and every "one row per (a, b)" state table, is
+therefore outside what a Record can describe.
+
+Making the *whole* runtime composite-key-aware is a large change — `save()`, `find()`, the
+relation loader, `LockSet`'s ascending-PK ordering and `RecordSet`'s keyed upsert all assume a
+single PK column. But the consumer need is narrower than that:
+
+- **DDL-only is enough.** A `DdlOnlyRecord` exists to declare a table whose R/W stays raw SQL. For
+  those, only `buildCreateTable` has to understand a composite key; the CRUD paths never run.
+  Something like `#[PrimaryKey(columns: ['subject_id', 'slot_id'])]` (class-level, mutually
+  exclusive with `#[Table(primaryKey:)]`), with the runtime CRUD refusing such a Record outright
+  rather than half-supporting it.
+- **The consumer:** InvFlux's `invflux_inventory_state` is keyed `(subject_id, slot_id)` and is
+  the one table left outside its managed schema purely for this reason — it hand-writes DDL that
+  the differ then cannot see. `attrecord-migrations` would need a matching comparison path (it
+  currently classifies any composite/changed PK as Manual, which is safe but means such a table
+  would report drift forever if declared).
+- **Status:** deferred 2026-07-27 while dogfooding convergence into InvFlux; safe to defer there
+  because nothing references that table, so it has no creation-order constraint.
+
+### Programmatic `TableSchema` construction — *unlocks computed schemas*
+
+`TableSchema::__construct` is private; `fromClass()` is the only way to build one. A schema is
+therefore always a *class*, which means a table whose shape depends on runtime data cannot be
+described at all.
+
+- **The consumer:** InvFlux's slot registry gains a `dim_<name>` column plus index for every
+  registered dimension — a set known at provisioning time, but not at class-authoring time. Today
+  that half of the table is maintained by a hand-written `ensureDimensionColumns()` shim, and the
+  Record opts out of drift detection for it (`attrecord-migrations`' `PartiallyDeclared`).
+  A schema built from the dimension set would retire the shim and put those columns under
+  convergence like everything else — including *adding* one when a new dimension is registered.
+- **Shape:** a public builder (not a public constructor — the invariants `fromClass()` establishes
+  are worth keeping), e.g. `TableSchema::build(name)->column(...)->index(...)`, plus a
+  `SchemaMigrator::plan()` overload in the companion that accepts `TableSchema` instances
+  alongside class-strings. The differ already works on `TableSchema`, so that half is a seam, not
+  a rewrite.
+- **Status:** deferred 2026-07-27; the `PartiallyDeclared` opt-out covers the consumer's immediate
+  need, at the cost of leaving the computed columns undiffed.
