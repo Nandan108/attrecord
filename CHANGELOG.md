@@ -10,13 +10,16 @@ All notable changes to this project are documented here. The format is based on
 
 - **Schema-evolution seams for the `attrecord-migrations` companion** (design:
   [docs/arch-migrations.md](docs/arch-migrations.md) §8.1):
-  - `SqlDialect::buildColumnLine(ColumnDefinition): string` and
-    `SqlDialect::buildForeignKeyLine(ForeignKeyDefinition): string` are now part of the dialect
-    interface (previously private inside each dialect's `buildCreateTable()`). They render the exact
-    DDL fragments CREATE embeds, so evolution tooling composes `ALTER TABLE … ADD/MODIFY …` from the
-    same rendering authority. On SQLite, `buildColumnLine()` always renders the non-PK form (the
-    inline `INTEGER PRIMARY KEY AUTOINCREMENT` alias is a CREATE-TABLE-only concern).
-    **Breaking for external `SqlDialect` implementers** (two new interface methods) — none known;
+  - `SqlDialect::buildColumnLine(ColumnDefinition): string`,
+    `SqlDialect::buildForeignKeyLine(ForeignKeyDefinition): string` and
+    `SqlDialect::renderColumnType(ColumnDefinition): string` are now part of the dialect
+    interface (previously private inside each dialect). They render the exact DDL fragments CREATE
+    embeds — the full column line, the FK constraint line, and the bare type token (which
+    PostgreSQL's `ALTER TABLE … ALTER COLUMN … TYPE <type>` needs alone) — so evolution tooling
+    composes ALTER statements from the same rendering authority. On SQLite, `buildColumnLine()`
+    always renders the non-PK form (the inline `INTEGER PRIMARY KEY AUTOINCREMENT` alias is a
+    CREATE-TABLE-only concern).
+    **Breaking for external `SqlDialect` implementers** (three new interface methods) — none known;
     the shipped dialects and test doubles are updated.
   - `#[Column(renamedFrom: 'old_name')]` — inert `?string` carried through to
     `ColumnDefinition::$renamedFrom`. Declares a column rename for the migrations differ (emitted as

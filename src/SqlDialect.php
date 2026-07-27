@@ -273,4 +273,17 @@ interface SqlDialect
      * @see docs/arch-migrations.md §8.1
      */
     public function buildForeignKeyLine(ForeignKeyDefinition $fk): string;
+
+    /**
+     * Render one column's bare SQL type — the `TYPE` token of {@see buildColumnLine()} without
+     * name, nullability, default, or generation clauses (e.g. `SMALLINT UNSIGNED`, `VARCHAR(64)`,
+     * `NUMERIC(10, 2)`, `TIMESTAMP(6)`).
+     *
+     * Public for the same evolution-tooling reason as {@see buildColumnLine()}: PostgreSQL's
+     * `ALTER TABLE … ALTER COLUMN … TYPE <type>` needs the type token alone, and it must render
+     * identically to CREATE.
+     *
+     * @see docs/arch-migrations.md §8.1
+     */
+    public function renderColumnType(ColumnDefinition $col): string;
 }

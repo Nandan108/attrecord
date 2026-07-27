@@ -390,9 +390,10 @@ The same two costs that sent the UoW out of core apply, plus a third specific to
 Two, both small; they ship in core and are useful independently of the companion. *(Both landed —
 see the CHANGELOG's Unreleased section.)*
 
-1. **Promote the DDL fragment builders to the `SqlDialect` interface.** `buildColumnLine(ColumnDefinition): string`
-   and `buildForeignKeyLine(ForeignKeyDefinition): string` existed as private methods inside each
-   dialect's `buildCreateTable()`; they are now interface methods. The companion composes
+1. **Promote the DDL fragment builders to the `SqlDialect` interface.** `buildColumnLine(ColumnDefinition): string`,
+   `buildForeignKeyLine(ForeignKeyDefinition): string` and `renderColumnType(ColumnDefinition): string`
+   (the bare TYPE token — PostgreSQL's `ALTER COLUMN … TYPE` needs it alone) existed as private
+   methods inside each dialect; they are now interface methods. The companion composes
    `ALTER TABLE … ADD COLUMN {buildColumnLine(...)}` etc. from them — one rendering authority, so
    a column renders identically in CREATE and in ALTER, forever. (On SQLite the public fragment is
    always the non-PK form; the inline `INTEGER PRIMARY KEY AUTOINCREMENT` alias is a

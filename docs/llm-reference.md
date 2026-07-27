@@ -633,7 +633,8 @@ string works and wrapping is unnecessary (but harmless).
 `buildBulkInsert(...)`, `buildSingleUpsertSql(...)`,
 `buildUpsertSql(string $tableName, string $pkColumn, array $columnNames, array $rows, array $updateColumns, array $rowDirtyColumns = []): UpsertSql`,
 `buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string`,
-`buildColumnLine(ColumnDefinition $col): string`, `buildForeignKeyLine(ForeignKeyDefinition $fk): string`
+`buildColumnLine(ColumnDefinition $col): string`, `buildForeignKeyLine(ForeignKeyDefinition $fk): string`,
+`renderColumnType(ColumnDefinition $col): string` (the bare TYPE token alone)
 (public DDL fragment builders — the exact `name TYPE …` / `CONSTRAINT … FOREIGN KEY …` lines
 `buildCreateTable()` embeds, exposed so schema-evolution tooling composes `ALTER TABLE … ADD/MODIFY …`
 from the same rendering authority; on SQLite the column fragment is always the non-PK form).

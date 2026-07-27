@@ -155,4 +155,9 @@ final class RecordingInitDialect implements SqlDialect
     {
         return $fk->constraintName;
     }
+
+    public function renderColumnType(ColumnDefinition $col): string
+    {
+        return $col->type->value;
+    }
 }

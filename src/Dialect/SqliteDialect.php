@@ -414,7 +414,8 @@ final class SqliteDialect implements SqlDialect
         return \implode(' ', $parts);
     }
 
-    private function renderColumnType(ColumnDefinition $col): string
+    #[\Override]
+    public function renderColumnType(ColumnDefinition $col): string
     {
         $type = $col->type;
 

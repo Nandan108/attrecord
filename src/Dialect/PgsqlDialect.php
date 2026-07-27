@@ -389,7 +389,8 @@ final class PgsqlDialect implements SqlDialect
         return \implode(' ', $parts);
     }
 
-    private function renderColumnType(ColumnDefinition $col): string
+    #[\Override]
+    public function renderColumnType(ColumnDefinition $col): string
     {
         // Auto-increment columns use the SERIAL pseudo-types (sequence-backed).
         if ($col->autoIncrement) {
