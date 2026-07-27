@@ -320,8 +320,9 @@ final class MysqlDialect implements SqlDialect
         return $sql."\nON DUPLICATE KEY UPDATE ".\implode(', ', $setParts);
     }
 
+    /** @param list<string> $omitForeignKeys */
     #[\Override]
-    public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string
+    public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false, array $omitForeignKeys = []): string
     {
         $qt = $this->quoteIdentifier($schema->tableName);
         $createKeyword = $ifNotExists ? 'CREATE TABLE IF NOT EXISTS' : 'CREATE TABLE';
@@ -350,6 +351,9 @@ final class MysqlDialect implements SqlDialect
 
         // FOREIGN KEYs
         foreach ($schema->foreignKeys as $fk) {
+            if (\in_array($fk->constraintName, $omitForeignKeys, true)) {
+                continue; // deferred to an ALTER — see the $omitForeignKeys contract on SqlDialect
+            }
             $lines[] = '  '.$this->buildForeignKeyLine($fk);
         }
 

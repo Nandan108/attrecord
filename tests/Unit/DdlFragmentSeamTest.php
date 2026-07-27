@@ -87,6 +87,47 @@ final class DdlFragmentSeamTest extends TestCase
         }
     }
 
+    /**
+     * The omit-FK seam: circular references have no creation order that works with every FK
+     * inline, so one constraint is left out of CREATE and added by ALTER once both tables exist.
+     *
+     * @dataProvider dialects
+     */
+    public function testOmittedForeignKeyIsLeftOutButTheOthersRemain(SqlDialect $dialect): void
+    {
+        $schema = TableSchema::fromClass(DdlForeignKeyRecord::class);
+        self::assertGreaterThan(1, \count($schema->foreignKeys), 'fixture must declare several FKs');
+
+        $omitted = $schema->foreignKeys[0];
+        $create = $dialect->buildCreateTable($schema, omitForeignKeys: [$omitted->constraintName]);
+
+        self::assertStringNotContainsString(
+            $dialect->buildForeignKeyLine($omitted),
+            $create,
+            'the omitted constraint must not be emitted ('.$dialect::class.')',
+        );
+        foreach (\array_slice($schema->foreignKeys, 1) as $kept) {
+            self::assertStringContainsString(
+                $dialect->buildForeignKeyLine($kept),
+                $create,
+                'omitting one FK must not affect the others ('.$dialect::class.')',
+            );
+        }
+        // The fragment the caller will hand to ALTER TABLE … ADD is still available, unchanged.
+        self::assertStringContainsString($omitted->constraintName, $dialect->buildForeignKeyLine($omitted));
+    }
+
+    /** @dataProvider dialects */
+    public function testOmittingNothingLeavesCreateTableByteIdentical(SqlDialect $dialect): void
+    {
+        $schema = TableSchema::fromClass(DdlForeignKeyRecord::class);
+
+        self::assertSame($dialect->buildCreateTable($schema), $dialect->buildCreateTable($schema, omitForeignKeys: []));
+        // A name matching no constraint is ignored rather than an error — callers pass a set
+        // computed from the whole model, not from this one table.
+        self::assertSame($dialect->buildCreateTable($schema), $dialect->buildCreateTable($schema, omitForeignKeys: ['fk_nonexistent']));
+    }
+
     public function testSqliteColumnLineFragmentIsNeverTheInlinePkForm(): void
     {
         // The public fragment form renders an autoIncrement column as a plain column: the inline

@@ -332,9 +332,11 @@ final class SqliteDialect implements SqlDialect
      * SET type is rejected with a {@see SchemaException}; an `ON UPDATE` column clause has no
      * SQLite equivalent and is omitted. Foreign keys are enforced only when
      * `PRAGMA foreign_keys=ON` (applied by {@see connectionInitStatements()}).
+     *
+     * @param list<string> $omitForeignKeys
      */
     #[\Override]
-    public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string
+    public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false, array $omitForeignKeys = []): string
     {
         $qt = $this->quoteIdentifier($schema->tableName);
         $createKeyword = $ifNotExists ? 'CREATE TABLE IF NOT EXISTS' : 'CREATE TABLE';
@@ -357,6 +359,9 @@ final class SqliteDialect implements SqlDialect
         }
 
         foreach ($schema->foreignKeys as $fk) {
+            if (\in_array($fk->constraintName, $omitForeignKeys, true)) {
+                continue; // deferred to an ALTER — see the $omitForeignKeys contract on SqlDialect
+            }
             $lines[] = '  '.$this->buildForeignKeyLine($fk);
         }
 

@@ -242,11 +242,12 @@ interface SqlDialect
      * charset, collation, comment) are dialect-dependent and may be ignored
      * by non-MySQL dialects.
      *
-     * @param bool $ifNotExists When true, emits `CREATE TABLE IF NOT EXISTS`. Use for idempotent install paths; do not use in migration emission where the table is expected to be absent.
+     * @param bool         $ifNotExists     When true, emits `CREATE TABLE IF NOT EXISTS`. Use for idempotent install paths; do not use in migration emission where the table is expected to be absent.
+     * @param list<string> $omitForeignKeys Constraint names to leave out of the FK block. For **circular** references, where no creation order works with every FK inline: create one table without the offending constraint, then add it with `ALTER TABLE … ADD {buildForeignKeyLine()}` once both tables exist. A name matching no constraint is ignored.
      *
      * @throws Exception\SchemaException for invalid metadata that the schema builder did not already catch
      */
-    public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string;
+    public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false, array $omitForeignKeys = []): string;
 
     /**
      * Render one column as a DDL fragment — the `name TYPE [NOT NULL] [DEFAULT …] …` line used

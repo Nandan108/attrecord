@@ -141,7 +141,8 @@ final class RecordingInitDialect implements SqlDialect
         return new UpsertSql($tableName, $pkColumn, null);
     }
 
-    public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string
+    /** @param list<string> $omitForeignKeys */
+    public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false, array $omitForeignKeys = []): string
     {
         return $schema->tableName;
     }

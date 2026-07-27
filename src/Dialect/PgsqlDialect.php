@@ -308,9 +308,11 @@ final class PgsqlDialect implements SqlDialect
      * intentionally not emitted: an `ON UPDATE` expression (requires a trigger) and the
      * engine/charset/collation table options. A VIRTUAL generated column and the SET type
      * are rejected with a {@see SchemaException}.
+     *
+     * @param list<string> $omitForeignKeys
      */
     #[\Override]
-    public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false): string
+    public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false, array $omitForeignKeys = []): string
     {
         $qt = $this->quoteIdentifier($schema->tableName);
         $createKeyword = $ifNotExists ? 'CREATE TABLE IF NOT EXISTS' : 'CREATE TABLE';
@@ -327,6 +329,9 @@ final class PgsqlDialect implements SqlDialect
         }
 
         foreach ($schema->foreignKeys as $fk) {
+            if (\in_array($fk->constraintName, $omitForeignKeys, true)) {
+                continue; // deferred to an ALTER — see the $omitForeignKeys contract on SqlDialect
+            }
             $lines[] = '  '.$this->buildForeignKeyLine($fk);
         }
 

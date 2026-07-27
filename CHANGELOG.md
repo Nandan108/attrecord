@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`buildCreateTable(…, array $omitForeignKeys = [])`** — emit a `CREATE TABLE` with named FK
+  constraints left out of the FK block, so a **circular** reference can be resolved: create one of
+  the tables without the offending constraint, then add it with
+  `ALTER TABLE … ADD {buildForeignKeyLine($fk)}` once both exist. No creation order satisfies a
+  loop while every FK is inline, and this is the seam that lets evolution tooling break one
+  deliberately rather than fail. A name matching no constraint is ignored, so callers can pass a
+  set computed across the whole model instead of per table.
+  **Breaking for external `SqlDialect` implementers** (interface signature change) — none known;
+  the shipped dialects and the test double are updated.
+
 ## [0.11.0] - 2026-07-27
 
 ### Added
