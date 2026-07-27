@@ -8,6 +8,13 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **`TableSchema::extendedWith(columns:, indexes:, uniqueKeys:)`** — derive a schema carrying extra
+  columns a Record class cannot declare, because the set is only known at runtime (a registry with
+  a column per registered dimension, a plugin's extension columns). Derivation, not construction
+  from scratch: the Record stays the single source of truth for everything static, the result keeps
+  the class's reflection data, and nothing downstream has to cope with a class-less `TableSchema`.
+  Adding a name the class already declares throws rather than silently winning or losing. Lets
+  schema tooling *see* columns that previously existed only as a hand-written `ALTER` run at boot.
 - **`buildCreateTable(…, array $omitForeignKeys = [])`** — emit a `CREATE TABLE` with named FK
   constraints left out of the FK block, so a **circular** reference can be resolved: create one of
   the tables without the offending constraint, then add it with

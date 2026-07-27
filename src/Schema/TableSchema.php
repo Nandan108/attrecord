@@ -877,4 +877,72 @@ final class TableSchema
     {
         return array_keys($this->columns);
     }
+
+    /**
+     * Derive a copy of this schema carrying extra columns, indexes and unique keys that the
+     * Record class cannot declare — because the set is only known at runtime.
+     *
+     * The motivating shape is a table whose columns are partly *computed*: a slot registry with a
+     * column per registered dimension, a plugin's extension columns, an EAV-ish sidecar. A class
+     * cannot express those, and the alternative — hand-written `ALTER TABLE` run at boot — is a
+     * second, invisible source of DDL that no schema tooling can see or verify.
+     *
+     * Derivation rather than construction from scratch is deliberate. The Record stays the single
+     * source of truth for everything static (types, keys, foreign keys, the primary key), and the
+     * result is a normal schema: it keeps the class's reflection data, so nothing downstream has
+     * to cope with a class-less `TableSchema`. Only the added columns lack a `ReflectionProperty`,
+     * which matters solely to the CRUD paths — and a computed column is not one a Record instance
+     * reads or writes by property anyway.
+     *
+     *     $schema = TableSchema::fromClass(SlotSpace::class)->extendedWith(
+     *         columns: ['dim_loc' => new ColumnDefinition(name: 'dim_loc', …)],
+     *         indexes: ['idx_dim_loc' => ['active', 'dim_loc', 'id']],
+     *     );
+     *
+     * Adding a column that is already declared is a mistake worth catching: the caller believes it
+     * is contributing something the class does not have, and silently winning or losing that
+     * collision would be equally confusing.
+     *
+     * @param array<string, ColumnDefinition> $columns    column name → definition
+     * @param array<string, list<string>>     $indexes    index name → ordered column names
+     * @param array<string, list<string>>     $uniqueKeys key name → ordered column names
+     *
+     * @throws SchemaException when an added name collides with a declared one
+     */
+    public function extendedWith(array $columns = [], array $indexes = [], array $uniqueKeys = []): self
+    {
+        foreach ([
+            ['column', $columns, $this->columns],
+            ['index', $indexes, $this->indexes],
+            ['unique key', $uniqueKeys, $this->uniqueKeys],
+        ] as [$what, $added, $declared]) {
+            foreach (array_keys($added) as $name) {
+                if (isset($declared[$name])) {
+                    throw new SchemaException(sprintf(
+                        '%s: cannot add %s "%s" — it is already declared on the Record.',
+                        $this->tableName,
+                        $what,
+                        $name,
+                    ));
+                }
+            }
+        }
+
+        return new self(
+            $this->tableName,
+            $this->pk,
+            $this->lockTier,
+            [...$this->columns, ...$columns],
+            $this->relations,
+            $this->reflProperties,
+            [...$this->uniqueKeys, ...$uniqueKeys],
+            [...$this->indexes, ...$indexes],
+            $this->foreignKeys,
+            $this->comment,
+            $this->mysqlOptions,
+            $this->createdAtColumn,
+            $this->updatedAtColumn,
+            $this->versionColumn,
+        );
+    }
 }

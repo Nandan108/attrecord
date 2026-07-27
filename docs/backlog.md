@@ -91,22 +91,33 @@ single PK column. But the consumer need is narrower than that:
 - **Status:** deferred 2026-07-27 while dogfooding convergence into InvFlux; safe to defer there
   because nothing references that table, so it has no creation-order constraint.
 
-### Programmatic `TableSchema` construction — *unlocks computed schemas*
+### Programmatic `TableSchema` construction — *DONE, via derivation*
 
-`TableSchema::__construct` is private; `fromClass()` is the only way to build one. A schema is
-therefore always a *class*, which means a table whose shape depends on runtime data cannot be
-described at all.
+Shipped as `TableSchema::extendedWith(columns:, indexes:, uniqueKeys:)`.
 
-- **The consumer:** InvFlux's slot registry gains a `dim_<name>` column plus index for every
-  registered dimension — a set known at provisioning time, but not at class-authoring time. Today
-  that half of the table is maintained by a hand-written `ensureDimensionColumns()` shim, and the
-  Record opts out of drift detection for it (`attrecord-migrations`' `PartiallyDeclared`).
-  A schema built from the dimension set would retire the shim and put those columns under
-  convergence like everything else — including *adding* one when a new dimension is registered.
-- **Shape:** a public builder (not a public constructor — the invariants `fromClass()` establishes
-  are worth keeping), e.g. `TableSchema::build(name)->column(...)->index(...)`, plus a
-  `SchemaMigrator::plan()` overload in the companion that accepts `TableSchema` instances
-  alongside class-strings. The differ already works on `TableSchema`, so that half is a seam, not
-  a rewrite.
-- **Status:** deferred 2026-07-27; the `PartiallyDeclared` opt-out covers the consumer's immediate
-  need, at the cost of leaving the computed columns undiffed.
+The shape landed differently from the sketch below, and better. The proposal was a builder
+(`TableSchema::build(name)->column(...)`), which would have produced a **class-less** schema:
+`reflProperties` empty, `pkProp` synthesised, and every CRUD path a potential footgun for a value
+that looks like a normal schema but is not one. The consumer's real need turned out to be narrower
+— a *declared* base plus a computed remainder — so derivation covers it with a fraction of the API
+and no new failure mode: the Record stays the source of truth for everything static, and the result
+is a normal schema that merely has extra columns.
+
+- **The consumer**, now migrated: InvFlux's slot registry grows a `dim_<name>` column plus index
+  per registered dimension. That half of the table used to be maintained by a hand-written
+  `ensureDimensionColumns()` shim and was invisible to schema tooling (the Record opted out of
+  drift detection for it via `attrecord-migrations`' `PartiallyDeclared`). Both are now retired:
+  the columns are described, so they are created, converged and diffed like any other.
+- **Companion in `attrecord-migrations`**: `SchemaMigrator::plan()` accepts `TableSchema` instances
+  alongside class-strings, since a derived schema has no class to name.
+- **Still open**: a schema for a table with *no* Record at all. Nothing needs it — every consumer
+  so far has a declared base to extend — and a builder can be added later without disturbing this.
+
+The original sketch, kept for the reasoning:
+
+> `TableSchema::__construct` is private; `fromClass()` is the only way to build one. A schema is
+> therefore always a *class*, which means a table whose shape depends on runtime data cannot be
+> described at all. Shape: a public builder (not a public constructor — the invariants
+> `fromClass()` establishes are worth keeping), plus a `SchemaMigrator::plan()` overload in the
+> companion that accepts `TableSchema` instances. The differ already works on `TableSchema`, so
+> that half is a seam, not a rewrite.
