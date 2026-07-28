@@ -32,9 +32,7 @@ trait LockSetCases
         $b1 = $this->makeBeta('b-one');
 
         LockAlphaRecord::transactional(function (Transaction $tx) use ($a1, $a2, $b1): void {
-            $session = Record::connection()->session;
-
-            $locks = LockSet::acquire($session, [
+            $locks = LockSet::acquire(Record::connection(), [
                 // Pass beta (tier 2) first; LockSet must lock alpha (tier 1) first regardless.
                 LockBetaRecord::class  => [(int) $b1->id],
                 LockAlphaRecord::class => [(int) $a1->id, (int) $a2->id],
@@ -59,8 +57,7 @@ trait LockSetCases
     public function testEmptyTargetsYieldEmptyRecordSets(): void
     {
         LockAlphaRecord::transactional(function (Transaction $tx): void {
-            $session = Record::connection()->session;
-            $locks = LockSet::acquire($session, [LockAlphaRecord::class => []], $tx);
+            $locks = LockSet::acquire(Record::connection(), [LockAlphaRecord::class => []], $tx);
             $this->assertCount(0, $locks[LockAlphaRecord::class]);
         });
     }

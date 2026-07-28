@@ -12,7 +12,7 @@ use Nandan108\Attrecord\Schema\TableSchema;
  * Acquires row locks on multiple entity classes in a deterministic tier-based order.
  *
  * Usage:
- *   $locks = LockSet::acquire($session, [
+ *   $locks = LockSet::acquire($connection, [
  *       PurchaseOrder::class     => [$poId],
  *       PurchaseOrderLine::class => $lineIds,
  *       InventorySlot::class     => [$slotId],
@@ -22,6 +22,12 @@ use Nandan108\Attrecord\Schema\TableSchema;
  * Within each table, rows are locked in ascending PK order. This eliminates the class of
  * deadlock caused by inconsistent lock acquisition order across concurrent transactions.
  *
+ * Takes a {@see Connection} rather than a bare {@see DbSession} because it does not merely
+ * execute SQL, it *generates* it: quoting the table and PK, and asking whether the backend has a
+ * `FOR UPDATE` clause at all. A session cannot answer either question — a Connection is precisely
+ * a session plus the dialect that can. Passing the connection the caller already holds is
+ * therefore the whole contract; nothing here reads global state.
+ *
  * @api
  */
 final class LockSet
@@ -29,7 +35,8 @@ final class LockSet
     /**
      * Acquire SELECT … FOR UPDATE locks in tier order.
      *
-     * @param array<class-string<Record>, list<int|string>> $targets class → list of PKs to lock
+     * @param Connection                                    $connection session to read on + dialect to build with
+     * @param array<class-string<Record>, list<int|string>> $targets    class → list of PKs to lock
      *
      * @return array<class-string<Record>, RecordSet> class → loaded+locked RecordSet
      *
@@ -37,7 +44,7 @@ final class LockSet
      * @throws LockTierConflictException if two target classes share the same tier
      */
     public static function acquire(
-        DbSession $session,
+        Connection $connection,
         array $targets,
         ?Transaction $tx = null,
     ): array {
@@ -57,6 +64,11 @@ final class LockSet
         ksort($tiered); // ascending tier → correct acquisition order
 
         // --- Acquire locks in tier order ---
+        // One dialect for the whole set: every target is read on the one session passed in, so
+        // they are by definition all on the same backend.
+        $dialect = $connection->dialect;
+        $session = $connection->session;
+
         $result = [];
         foreach ($tiered as [$class, $ids, $schema]) {
             if (empty($ids)) {
@@ -64,9 +76,8 @@ final class LockSet
                 continue;
             }
 
-            // Quote identifiers via the target class's own dialect so the FOR UPDATE read is
-            // portable (backticks on MySQL/MariaDB, double quotes on PostgreSQL).
-            $dialect = $class::connection()->dialect;
+            // Quote identifiers so the FOR UPDATE read is portable (backticks on MySQL/MariaDB,
+            // double quotes on PostgreSQL).
             $pk = $schema->pk;
             $qt = $dialect->quoteIdentifier($schema->tableName);
             $qpk = $dialect->quoteIdentifier($pk);

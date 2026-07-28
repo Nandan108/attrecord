@@ -125,6 +125,24 @@ abstract class Record
         }
     }
 
+    /**
+     * Forget the default and all per-class Connections.
+     *
+     * Test support. The use it exists for is asserting that a component handed a Connection (or a
+     * session) does its work on *that* one — an assertion only a suite with no global connection
+     * can actually make, since otherwise the global silently satisfies any accidental
+     * {@see connection()} call and the test passes while the coupling remains.
+     *
+     * Does not touch a {@see usingConnection()} scope, which is owned by the block that opened it.
+     *
+     * @api
+     */
+    public static function clearConnections(): void
+    {
+        self::$_defaultConnection = null;
+        self::$_classConnections = [];
+    }
+
     /** @api */
     public static function connection(): Connection
     {
@@ -176,6 +194,11 @@ abstract class Record
      * reconstruct a {@see Connection}. Binding a session for a *different* engine than the current
      * dialect would emit that dialect's SQL against the wrong backend — pass a full Connection via
      * {@see usingConnection()} in that case.
+     *
+     * Because the dialect comes from the ambient connection, this **requires one to exist** and
+     * throws if none is configured. That makes it the wrong tool for a component whose whole point
+     * is to work on what it was handed (and for a test that proves as much) — such a component
+     * should take a {@see Connection}, as {@see LockSet::acquire()} does.
      *
      * @api
      *

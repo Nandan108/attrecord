@@ -6,6 +6,46 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **`LockSet::acquire()` takes a `Connection`, not a `DbSession`** — *breaking*. It does not merely
+  execute SQL, it **generates** it: quoting the table and PK, and asking whether the backend has a
+  `FOR UPDATE` clause at all. A `DbSession` can answer neither; a `Connection` is exactly a session
+  plus the dialect that can. The old signature therefore could not be satisfied by its own
+  parameter, and closed the gap by reading `$class::connection()->dialect` — so a caller that
+  passed a session *without* also having configured a global connection got
+  `No Connection configured`, and a caller whose global pointed at a different backend than the
+  session got SQL quoted for the wrong one.
+
+  Fixing this by taking the dialect from the session was considered and rejected: a session is a
+  statement executor, and decorators like `RetryingDbSession` have no dialect of their own to give.
+  Adding an optional `?SqlDialect` argument was too — it makes callers pass two objects that are
+  only meaningful together, which is what `Connection` already is.
+
+  Migration is mechanical, and most call sites hold a `Connection` already and were reaching into
+  `->session` to call this:
+
+  ```diff
+  - LockSet::acquire($connection->session, [Foo::class => $ids], $tx);
+  + LockSet::acquire($connection, [Foo::class => $ids], $tx);
+  ```
+
+  Note that `usingSession()` borrows the ambient dialect the same way, which is now documented on
+  the method as a deliberate limitation rather than left as an implementation detail — prefer
+  `usingConnection()` wherever the dialect matters.
+
+  Reported against 0.12.0 by a consumer whose lock-ordering unit tests pass a fake session and
+  deliberately configure no global connection. Regression from `c3bb1c5` / `ca11f67`: before
+  `FOR UPDATE` was gated behind the dialect, the SQL was hard-coded MySQL and no dialect was needed.
+
+### Added
+
+- **`Record::clearConnections()`** — forget the default and all per-class connections. Test
+  support: asserting that a component works on the connection it was *given* is an assertion only a
+  suite with no global connection can make, since otherwise the global quietly satisfies an
+  accidental `connection()` call and the test passes while the coupling survives. Does not touch a
+  `usingConnection()` scope, which belongs to the block that opened it.
+
 ## [0.12.0] - 2026-07-27
 
 Two seams for schema-evolution tooling, both driven by a real consumer

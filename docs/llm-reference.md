@@ -61,6 +61,10 @@ Record::setTablePrefix('wp_');         // optional; prepended to every Table nam
   registers a per-class connection override (multi-DB); omit for the global default.
 - `Record::connection(): Connection`, `Record::tablePrefix(): string`,
   `Record::setTablePrefix(string $prefix): void`.
+- `Record::clearConnections(): void` — forget the default and all per-class connections; leaves a
+  `usingConnection()` scope alone. Test support: proving a component works on the connection it was
+  *given* requires a suite with no global connection, or the global quietly satisfies an accidental
+  `connection()` call and the test passes while the coupling survives.
 - `Record::usingConnection(Connection $c, callable $fn)` / `Record::usingSession(DbSession $s, callable $fn)`
   — run every Record/RecordSet op inside `$fn` against an explicitly supplied connection/session,
   restoring the previous binding afterward (even on throw; nesting restores to the enclosing scope).
@@ -872,9 +876,11 @@ All under `Nandan108\Attrecord\Exception`, extending `AttrecordException` (which
 ## 14. Locking
 
 - `#[LockTier(int $tier)]` on a Record assigns its lock-ordering tier (ascending).
-- `LockSet::acquire(DbSession $session, array<class-string,list<int|string>> $targets, ?Transaction $tx = null): array`
+- `LockSet::acquire(Connection $connection, array<class-string,list<int|string>> $targets, ?Transaction $tx = null): array`
   — locks rows across multiple Record classes in **tier order**, ascending-PK within each
-  tier, to prevent deadlocks. Throws `MissingLockTierException` / `LockTierConflictException`.
+  tier, to prevent deadlocks. Takes a `Connection`, not a `DbSession`: it builds the
+  `SELECT … FOR UPDATE` and so needs the dialect to quote identifiers and to know whether the
+  backend has that clause at all. Reads no global state. Throws `MissingLockTierException` / `LockTierConflictException`.
 - `Transaction` — tracks acquired locks for assertions: `current()`, `push()`, `pop()`,
   `registerLock(Record)`, `assertLocked(Record)`.
 - `find(..., forUpdate: true)` / `getOne(..., forUpdate: true)` append the dialect's

@@ -1380,13 +1380,16 @@ first), then issues `SELECT … FOR UPDATE` with `ORDER BY pk ASC` within each t
 This eliminates the class of deadlock caused by inconsistent acquisition order across
 concurrent transactions.
 
+It takes a `Connection` rather than a bare `DbSession` because it *generates* SQL as well as
+executing it — quoting the table and PK, and asking the dialect whether the backend has a
+`FOR UPDATE` clause. Pass the connection you already hold; nothing here reads global state, so a
+component handed a connection can lock on it with none configured globally.
+
 ```php
 use Nandan108\Attrecord\LockSet;
 
 PurchaseOrder::transactional(function (Transaction $tx) use ($poId, $lineIds, $slotId): void {
-    $session = PurchaseOrder::connection()->session;
-
-    $locks = LockSet::acquire($session, [
+    $locks = LockSet::acquire(PurchaseOrder::connection(), [
         PurchaseOrder::class     => [$poId],
         PurchaseOrderLine::class => $lineIds,
         InventorySlot::class     => [$slotId],
