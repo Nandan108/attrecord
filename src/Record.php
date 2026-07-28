@@ -229,8 +229,11 @@ abstract class Record
     /**
      * Bulk-assign column properties and return $this for chaining.
      *
-     * Only sets properties that exist as public column members on the record;
-     * unknown keys are silently ignored.
+     * Keys are **property** names (which differ from column names wherever a column declares a
+     * `name:` override). A key that is not a declared column property throws: a typo in a
+     * `set()` / `newWith()` array is otherwise invisible — PHP would create a dynamic property
+     * that no column ever reads, and the write would silently do nothing. Rejecting is also what
+     * keeps records usable on PHP 9, where dynamic property creation is an `Error`.
      *
      * Calls {@see validate()} at the end by default to surface invariant violations
      * at the point of assignment. Pass `false` to defer validation (useful for
@@ -241,12 +244,21 @@ abstract class Record
      *
      * @param array<string, mixed> $attrs
      *
+     * @throws SchemaException           when a key is not a declared column property
      * @throws RecordValidationException when `$validate` is true and `validate()` rejects the resulting state
      */
     public function set(array $attrs, bool $validate = true): static
     {
+        $properties = static::schema()->columnProperties();
+
         /** @psalm-var mixed $value */
         foreach ($attrs as $key => $value) {
+            isset($properties[$key]) || throw new SchemaException(sprintf(
+                'set(): "%s" is not a column property on %s. Known properties: %s.',
+                $key,
+                static::class,
+                implode(', ', array_keys($properties)),
+            ));
             $this->$key = $value;
         }
 

@@ -116,6 +116,32 @@ final class TableSchema
         $this->pkProp = $columns[$pk]->propertyName;
     }
 
+    /** @var array<string, true>|null memoized: the set of assignable column property names */
+    private ?array $_columnProperties = null;
+
+    /**
+     * The property names backing this table's columns, as a set for O(1) membership tests.
+     *
+     * Note these are **property** names, not column names — they differ wherever a column
+     * declares a `name:` override. Callers assigning from an array (see {@see Record::set()})
+     * address properties, so this is the set they must be checked against.
+     *
+     * @return array<string, true>
+     */
+    public function columnProperties(): array
+    {
+        if (null !== $this->_columnProperties) {
+            return $this->_columnProperties;
+        }
+
+        $names = [];
+        foreach ($this->columns as $col) {
+            $names[$col->propertyName] = true;
+        }
+
+        return $this->_columnProperties = $names;
+    }
+
     /** @var array<string, list<string>>|null memoized: generated column → the columns its expression references */
     private ?array $_generatedDeps = null;
 
