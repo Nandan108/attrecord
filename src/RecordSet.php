@@ -268,34 +268,34 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * table use {@see insertAll()} instead — this method's keyed path upserts (INSERT IGNORE +
      * update), which silently absorbs a duplicate-PK collision.
      *
-     * @param bool                   $force                      upsert even records that dirty-tracking reports as clean
-     * @param int|null               $chunkSize                  when non-null, split the write into $chunkSize-row transactions that
-     *                                                           **commit independently** — bounds the lock/undo footprint for very
-     *                                                           large batches, at the cost of whole-set atomicity (a mid-run failure
-     *                                                           leaves earlier chunks committed, so the operation must be resumable).
-     *                                                           When null (default) the whole set runs in ONE transaction, all-or-nothing.
-     * @param bool                   $allowInTransactionChunking when a chunked write is issued *inside* an open
-     *                                                           transaction, per-chunk commit is impossible (the outer transaction
-     *                                                           holds every lock until it commits) and would silently leave the
-     *                                                           footprint unbounded, so it is rejected by default. Pass true to chunk
-     *                                                           anyway: the chunks run as separate, smaller statements within the
-     *                                                           outer transaction — bounding statement size while staying **atomic**
-     *                                                           (the outer transaction's contract), with the lock/undo footprint left
-     *                                                           unbounded. No effect outside a transaction.
-     * @param list<string>|null      $ignoreColumns              column names to drop from the write: an ignored column is left out of
-     *                                                           the INSERT (its DB default fires) and out of the UPDATE SET (kept as
-     *                                                           stored). `null`/`[]` ignore nothing. Unknown name throws SchemaException.
-     * @param bool|list<string>|null $readBack                   re-read the written rows and hydrate them in place (see
-     *                                                           {@see Record::save()}); `true` full row, `false` never, a
-     *                                                           `list<string>` those columns, `null` = auto (ignored
-     *                                                           nullable-with-default + generated). One batched `IN` query, not per row.
-     * @param UpsertStrategy         $strategy                   {@see UpsertStrategy::Locked} (default) — the deadlock-safe 3-step.
-     *                                                           {@see UpsertStrategy::Lockless} — one `INSERT … ON DUPLICATE KEY UPDATE`
-     *                                                           / `… ON CONFLICT (pk) DO UPDATE` statement, no `SELECT … FOR UPDATE`;
-     *                                                           opt-in, caller owns concurrency. Conflicts on the **PK**, applies a
-     *                                                           **uniform** SET (use for homogeneous batches), does **not** back-fill
-     *                                                           ids, and reports the raw driver affected-row count in `inserted`
-     *                                                           (no insert/update split). See the enum for the full trade-offs.
+     * @param bool                                          $force                      upsert even records that dirty-tracking reports as clean
+     * @param int|null                                      $chunkSize                  when non-null, split the write into $chunkSize-row transactions that
+     *                                                                                  **commit independently** — bounds the lock/undo footprint for very
+     *                                                                                  large batches, at the cost of whole-set atomicity (a mid-run failure
+     *                                                                                  leaves earlier chunks committed, so the operation must be resumable).
+     *                                                                                  When null (default) the whole set runs in ONE transaction, all-or-nothing.
+     * @param bool                                          $allowInTransactionChunking when a chunked write is issued *inside* an open
+     *                                                                                  transaction, per-chunk commit is impossible (the outer transaction
+     *                                                                                  holds every lock until it commits) and would silently leave the
+     *                                                                                  footprint unbounded, so it is rejected by default. Pass true to chunk
+     *                                                                                  anyway: the chunks run as separate, smaller statements within the
+     *                                                                                  outer transaction — bounding statement size while staying **atomic**
+     *                                                                                  (the outer transaction's contract), with the lock/undo footprint left
+     *                                                                                  unbounded. No effect outside a transaction.
+     * @param list<string>|array{update: list<string>}|null $ignoreColumns              column names to drop from the write: an ignored column is left out of
+     *                                                                                  the INSERT (its DB default fires) and out of the UPDATE SET (kept as
+     *                                                                                  stored). `null`/`[]` ignore nothing. Unknown name throws SchemaException.
+     * @param bool|list<string>|null                        $readBack                   re-read the written rows and hydrate them in place (see
+     *                                                                                  {@see Record::save()}); `true` full row, `false` never, a
+     *                                                                                  `list<string>` those columns, `null` = auto (ignored
+     *                                                                                  nullable-with-default + generated). One batched `IN` query, not per row.
+     * @param UpsertStrategy                                $strategy                   {@see UpsertStrategy::Locked} (default) — the deadlock-safe 3-step.
+     *                                                                                  {@see UpsertStrategy::Lockless} — one `INSERT … ON DUPLICATE KEY UPDATE`
+     *                                                                                  / `… ON CONFLICT (pk) DO UPDATE` statement, no `SELECT … FOR UPDATE`;
+     *                                                                                  opt-in, caller owns concurrency. Conflicts on the **PK**, applies a
+     *                                                                                  **uniform** SET (use for homogeneous batches), does **not** back-fill
+     *                                                                                  ids, and reports the raw driver affected-row count in `inserted`
+     *                                                                                  (no insert/update split). See the enum for the full trade-offs.
      *
      * @return SaveResult|null inserted/updated counts, or null if nothing was dirty
      *
@@ -315,7 +315,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             throw AppendOnlyViolationException::forOperation($first::class, 'upsertAll()');
         }
         $schema = $first::schema();
-        $ignore = self::buildIgnoreSet($ignoreColumns, $schema, $first::class, 'upsertAll');
+        [$ignore, $ignoreOnUpdate] = self::parseIgnoreSpec($ignoreColumns, $schema, $first::class, 'upsertAll');
         // Validate the read-back mode up front; the 'auto' set is computed post-write.
         $readBackMode = Record::resolveReadBackMode($readBack, $schema, $first::class);
         $conn = $first::connection();
@@ -350,7 +350,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             $r->validate();
             if (!$isInsert) {
                 foreach ($r->dirtyFields() as $dirtyCol => $_ignored) {
-                    if (!isset($ignore[$dirtyCol])) {
+                    if (!isset($ignore[$dirtyCol]) && !isset($ignoreOnUpdate[$dirtyCol])) {
                         $updateDirty[$dirtyCol] = true;
                     }
                 }
@@ -387,6 +387,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                 $pk,
                 $pkProp,
                 $ignore,
+                $ignoreOnUpdate,
                 $readBackCols,
             );
         }
@@ -410,7 +411,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
             // When nested (with the flag), each chunk's transactional() runs inline in the outer
             // transaction — chunked statements, still atomic, footprint unbounded.
-            $chunkedResult = $this->upsertAllChunked($dirtyRecords, $chunkSize, $session, $schema, $dialect, $pk, $pkProp, $pkColumn, $returningSuffix, $pkAutoIncrement, $ignore);
+            $chunkedResult = $this->upsertAllChunked($dirtyRecords, $chunkSize, $session, $schema, $dialect, $pk, $pkProp, $pkColumn, $returningSuffix, $pkAutoIncrement, $ignore, $ignoreOnUpdate);
             if (null !== $readBackCols && [] !== $readBackCols) {
                 $this->readBackAll($dirtyRecords, $session, $schema, $dialect, $pk, $pkProp, $readBackCols);
             }
@@ -420,7 +421,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
 
         // Default: the whole set in ONE transaction — all-or-nothing. $insertedRecords (above) is in
         // the exact order buildPlan() will INSERT, so DB-generated ids back-fill onto the right objects.
-        $plan = $this->buildPlan($dirtyRecords, $schema, $dialect, $ignore);
+        $plan = $this->buildPlan($dirtyRecords, $schema, $dialect, $ignore, $ignoreOnUpdate);
         if (null === $plan['insert'] && null === $plan['upsert']) {
             return null;
         }
@@ -478,7 +479,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * @param array<string, true>     $ignore          columns to drop from the write
      * @param 'all'|list<string>|null $readBackCols    resolved read-back columns (null/[] = none)
      */
-    private function upsertAllLockless(array $dirtyRecords, array $insertedRecords, ?int $chunkSize, bool $allowInTransactionChunking, DbSession $session, TableSchema $schema, SqlDialect $dialect, string $pk, string $pkProp, array $ignore, string | array | null $readBackCols): SaveResult
+    private function upsertAllLockless(array $dirtyRecords, array $insertedRecords, ?int $chunkSize, bool $allowInTransactionChunking, DbSession $session, TableSchema $schema, SqlDialect $dialect, string $pk, string $pkProp, array $ignore, array $ignoreOnUpdate, string | array | null $readBackCols): SaveResult
     {
         // Lockless coalesces on the PRIMARY KEY, so every record must carry it. A PK-null record has
         // no key to conflict on — and on an auto-increment table it would emit an explicit `NULL` PK,
@@ -514,7 +515,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         foreach ($chunks as $chunk) {
             // array_chunk never yields an empty chunk, and the PK is always in the column set, so
             // buildLocklessUpsertSql() always produces a statement.
-            $sql = $this->buildLocklessUpsertSql($chunk, $schema, $dialect, $ignore, $pk);
+            $sql = $this->buildLocklessUpsertSql($chunk, $schema, $dialect, $ignore, $ignoreOnUpdate, $pk);
             try {
                 /** @psalm-suppress MixedAssignment */
                 $affected += $session->transactional(static fn (): int => $session->exec($sql));
@@ -549,7 +550,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * @param list<Record>        $records the caller passes a non-empty chunk
      * @param array<string, true> $ignore
      */
-    private function buildLocklessUpsertSql(array $records, TableSchema $schema, SqlDialect $dialect, array $ignore, string $pk): string
+    private function buildLocklessUpsertSql(array $records, TableSchema $schema, SqlDialect $dialect, array $ignore, array $ignoreOnUpdate, string $pk): string
     {
         $presentCols = [$pk => true];
         /** @var array<string, null> $updateCols col => null (copy the incoming value) */
@@ -566,7 +567,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                 if (($record->{$col->propertyName} ?? null) !== null || $isDirty) {
                     $presentCols[$colName] = true;
                 }
-                if ($isDirty && $colName !== $pk) {
+                if ($isDirty && $colName !== $pk && !isset($ignoreOnUpdate[$colName])) {
                     $updateCols[$colName] = null;
                 }
             }
@@ -842,7 +843,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * @param list<Record>        $dirtyRecords already beforeSave()'d and validate()'d
      * @param array<string, true> $ignore       column names to drop from the write
      */
-    private function upsertAllChunked(array $dirtyRecords, int $chunkSize, DbSession $session, TableSchema $schema, SqlDialect $dialect, string $pk, string $pkProp, ColumnDefinition $pkColumn, string $returningSuffix, bool $pkAutoIncrement, array $ignore = []): SaveResult
+    private function upsertAllChunked(array $dirtyRecords, int $chunkSize, DbSession $session, TableSchema $schema, SqlDialect $dialect, string $pk, string $pkProp, ColumnDefinition $pkColumn, string $returningSuffix, bool $pkAutoIncrement, array $ignore = [], array $ignoreOnUpdate = []): SaveResult
     {
         if ($chunkSize < 1) {
             $chunkSize = \count($dirtyRecords);
@@ -883,7 +884,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                 }
             }
 
-            $plan = $this->buildPlan($chunk, $schema, $dialect, $ignore);
+            $plan = $this->buildPlan($chunk, $schema, $dialect, $ignore, $ignoreOnUpdate);
             if (null === $plan['insert'] && null === $plan['upsert']) {
                 continue;
             }
@@ -1068,7 +1069,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * New records (PK null) produce a plain INSERT executed separately by upsertAll();
      * use CapturingDbSession + upsertAll() to inspect that statement.
      *
-     * @param list<string>|null $ignoreColumns column names to drop from the write
+     * @param list<string>|array{update: list<string>}|null $ignoreColumns column names to drop from the write
      */
     public function buildUpsertAllSql(bool $force = false, ?array $ignoreColumns = null): ?UpsertSql
     {
@@ -1089,8 +1090,8 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             return null;
         }
 
-        $ignore = self::buildIgnoreSet($ignoreColumns, $schema, $first::class, 'upsertAll');
-        $plan = $this->buildPlan($dirty, $schema, $conn->dialect, $ignore);
+        [$ignore, $ignoreOnUpdate] = self::parseIgnoreSpec($ignoreColumns, $schema, $first::class, 'upsertAll');
+        $plan = $this->buildPlan($dirty, $schema, $conn->dialect, $ignore, $ignoreOnUpdate);
 
         return $plan['upsert'];
     }
@@ -1106,17 +1107,77 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      */
     private static function buildIgnoreSet(?array $ignoreColumns, TableSchema $schema, string $recordClass, string $method): array
     {
-        $ignore = [];
-        foreach ($ignoreColumns ?? [] as $name) {
-            if (!isset($schema->columns[$name])) {
-                throw new SchemaException(
-                    sprintf('%s(ignoreColumns:): unknown column "%s" on %s.', $method, $name, $recordClass),
-                );
-            }
-            $ignore[$name] = true;
+        return self::parseIgnoreSpec($ignoreColumns, $schema, $recordClass, $method)[0];
+    }
+
+    /**
+     * Parse an `$ignoreColumns` spec into the set dropped from the **whole write** and the set
+     * dropped from the **UPDATE only**.
+     *
+     * Two accepted shapes, told apart by key type — a list has integer keys, the phase map has
+     * string ones, so a column literally named `update` is never ambiguous:
+     *
+     *     ['status']                       // dropped from the insert and the update
+     *     ['update' => ['parent_id']]      // inserted, then never overwritten
+     *
+     * There is deliberately no `insert` phase. In the deadlock-safe keyed upsert the UPDATE step
+     * reads each value from the row the INSERT step wrote, so a column absent from the insert
+     * cannot be a target of the update — the two sets can diverge in one direction only. Dropping
+     * a column from the insert alone would therefore mean something different per strategy, and
+     * no consumer has asked for it. A flat list already covers "drop it from both".
+     *
+     * @param list<string>|array{update: list<string>}|null $ignoreColumns
+     *
+     * @return array{0: array<string, true>, 1: array<string, true>} [both, updateOnly]
+     *
+     * @throws SchemaException on an unknown column or an unrecognised shape
+     */
+    private static function parseIgnoreSpec(?array $ignoreColumns, TableSchema $schema, string $recordClass, string $method): array
+    {
+        if (null === $ignoreColumns || [] === $ignoreColumns) {
+            return [[], []];
         }
 
-        return $ignore;
+        $assert = static function (mixed $name) use ($schema, $recordClass, $method): string {
+            if (!is_string($name) || !isset($schema->columns[$name])) {
+                throw new SchemaException(sprintf(
+                    '%s(ignoreColumns:): unknown column "%s" on %s.',
+                    $method,
+                    is_string($name) ? $name : get_debug_type($name),
+                    $recordClass,
+                ));
+            }
+
+            return $name;
+        };
+
+        $keys = array_keys($ignoreColumns);
+        if (array_is_list($ignoreColumns)) {
+            $both = [];
+            foreach ($ignoreColumns as $name) {
+                $both[$assert($name)] = true;
+            }
+
+            return [$both, []];
+        }
+
+        if (['update'] !== $keys) {
+            throw new SchemaException(sprintf(
+                '%s(ignoreColumns:): expected a list of column names, or ["update" => [...]] to drop '
+                .'columns from the UPDATE only; got keys [%s] on %s.',
+                $method,
+                implode(', ', array_map(static fn (mixed $k): string => var_export($k, true), $keys)),
+                $recordClass,
+            ));
+        }
+
+        $updateOnly = [];
+        /** @psalm-suppress MixedAssignment */
+        foreach ($ignoreColumns['update'] ?? [] as $name) {
+            $updateOnly[$assert($name)] = true;
+        }
+
+        return [[], $updateOnly];
     }
 
     /**
@@ -1252,7 +1313,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      *
      * @return array{insert: ?string, upsert: ?UpsertSql}
      */
-    private function buildPlan(array $dirty, TableSchema $schema, SqlDialect $dialect, array $ignore = []): array
+    private function buildPlan(array $dirty, TableSchema $schema, SqlDialect $dialect, array $ignore = [], array $ignoreOnUpdate = []): array
     {
         $pk = $schema->pk;
         $pkProp = $schema->pkProp;
@@ -1286,7 +1347,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                     if (($record->{$col->propertyName} ?? null) !== null || $isDirty) {
                         $presentCols[$colName] = true;
                     }
-                    if ($isDirty) {
+                    if ($isDirty && !isset($ignoreOnUpdate[$colName])) {
                         $dirtyUnion[$colName] = true;
                     }
                 }

@@ -920,28 +920,29 @@ abstract class Record
     }
 
     /**
-     * @param list<string>|null      $ignoreColumns Column names to drop from the write. Purely
-     *                                              subtractive: on INSERT an omitted column lets its DB
-     *                                              default fire (nullable or not); on UPDATE it is left
-     *                                              out of the SET (untouched). `null`/`[]` = ignore
-     *                                              nothing. An unknown column name throws SchemaException.
-     * @param bool|list<string>|null $readBack      After the write, re-read column(s) from the DB and
-     *                                              hydrate this record so values it omitted (fired DB
-     *                                              defaults, generated columns) reflect their stored form
-     *                                              and the record reads back clean. `true` re-reads the
-     *                                              whole row (fires afterLoad()); `false` never; a
-     *                                              `list<string>` re-reads exactly those columns (targeted
-     *                                              patch, no afterLoad; unknown name throws
-     *                                              SchemaException); `null` = auto — read back the ignored
-     *                                              nullable-with-default column(s) plus any generated
-     *                                              column, and nothing on a plain save (so it costs
-     *                                              nothing on the default path).
-     * @param OnConflict             $onConflict    conflict policy for the INSERT (new-record) path only —
-     *                                              a no-op on an UPDATE. {@see OnConflict::Fail} (default)
-     *                                              surfaces a key collision as a RecordSaveException;
-     *                                              {@see OnConflict::Ignore} skips a colliding insert,
-     *                                              leaving the record unsaved ({@see $_saved} = false),
-     *                                              still new, PK unassigned, and read-back not run.
+     * @param list<string>|array{update: list<string>}|null $ignoreColumns Column names to drop from the write; `['update' => [...]]`
+     *                                                                     drops them from an UPDATE only, so an insert still writes them. Purely
+     *                                                                     subtractive: on INSERT an omitted column lets its DB
+     *                                                                     default fire (nullable or not); on UPDATE it is left
+     *                                                                     out of the SET (untouched). `null`/`[]` = ignore
+     *                                                                     nothing. An unknown column name throws SchemaException.
+     * @param bool|list<string>|null                        $readBack      After the write, re-read column(s) from the DB and
+     *                                                                     hydrate this record so values it omitted (fired DB
+     *                                                                     defaults, generated columns) reflect their stored form
+     *                                                                     and the record reads back clean. `true` re-reads the
+     *                                                                     whole row (fires afterLoad()); `false` never; a
+     *                                                                     `list<string>` re-reads exactly those columns (targeted
+     *                                                                     patch, no afterLoad; unknown name throws
+     *                                                                     SchemaException); `null` = auto — read back the ignored
+     *                                                                     nullable-with-default column(s) plus any generated
+     *                                                                     column, and nothing on a plain save (so it costs
+     *                                                                     nothing on the default path).
+     * @param OnConflict                                    $onConflict    conflict policy for the INSERT (new-record) path only —
+     *                                                                     a no-op on an UPDATE. {@see OnConflict::Fail} (default)
+     *                                                                     surfaces a key collision as a RecordSaveException;
+     *                                                                     {@see OnConflict::Ignore} skips a colliding insert,
+     *                                                                     leaving the record unsaved ({@see $_saved} = false),
+     *                                                                     still new, PK unassigned, and read-back not run.
      */
     public function save(bool $force = false, ?array $ignoreColumns = null, bool | array | null $readBack = null, OnConflict $onConflict = OnConflict::Fail): static
     {
@@ -964,15 +965,34 @@ abstract class Record
         $ignoreConflict = OnConflict::Ignore === $onConflict;
 
         // Validate the (column-name) ignore list up front so a typo fails loudly rather than
-        // silently writing a column the caller meant to drop.
+        // silently writing a column the caller meant to drop. `['update' => [...]]` drops columns
+        // from an UPDATE only — on this path that simply means the phase decides which set
+        // applies, since a single save() is either an insert or an update, never both.
         $ignore = [];
-        foreach ($ignoreColumns ?? [] as $ignoredName) {
-            if (!isset($schema->columns[$ignoredName])) {
-                throw new SchemaException(
-                    sprintf('save(ignoreColumns:): unknown column "%s" on %s.', $ignoredName, static::class),
-                );
+        $spec = $ignoreColumns ?? [];
+        $phased = [] !== $spec && !array_is_list($spec);
+        if ($phased && ['update'] !== array_keys($spec)) {
+            throw new SchemaException(sprintf(
+                'save(ignoreColumns:): expected a list of column names, or ["update" => [...]] to drop '
+                .'columns from an UPDATE only; got keys [%s] on %s.',
+                implode(', ', array_map(static fn (mixed $k): string => var_export($k, true), array_keys($spec))),
+                static::class,
+            ));
+        }
+        /** @psalm-var list<mixed> $ignoredNames */
+        $ignoredNames = $phased ? ($spec['update'] ?? []) : $spec;
+        foreach ($ignoredNames as $ignoredName) {
+            if (!is_string($ignoredName) || !isset($schema->columns[$ignoredName])) {
+                throw new SchemaException(sprintf(
+                    'save(ignoreColumns:): unknown column "%s" on %s.',
+                    is_string($ignoredName) ? $ignoredName : get_debug_type($ignoredName),
+                    static::class,
+                ));
             }
-            $ignore[$ignoredName] = true;
+            // A phased drop applies to the UPDATE only, so on an INSERT it is simply not in force.
+            if (!$phased || !$this->_isNew) {
+                $ignore[$ignoredName] = true;
+            }
         }
 
         // Resolve (and validate) the read-back mode up front, so a bad explicit list throws before

@@ -1016,6 +1016,79 @@ trait RecordSetCases
         $this->assertSame('original', $reloaded->note, 'ignored column is left untouched — keeps its stored value');
     }
 
+    /**
+     * The asymmetric case: a value is written on INSERT and then protected from every later
+     * UPDATE. A flat ignore list cannot express it — that would drop the column from the insert
+     * too, so a new row would never get the value at all.
+     */
+    public function testPhasedIgnoreWritesOnInsertThenProtectsFromUpdate(): void
+    {
+        $rec = new InsertDefaultRecord();
+        $rec->status = 'a';
+        $rec->note = 'computed-once';
+        $rec->save(ignoreColumns: ['update' => ['note']]);   // insert: not in force
+        $this->assertNotNull($rec->id);
+        $id = $rec->id;
+
+        $reloaded = InsertDefaultRecord::getOne($id);
+        $this->assertNotNull($reloaded);
+        $this->assertSame('computed-once', $reloaded->note, 'the insert wrote it — the drop applies to updates only');
+
+        $reloaded->status = 'b';
+        $reloaded->note = 'must-not-land';
+        $reloaded->save(ignoreColumns: ['update' => ['note']]);
+
+        $after = InsertDefaultRecord::getOne($id);
+        $this->assertNotNull($after);
+        $this->assertSame('b', $after->status, 'other dirty columns still update');
+        $this->assertSame('computed-once', $after->note, 'the protected column survived the update');
+    }
+
+    public function testPhasedIgnoreProtectsOnAKeyedUpsert(): void
+    {
+        $seed = new InsertDefaultRecord();
+        $seed->status = 'a';
+        $seed->note = 'computed-once';
+        $seed->save();
+        $this->assertNotNull($seed->id);
+        $id = $seed->id;
+
+        $row = InsertDefaultRecord::getOne($id);
+        $this->assertNotNull($row);
+        $row->status = 'b';
+        $row->note = 'must-not-land';
+        (new RecordSet([$row]))->upsertAll(ignoreColumns: ['update' => ['note']]);
+
+        $after = InsertDefaultRecord::getOne($id);
+        $this->assertNotNull($after);
+        $this->assertSame('b', $after->status);
+        $this->assertSame('computed-once', $after->note, 'protected through the keyed-upsert path too');
+    }
+
+    /**
+     * Psalm rejects this shape statically — which is the point of the narrow param type — but the
+     * runtime guard still has to hold for callers without static analysis, or a spec built
+     * dynamically. Hence the suppression rather than deleting the case.
+     *
+     * @psalm-suppress InvalidArgument
+     */
+    public function testPhasedIgnoreRejectsAnUnrecognisedPhase(): void
+    {
+        $this->expectException(\Nandan108\Attrecord\Exception\SchemaException::class);
+        $this->expectExceptionMessage('["update" => [...]]');
+
+        $rec = new InsertDefaultRecord();
+        $rec->save(ignoreColumns: ['insert' => ['note']]);
+    }
+
+    public function testPhasedIgnoreRejectsUnknownColumn(): void
+    {
+        $this->expectException(\Nandan108\Attrecord\Exception\SchemaException::class);
+
+        $rec = new InsertDefaultRecord();
+        $rec->save(ignoreColumns: ['update' => ['no_such_column']]);
+    }
+
     public function testSaveIgnoreColumnsRejectsUnknownColumn(): void
     {
         $this->expectException(\Nandan108\Attrecord\Exception\SchemaException::class);
