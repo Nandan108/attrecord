@@ -861,7 +861,7 @@ All under `Nandan108\Attrecord\Exception`, extending `AttrecordException` (which
 | Duplicate-key SQLSTATE (`isDuplicateKeyError`) | `23000` | `23505` | `23000` |
 | Retryable-error signal (`isRetryableTransactionError`) | errno `1213`/`1205`/`1020` | SQLSTATE `40001`/`40P01` | code `5`(`SQLITE_BUSY`)/`6`(`SQLITE_LOCKED`) or msg `locked` |
 | `LIKE` escape | implicit backslash | explicit `ESCAPE '\'` (handled by `WhereClause`) | explicit `ESCAPE '\'` |
-| DDL `Enum` | `ENUM(...)` | `TEXT` + `CHECK (... IN (...))` | `TEXT` + `CHECK (... IN (...))` |
+| DDL `Enum` | `ENUM(...)` | `TEXT` + `CONSTRAINT chk_<col>_enum CHECK (... IN (...))` | idem |
 | DDL indexes/comments | inline | trailing `CREATE INDEX` / `COMMENT ON` | trailing `CREATE INDEX`; comments dropped (no support) |
 | DDL `Set` | supported | `SchemaException` | `SchemaException` |
 | DDL `VIRTUAL` generated | supported (also `STORED`) | `SchemaException` (`STORED` only) | supported (`STORED` + `VIRTUAL`, 3.31+) |

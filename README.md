@@ -612,7 +612,10 @@ single auto-increment PK is rendered inline as `INTEGER PRIMARY KEY AUTOINCREMEN
 separate `PRIMARY KEY` clause); column types collapse to SQLite's affinities (integer/bool →
 `INTEGER`, `Float`/`Double` → `REAL`, `Decimal` → `NUMERIC`, binary → `BLOB`, everything else
 — text family, `Json`, `Enum`, and the date/time types stored as ISO-8601 text — → `TEXT`); an
-`Enum` column is `TEXT` plus a `CHECK (... IN (...))` constraint; generated columns
+`Enum` column is `TEXT` plus a `CHECK (... IN (...))` constraint named
+`chk_<column>_enum` (deterministic on purpose — it is how schema tooling finds the member
+list again, the engine being free to rewrite the constraint's body but not its name);
+generated columns
 (`STORED`/`VIRTUAL`) and FK constraints are supported; secondary indexes are emitted as
 trailing `CREATE INDEX` statements in the same batch. Column comments and a MySQL `ON UPDATE`
 clause have no SQLite equivalent and are dropped; the `Set` type is rejected with a

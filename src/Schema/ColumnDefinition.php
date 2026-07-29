@@ -83,4 +83,26 @@ final class ColumnDefinition
         $this->isString = $type->isString();
         $this->isGenerated = null !== $generatedAs;
     }
+
+    /**
+     * Name of the CHECK constraint that carries an enum column's member list on the dialects with
+     * no native ENUM type (PostgreSQL, SQLite — both store the column as TEXT).
+     *
+     * Deterministic and **public on purpose**: it is the contract that lets schema-evolution
+     * tooling find the member list again. An engine that rewrites the constraint body — PG turns
+     * `col IN ('a','b')` into `col = ANY (ARRAY['a'::text, 'b'::text])` — leaves the name alone, so
+     * the name is the only stable handle on which constraint holds the members. Without it the
+     * member list is write-only: the DDL says what the members are, and nothing can read it back.
+     *
+     * Column-scoped rather than table-scoped because CHECK constraint names are unique **per
+     * table** on both engines (unlike index-backed UNIQUE constraints, which are schema-scoped) —
+     * verified against PostgreSQL 16. That is what lets `buildColumnLine()`, which never sees a
+     * table name, emit it.
+     *
+     * @api
+     */
+    public static function enumCheckConstraintName(string $column): string
+    {
+        return 'chk_'.$column.'_enum';
+    }
 }

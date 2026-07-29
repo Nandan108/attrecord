@@ -67,7 +67,7 @@ final class SqliteDialectCreateTableTest extends TestCase
         $sql = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlOrderRecord::class));
 
         $this->assertStringContainsString(
-            '"payment_method" TEXT NOT NULL DEFAULT \'cash\' CHECK ("payment_method" IN (\'cash\', \'card\', \'wire\'))',
+            '"payment_method" TEXT NOT NULL DEFAULT \'cash\' CONSTRAINT "chk_payment_method_enum" CHECK ("payment_method" IN (\'cash\', \'card\', \'wire\'))',
             $sql,
         );
     }

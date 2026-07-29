@@ -413,7 +413,11 @@ final class SqliteDialect implements SqlDialect
 
         // Enum is stored as TEXT plus a CHECK constraint (SQLite enforces CHECK).
         if (ColumnType::Enum === $col->type) {
-            $parts[] = 'CHECK ('.$this->quoteIdentifier($col->name).' IN ('.$this->renderEnumValues($col).'))';
+            // Named, not anonymous: the name is the only stable handle on the member list once the
+            // engine has rewritten the body, so it is what makes the members readable back out.
+            // See ColumnDefinition::enumCheckConstraintName().
+            $parts[] = 'CONSTRAINT '.$this->quoteIdentifier(ColumnDefinition::enumCheckConstraintName($col->name))
+                .' CHECK ('.$this->quoteIdentifier($col->name).' IN ('.$this->renderEnumValues($col).'))';
         }
 
         return \implode(' ', $parts);

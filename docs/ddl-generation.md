@@ -383,7 +383,7 @@ attributes. Differences from the MySQL output:
 | `Decimal` | `DECIMAL(p,s)` | `NUMERIC(p,s)` |
 | `Binary`/`VarBinary` | `BINARY(n)`/`VARBINARY(n)` | `BYTEA` |
 | `Json` | `JSON` | `JSONB` |
-| `Enum` | `ENUM('a','b')` | `TEXT` + `CHECK (col IN ('a','b'))` |
+| `Enum` | `ENUM('a','b')` | `TEXT` + `CONSTRAINT chk_col_enum CHECK (col IN ('a','b'))` |
 | `Char`/`VarChar`/`Text`* | same | `CHAR(n)`/`VARCHAR(n)`/`TEXT` |
 | Secondary indexes | inline `KEY` | trailing `CREATE INDEX` statements |
 | Table / column comments | inline / `COMMENT=` | trailing `COMMENT ON TABLE` / `COMMENT ON COLUMN` |

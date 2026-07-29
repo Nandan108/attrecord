@@ -38,6 +38,22 @@ All notable changes to this project are documented here. The format is based on
   deliberately configure no global connection. Regression from `c3bb1c5` / `ca11f67`: before
   `FOR UPDATE` was gated behind the dialect, the SQL was hard-coded MySQL and no dialect was needed.
 
+- **The enum CHECK constraint is now named** `chk_<column>_enum` on PostgreSQL and SQLite, which
+  emit an enum as `TEXT` plus a CHECK rather than a native type. It was anonymous, which made the
+  member list **write-only**: PostgreSQL rewrites the body (`col IN ('a','b')` comes back as
+  `col = ANY (ARRAY['a'::text, 'b'::text])`) but never the name, so with no name there was no
+  stable handle on which constraint carried the members — and schema tooling could not read them
+  back to notice that a PHP enum had gained a case the database still rejects.
+
+  Column-scoped rather than table-scoped because CHECK constraint names are unique per *table* on
+  both engines (unlike index-backed UNIQUE constraints, which are schema-scoped) — verified against
+  PostgreSQL 16. That is what lets `buildColumnLine()`, which never sees a table name, emit it.
+  Exposed as `ColumnDefinition::enumCheckConstraintName()` so consumers share one definition of the
+  convention instead of hard-coding it.
+
+  Affects emitted DDL on those two dialects only; MySQL-family is untouched, its members living in
+  the column type. `attrecord-migrations` >= 0.3 uses this to close the corresponding blind spot.
+
 ### Added
 
 - **`Record::clearConnections()`** — forget the default and all per-class connections. Test
