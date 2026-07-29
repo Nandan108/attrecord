@@ -34,7 +34,7 @@ final class Column
      * @param list<string>|null          $enumValues    enum/Set allowed values; required for ColumnType::Enum and ColumnType::Set
      * @param string|null                $generatedAs   Raw SQL expression for a generated column (e.g. 'IFNULL(scope_actor_id, 0)'). Mutually exclusive with $default, $defaultExpr, $onUpdate, $autoIncrement. The corresponding PHP property is read-only at the application layer — the database computes the value.
      * @param GeneratedColumnMode|null   $generatedMode Storage mode for the generated column. Defaults to `Stored` when $generatedAs is set and $generatedMode is omitted.
-     * @param string|null                $renamedFrom   Previous column name, for schema-evolution tooling (the `attrecord-migrations` companion): a declared rename is emitted as data-preserving `RENAME COLUMN` instead of a destructive drop+add. **Inert in core** — stored on the ColumnDefinition, never read by CRUD or the DDL producer. Permanent, cheap documentation of the column's history. See docs/arch-migrations.md §4.3.
+     * @param string|null                $renamedFrom   Previous column name, for schema-evolution tooling (the `attrecord-migrations` companion): a declared rename is emitted as data-preserving `RENAME COLUMN` instead of a destructive drop+add. **Inert in core** — stored on the ColumnDefinition, never read by CRUD or the DDL producer. Permanent, cheap documentation of the column's history. See https://github.com/Nandan108/attrecord/blob/main/docs/arch-migrations.md §4.3.
      */
     public function __construct(
         public readonly ColumnType $type,

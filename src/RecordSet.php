@@ -843,7 +843,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * New (PK-null) records are chunked for INSERT; keyed records are **sorted by PK ascending**
      * before chunking so each chunk's step-2 `FOR UPDATE` locks a contiguous ascending range and
      * chunks proceed low→high — preserving the global ascending-PK lock-order invariant (see
-     * docs/arch-concurrency.md). Assumes the PK's PHP sort order matches the database's `ORDER BY`
+     * https://github.com/Nandan108/attrecord/blob/main/docs/arch-concurrency.md). Assumes the PK's PHP sort order matches the database's `ORDER BY`
      * (true for integer and binary PKs).
      *
      * @param list<Record>        $dirtyRecords already beforeSave()'d and validate()'d

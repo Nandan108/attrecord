@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-07-29
+
+One feature, shipped narrow on purpose. A table keyed on two columns could not be declared at all,
+so its DDL had to be hand-written — and hand-written DDL is invisible to schema-evolution tooling,
+which compares a live database against *declared* schemas. Such tables sat outside the managed set
+and drifted unobserved. They can now be described, and only described: every CRUD path refuses
+them, because half-supporting a composite key is worse than not supporting one.
+
 ### Added
 
 - **`#[PrimaryKey(columns: [...])]` — composite primary keys, DDL-only.** A table keyed
@@ -40,6 +48,13 @@ All notable changes to this project are documented here. The format is based on
 
   `TableSchema::pkColumns()` returns the whole key on any schema — one entry for an ordinary
   table — and is what the three dialects now emit from.
+
+### Fixed
+
+- **Doc references in shipped source no longer dangle.** Five `@see docs/…` comments used paths
+  relative to a `docs/` directory that is `export-ignore`d, so inside a consumer's `vendor/` they
+  pointed at nothing. They are absolute GitHub URLs now, matching what `attrecord-migrations`
+  already did.
 
 
 ## [0.13.0] - 2026-07-29

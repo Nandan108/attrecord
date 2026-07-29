@@ -259,7 +259,7 @@ interface SqlDialect
      * as a *non-PK* column (the inline `INTEGER PRIMARY KEY AUTOINCREMENT` form is a
      * CREATE-TABLE-only concern, and an ALTER-added column is never the PK).
      *
-     * @see docs/arch-migrations.md §8.1
+     * @see https://github.com/Nandan108/attrecord/blob/main/docs/arch-migrations.md §8.1
      */
     public function buildColumnLine(ColumnDefinition $col): string;
 
@@ -271,7 +271,7 @@ interface SqlDialect
      * Public for the same reason as {@see buildColumnLine()}: `ALTER TABLE … ADD {fragment}`
      * must render identically to CREATE.
      *
-     * @see docs/arch-migrations.md §8.1
+     * @see https://github.com/Nandan108/attrecord/blob/main/docs/arch-migrations.md §8.1
      */
     public function buildForeignKeyLine(ForeignKeyDefinition $fk): string;
 
@@ -284,7 +284,7 @@ interface SqlDialect
      * `ALTER TABLE … ALTER COLUMN … TYPE <type>` needs the type token alone, and it must render
      * identically to CREATE.
      *
-     * @see docs/arch-migrations.md §8.1
+     * @see https://github.com/Nandan108/attrecord/blob/main/docs/arch-migrations.md §8.1
      */
     public function renderColumnType(ColumnDefinition $col): string;
 }
