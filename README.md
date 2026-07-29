@@ -46,7 +46,7 @@ attrecord's *typed, schema-authoring, contention-hardened* design diverges from 
 | Pattern | Active Record | Active Record | Data Mapper | Active Record |
 | Framework coupling | Standalone, framework-agnostic | Standalone, framework-agnostic | Standalone (Symfony-friendly) | Laravel-native (standalone via `illuminate/database`) |
 | Runtime dependencies | **None** | **None** (PDO ext) | Several (DBAL, …) | `illuminate/*` |
-| Install footprint (`vendor/`) | **1 package · ~375 KB** | 1 package · ~280 KB | ~22 packages · ~1.6 MB | ~26 packages · ~2.3 MB |
+| Install footprint (`vendor/`) | **1 package · ~440 KB** | 1 package · ~280 KB | ~22 packages · ~1.6 MB | ~26 packages · ~2.3 MB |
 | Schema mapping | PHP 8 attributes only | **Introspected from the live DB** (no code mapping) | Attributes / XML / YAML | Conventions (schema lives in migrations, not the model) |
 | Column access / typing | **Typed properties** (psalm-checked) | Dynamic `__get`/`__set` (magic) | Typed properties | Dynamic `$attributes` (magic) |
 | Schema changes | Emits `CREATE TABLE` from attributes; forward migrations via a planned opt-in add-on (not in core) | None — the DB *is* the source; no DDL/migrations | `doctrine/migrations` | Laravel migrations |
@@ -63,7 +63,16 @@ attrecord's *typed, schema-authoring, contention-hardened* design diverges from 
 
 <sub>attrecord and php-activerecord ship as a **single package with zero runtime dependencies**
 (php-activerecord needs a PDO driver extension); their figures are shipped source — attrecord `src/`
-≈ 375 KB at v0.8.0 (only ~163 KB is code; the rest is docblocks), php-activerecord `lib/` ≈ 280 KB.
+≈ 440 KB at v0.13.0 across 67 files, php-activerecord `lib/` ≈ 280 KB. attrecord's raw figure is
+mostly prose: only ~180 KB of it is code, the other 59% docblocks — so it compresses to **137 KB
+zipped**, and the whole `composer require` download (adding README + LICENSE + composer.json) is
+**~167 KB zipped**. All four columns are uncompressed on-disk sizes, which is the number that
+matters for a `vendor/` directory; the zipped figures are attrecord's alone and are not a
+comparison. The optional
+[attrecord-migrations](https://github.com/Nandan108/attrecord-migrations) companion adds ~134 KB
+(~61 KB zipped) for consumers who want schema convergence. The dependency points one way — it
+requires attrecord, not the reverse — so `composer require nandan108/attrecord` never brings it
+along; you get it only by asking for it.
 Doctrine and Eloquent figures are a full `composer require --prefer-dist` install **including their
 dependency trees** (`doctrine/orm`, `illuminate/database`); counts and sizes vary by version.</sub>
 
@@ -126,7 +135,7 @@ This README is the narrative guide. Deeper references live in [`docs/`](docs/):
 - [arch-concurrency.md](docs/arch-concurrency.md) — production locking model, retryable-error classification, `RetryingDbSession`
 - [arch-bulk-update-scaling.md](docs/arch-bulk-update-scaling.md) — the join-based bulk-`UPDATE` emitter and `upsertAll()` chunking rationale
 - [arch-unit-of-work.md](docs/arch-unit-of-work.md) — the planned `attrecord-uow` companion package: opt-in identity map + state-derived flush (and the non-goals fence)
-- [arch-migrations.md](docs/arch-migrations.md) — the planned `attrecord-migrations` companion package: declarative schema convergence (introspect → diff → classified `plan()`/`apply()`), not migration files
+- [arch-migrations.md](docs/arch-migrations.md) — the design behind the [`attrecord-migrations`](https://github.com/Nandan108/attrecord-migrations) companion package: declarative schema convergence (introspect → diff → classified `plan()`/`apply()`), not migration files
 - [design-note-no-name-auto-conversion.md](docs/design-note-no-name-auto-conversion.md) — why no auto snake/camel conversion
 
 ---
@@ -803,9 +812,10 @@ determines nullability. Use this for portable schemas across both engines.
 
 `ALTER TABLE` generation, schema diffing, and migration tracking are
 **deliberately out of scope** of attrecord itself. They belong in a separate
-package built on top of `TableSchema` — designed as the `attrecord-migrations`
-companion (declarative convergence, not migration files); see
-[docs/arch-migrations.md](docs/arch-migrations.md).
+package built on top of `TableSchema` — which is what the
+[`attrecord-migrations`](https://github.com/Nandan108/attrecord-migrations) companion
+is (declarative convergence, not migration files); see
+[docs/arch-migrations.md](docs/arch-migrations.md) for the design.
 
 → See [docs/ddl-generation.md](docs/ddl-generation.md) for the full reference
 (type rendering table, column-line format, validation rules, testing strategy).
