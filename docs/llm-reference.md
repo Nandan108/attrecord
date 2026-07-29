@@ -111,6 +111,14 @@ Rules:
 - Every persisted column is a **public property** with a `#[Column]` attribute. Properties
   without `#[Column]` are ignored by persistence (e.g. relation properties).
 - The PK property is identified by `#[Table(primaryKey: …)]` (default `'id'`).
+- **Composite PKs** are declared at class level with `#[PrimaryKey(columns: ['a','b'])]`,
+  which is **DDL-only**: `TableSchema::$compositePk` is non-null, `pkColumns()` returns the
+  members, all three dialects emit `PRIMARY KEY (a, b)` — and every CRUD path (`save()`,
+  `delete()`, `upsertByUniqueKey()`, `RecordSet` bulk writers, `load()`, `LockSet::acquire()`)
+  **throws**, since each identifies a row by a single `$pk`. Reads via `where()` still work.
+  Mutually exclusive with `#[Table(primaryKey:)]`; needs >= 2 columns; members must be declared
+  columns and not auto-increment. Use for a table whose R/W is raw SQL but whose shape should
+  be declared so the DDL producer and `attrecord-migrations` can see it.
 - `name:` on `#[Column]` overrides the SQL column name; the PHP property name is unchanged.
   There is **no** automatic snake_case↔camelCase conversion
   ([design note](design-note-no-name-auto-conversion.md)).

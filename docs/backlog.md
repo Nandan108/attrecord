@@ -41,26 +41,3 @@ pruning + near-free retention via `DROP PARTITION` (vs. expensive `DELETE`).
 
 `FULLTEXT KEY (…)` for natural-language search columns. No consumer need on the horizon;
 captured only for completeness.
-
-### Composite primary keys, DDL-only — *wanted by a real consumer, contained*
-
-`#[Table(primaryKey:)]` takes a single **column name**, so `PRIMARY KEY (subject_id, slot_id)`
-cannot be declared at all. Every junction table, and every "one row per (a, b)" state table, is
-therefore outside what a Record can describe.
-
-Making the *whole* runtime composite-key-aware is a large change — `save()`, `find()`, the
-relation loader, `LockSet`'s ascending-PK ordering and `RecordSet`'s keyed upsert all assume a
-single PK column. But the consumer need is narrower than that:
-
-- **DDL-only is enough.** A `DdlOnlyRecord` exists to declare a table whose R/W stays raw SQL. For
-  those, only `buildCreateTable` has to understand a composite key; the CRUD paths never run.
-  Something like `#[PrimaryKey(columns: ['subject_id', 'slot_id'])]` (class-level, mutually
-  exclusive with `#[Table(primaryKey:)]`), with the runtime CRUD refusing such a Record outright
-  rather than half-supporting it.
-- **The consumer:** InvFlux's `invflux_inventory_state` is keyed `(subject_id, slot_id)` and is
-  the one table left outside its managed schema purely for this reason — it hand-writes DDL that
-  the differ then cannot see. `attrecord-migrations` would need a matching comparison path (it
-  currently classifies any composite/changed PK as Manual, which is safe but means such a table
-  would report drift forever if declared).
-- **Status:** deferred 2026-07-27 while dogfooding convergence into InvFlux; safe to defer there
-  because nothing references that table, so it has no creation-order constraint.

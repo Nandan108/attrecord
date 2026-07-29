@@ -304,6 +304,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      */
     public function upsertAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false, ?array $ignoreColumns = null, bool | array | null $readBack = null, UpsertStrategy $strategy = UpsertStrategy::Locked): ?SaveResult
     {
+        if ([] !== $this->records) {
+            $this->records[0]::schema()->assertSingleColumnPk('upsertAll()');
+        }
         if (empty($this->records)) {
             return null;
         }
@@ -666,6 +669,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      */
     public function insertAll(?array $ignoreColumns = null, bool | array | null $readBack = null, OnConflict $onConflict = OnConflict::Fail): ?SaveResult
     {
+        if ([] !== $this->records) {
+            $this->records[0]::schema()->assertSingleColumnPk('insertAll()');
+        }
         if (empty($this->records)) {
             return null;
         }
@@ -946,6 +952,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      */
     public function upsertAllByUniqueKey(string $conflictKey): ?SaveResult
     {
+        if ([] !== $this->records) {
+            $this->records[0]::schema()->assertSingleColumnPk('upsertAllByUniqueKey()');
+        }
         if (empty($this->records)) {
             return null;
         }
@@ -1398,6 +1407,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      */
     public function deleteAll(): int
     {
+        if ([] !== $this->records) {
+            $this->records[0]::schema()->assertSingleColumnPk('deleteAll()');
+        }
         if (empty($this->records)) {
             return 0;
         }
@@ -1449,6 +1461,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      */
     public function load(string ...$relationPaths): static
     {
+        if ([] !== $this->records) {
+            $this->records[0]::schema()->assertSingleColumnPk('load()');
+        }
         $this->loadTree(self::buildPathTree($relationPaths), false);
 
         return $this;

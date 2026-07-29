@@ -11,6 +11,7 @@ use Nandan108\Attrecord\Attribute\ForeignKey;
 use Nandan108\Attrecord\Attribute\Index;
 use Nandan108\Attrecord\Attribute\LockTier;
 use Nandan108\Attrecord\Attribute\MysqlTableOptions;
+use Nandan108\Attrecord\Attribute\PrimaryKey as PrimaryKeyAttr;
 use Nandan108\Attrecord\Attribute\Relation;
 use Nandan108\Attrecord\Attribute\Table;
 use Nandan108\Attrecord\Attribute\UniqueKey;
@@ -88,6 +89,15 @@ final class TableSchema
     private function __construct(
         public readonly string $tableName,
         public readonly string $pk,
+        /**
+         * Ordered PK member columns when the table declares a **composite** primary key
+         * ({@see PrimaryKeyAttr}), else null. Non-null makes the schema **DDL-only**: `$pk` holds
+         * the first member purely to keep internal invariants intact and is not a row identifier,
+         * so every CRUD path calls {@see assertSingleColumnPk()} and refuses.
+         *
+         * @var list<string>|null
+         */
+        public readonly ?array $compositePk,
         public readonly ?int $lockTier,
         array $columns,
         array $relations,
@@ -114,6 +124,44 @@ final class TableSchema
             array_filter(array_keys($columns), fn (string $n): bool => $n !== $pk),
         );
         $this->pkProp = $columns[$pk]->propertyName;
+    }
+
+    /**
+     * The primary key's member columns, in key order — one entry for an ordinary table, two or
+     * more for a composite key. Use this wherever the *whole* key matters (DDL emission); use
+     * `$pk` only on paths that have already established the key is single-column.
+     *
+     * @return list<string>
+     */
+    public function pkColumns(): array
+    {
+        return $this->compositePk ?? [$this->pk];
+    }
+
+    /**
+     * Guard for every path that identifies, writes or locks a row **by primary key**.
+     *
+     * A composite-PK Record is a table *description*, not a CRUD target: `$pk` holds only the
+     * first member, so `find($id)`, a keyed upsert or an ascending-PK lock would each silently
+     * address the wrong rows. Throwing names the operation, so the message says what to do
+     * instead rather than surfacing as a confusing miss further down.
+     *
+     * @throws SchemaException when the schema declares a composite primary key
+     */
+    public function assertSingleColumnPk(string $operation): void
+    {
+        if (null === $this->compositePk) {
+            return;
+        }
+
+        throw new SchemaException(sprintf(
+            '%s: %s is not available on a Record with a composite primary key (%s). '
+            .'#[PrimaryKey(columns: ...)] declares a table for DDL and schema-evolution tooling only; '
+            .'read and write it with raw SQL, or give the table a single-column key.',
+            $this->tableName,
+            $operation,
+            implode(', ', $this->compositePk),
+        ));
     }
 
     /** @var array<string, true>|null memoized: the set of assignable column property names */
@@ -244,6 +292,36 @@ final class TableSchema
         $tableAttr = $tableAttrs[0]->newInstance();
         $tableName = \Nandan108\Attrecord\Record::tablePrefix().$tableAttr->name;
         $pk = $tableAttr->primaryKey;
+
+        // --- #[PrimaryKey(columns:)] — composite, DDL-only ---
+        $compositePk = null;
+        $pkAttrs = $reflClass->getAttributes(PrimaryKeyAttr::class);
+        if ([] !== $pkAttrs) {
+            $compositePk = $pkAttrs[0]->newInstance()->columns;
+            if (\count($compositePk) < 2) {
+                throw new SchemaException(sprintf(
+                    '%s: #[PrimaryKey] needs at least two columns (got %d); a single-column key is #[Table(primaryKey: ...)].',
+                    $class,
+                    \count($compositePk),
+                ));
+            }
+            if (\count($compositePk) !== \count(array_unique($compositePk))) {
+                throw new SchemaException(sprintf('%s: #[PrimaryKey] lists a column more than once.', $class));
+            }
+            // A #[Table(primaryKey:)] left at its "id" default is not a deliberate contradiction;
+            // an explicit one is, and silently letting the composite win would hide the mistake.
+            if ('id' !== $tableAttr->primaryKey) {
+                throw new SchemaException(sprintf(
+                    '%s declares both #[PrimaryKey(columns: ...)] and #[Table(primaryKey: "%s")]; use one.',
+                    $class,
+                    $tableAttr->primaryKey,
+                ));
+            }
+            // `pk` stays a single string for every internal invariant that depends on it
+            // (pkProp, dataColumnNames). It is the first member and is *never* a valid row
+            // identifier here — which is why every CRUD path refuses this schema outright.
+            $pk = $compositePk[0];
+        }
 
         // --- #[LockTier] ---
         $lockTierAttrs = $reflClass->getAttributes(LockTier::class);
@@ -493,6 +571,25 @@ final class TableSchema
             );
         }
 
+        if (null !== $compositePk) {
+            foreach ($compositePk as $pkCol) {
+                if (!isset($columns[$pkCol])) {
+                    throw new SchemaException(sprintf(
+                        '%s: #[PrimaryKey] names "%s", but no #[Column] with that column name exists.',
+                        $class,
+                        $pkCol,
+                    ));
+                }
+                if ($columns[$pkCol]->autoIncrement) {
+                    throw new SchemaException(sprintf(
+                        '%s: #[PrimaryKey] member "%s" is auto-increment; no engine allows that in a composite key.',
+                        $class,
+                        $pkCol,
+                    ));
+                }
+            }
+        }
+
         // --- Class-level #[UniqueKey] ---
         foreach ($reflClass->getAttributes(UniqueKey::class) as $ukAttrRefl) {
             $ukAttr = $ukAttrRefl->newInstance();
@@ -563,6 +660,7 @@ final class TableSchema
         return self::$cache[$class] = new self(
             tableName: $tableName,
             pk: $pk,
+            compositePk: $compositePk,
             lockTier: $lockTier,
             columns: $columns,
             relations: $relations,
@@ -954,21 +1052,24 @@ final class TableSchema
             }
         }
 
+        // Named arguments, not positional: this call sits far from the constructor, and a
+        // positionally-passed list silently re-aims every argument after any new parameter.
         return new self(
-            $this->tableName,
-            $this->pk,
-            $this->lockTier,
-            [...$this->columns, ...$columns],
-            $this->relations,
-            $this->reflProperties,
-            [...$this->uniqueKeys, ...$uniqueKeys],
-            [...$this->indexes, ...$indexes],
-            $this->foreignKeys,
-            $this->comment,
-            $this->mysqlOptions,
-            $this->createdAtColumn,
-            $this->updatedAtColumn,
-            $this->versionColumn,
+            tableName: $this->tableName,
+            pk: $this->pk,
+            compositePk: $this->compositePk,
+            lockTier: $this->lockTier,
+            columns: [...$this->columns, ...$columns],
+            relations: $this->relations,
+            reflProperties: $this->reflProperties,
+            uniqueKeys: [...$this->uniqueKeys, ...$uniqueKeys],
+            indexes: [...$this->indexes, ...$indexes],
+            foreignKeys: $this->foreignKeys,
+            comment: $this->comment,
+            mysqlOptions: $this->mysqlOptions,
+            createdAtColumn: $this->createdAtColumn,
+            updatedAtColumn: $this->updatedAtColumn,
+            versionColumn: $this->versionColumn,
         );
     }
 }

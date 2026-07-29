@@ -38,6 +38,27 @@ The method lives on `SqlDialect` and both dialects implement it. `PgsqlDialect`
 emits the PostgreSQL equivalent of the same schema — see
 [PostgreSQL output](#postgresql-output) below.
 
+### Composite primary keys (DDL-only, v0.13+)
+
+`#[Table(primaryKey:)]` names a single column. For a table keyed on two or more —
+a junction table, or any "one row per (a, b)" state table — declare it at class level:
+
+```php
+#[Table(name: 'inventory_state')]
+#[PrimaryKey(columns: ['subject_id', 'slot_id'])]
+final class InventoryStateRecord extends Record { ... }
+```
+
+All three dialects emit one `PRIMARY KEY (a, b)` clause. `TableSchema::pkColumns()` returns the
+member list (a single-entry list on an ordinary table), and `TableSchema::$compositePk` is
+non-null only for these.
+
+Such a Record is **DDL-only**: every CRUD path throws, because they identify a row by a single
+`$pk`. That is the point rather than a limitation — the table's reads and writes stay raw SQL,
+while its *shape* becomes declared, so the DDL producer emits it and `attrecord-migrations` can
+compare it against the live database. A hand-written table is invisible to the differ and drifts
+unobserved; this is what makes it visible without pretending the runtime supports composite keys.
+
 ### Two seams for evolution tooling (v0.12.0)
 
 Both exist because the `attrecord-migrations` companion needed them against a real schema, and

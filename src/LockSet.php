@@ -52,6 +52,10 @@ final class LockSet
         $tiered = [];
         foreach ($targets as $class => $ids) {
             $schema = TableSchema::fromClass($class);
+            // Ascending-PK ordering is the deadlock guarantee; on a composite key `pk` is only
+            // the first member, so the ordering would be neither total nor the one other paths
+            // use — two orderings of one table is precisely the deadlock this class prevents.
+            $schema->assertSingleColumnPk('LockSet::acquire()');
             if (null === $schema->lockTier) {
                 throw new MissingLockTierException($class);
             }

@@ -969,6 +969,8 @@ abstract class Record
      */
     public function save(bool $force = false, ?array $ignoreColumns = null, bool | array | null $readBack = null, OnConflict $onConflict = OnConflict::Fail): static
     {
+        static::schema()->assertSingleColumnPk('save()');
+
         // Append-only rows are write-once: a new-record save (INSERT) is a legitimate append,
         // but saving an existing record (UPDATE) is forbidden.
         if (!$this->_isNew && $this instanceof AppendOnly) {
@@ -1323,6 +1325,7 @@ abstract class Record
      */
     public function delete(): void
     {
+        static::schema()->assertSingleColumnPk('delete()');
         self::assertNotAppendOnly('delete()');
         $this->beforeDelete();
 
@@ -1496,6 +1499,7 @@ abstract class Record
      */
     public function upsertByUniqueKey(string $conflictKey, array $updateColumns, bool $preserveAutoIncrement = false): void
     {
+        static::schema()->assertSingleColumnPk('upsertByUniqueKey()');
         $schema = static::schema();
         $conn = static::connection();
         $dialect = $conn->dialect;

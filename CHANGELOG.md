@@ -6,6 +6,42 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **`#[PrimaryKey(columns: [...])]` — composite primary keys, DDL-only.** A table keyed
+  `(subject_id, slot_id)` could not be declared at all: `#[Table(primaryKey:)]` takes one column
+  name. Every junction table, and every "one row per (a, b)" state table, was therefore outside
+  what a Record could describe — so its DDL had to be hand-written, and hand-written DDL is
+  invisible to `attrecord-migrations`, which compares the live database against *declared*
+  schemas. Such a table silently sat outside the managed set and drifted unobserved.
+
+  ```php
+  #[Table(name: 'inventory_state')]
+  #[PrimaryKey(columns: ['subject_id', 'slot_id'])]
+  final class InventoryStateRecord extends Record { ... }
+  ```
+
+  **DDL-only, and enforced rather than merely documented.** `save()`, `delete()`,
+  `upsertByUniqueKey()`, the `RecordSet` bulk writers, relation loading and `LockSet::acquire()`
+  all throw on such a Record, naming the operation and the key. Half-support would be worse than
+  none: `$pk` holds only the first member, so a keyed upsert would target the wrong row and
+  `LockSet`'s ascending-PK ordering would be neither total nor the ordering the table's other
+  access paths use — and two orderings of one table is precisely the deadlock `LockSet` exists to
+  prevent. Reads are *not* blocked, a `WHERE`-based `SELECT` needing no primary key.
+
+  Making the whole runtime composite-key-aware is a much larger change (`find()`, the relation
+  loader, the keyed upsert, lock ordering); this is the contained version that solves the actual
+  consumer need — describing the table so tooling can see it — without pretending to the rest.
+
+  Validation refuses what would be silently wrong: fewer than two columns (that is
+  `#[Table(primaryKey:)]` spelled longer), a repeated member, a member that is not a declared
+  column, an auto-increment member (no engine allows one in a composite key), and declaring both
+  PK forms at once (a contradiction, not an override).
+
+  `TableSchema::pkColumns()` returns the whole key on any schema — one entry for an ordinary
+  table — and is what the three dialects now emit from.
+
+
 ## [0.13.0] - 2026-07-29
 
 Four places where the code and its own contract disagreed, three of them found by consumers rather

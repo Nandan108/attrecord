@@ -321,7 +321,7 @@ final class PgsqlDialect implements SqlDialect
         foreach ($schema->columns as $col) {
             $lines[] = '  '.$this->buildColumnLine($col);
         }
-        $lines[] = '  PRIMARY KEY ('.$this->quoteIdentifier($schema->pk).')';
+        $lines[] = '  PRIMARY KEY ('.\implode(', ', \array_map($this->quoteIdentifier(...), $schema->pkColumns())).')';
 
         foreach ($schema->uniqueKeys as $keyName => $colNames) {
             $quotedCols = \implode(', ', \array_map($this->quoteIdentifier(...), $colNames));

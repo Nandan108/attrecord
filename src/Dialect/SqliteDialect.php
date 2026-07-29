@@ -350,7 +350,7 @@ final class SqliteDialect implements SqlDialect
             $lines[] = '  '.$this->renderColumnLine($col, $inlinePk && $col->name === $schema->pk);
         }
         if (!$inlinePk) {
-            $lines[] = '  PRIMARY KEY ('.$this->quoteIdentifier($schema->pk).')';
+            $lines[] = '  PRIMARY KEY ('.\implode(', ', \array_map($this->quoteIdentifier(...), $schema->pkColumns())).')';
         }
 
         foreach ($schema->uniqueKeys as $keyName => $colNames) {

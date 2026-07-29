@@ -335,7 +335,7 @@ final class MysqlDialect implements SqlDialect
         }
 
         // PRIMARY KEY
-        $lines[] = '  PRIMARY KEY ('.$this->quoteIdentifier($schema->pk).')';
+        $lines[] = '  PRIMARY KEY ('.\implode(', ', \array_map($this->quoteIdentifier(...), $schema->pkColumns())).')';
 
         // UNIQUE KEYs
         foreach ($schema->uniqueKeys as $keyName => $colNames) {
