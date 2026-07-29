@@ -6,7 +6,34 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-29
+
+Four places where the code and its own contract disagreed, three of them found by consumers rather
+than by the test suite. `set()` documented that it ignored unknown keys and instead created dynamic
+properties; `LockSet::acquire()` asked for a session and then reached past it to a global for the
+dialect it actually needed; `$ignoreColumns` could not express the one case a caller had; and the
+enum CHECK constraint stated its members in a form nothing could read back. Each fix makes the
+declared surface and the behaviour agree, and the first two are **breaking** — pre-1.0, marked, and
+mechanical to migrate.
+
 ### Changed
+
+- **`Record::set()` now throws on a key that is not a column property** — *breaking*. The docblock
+  said unknown keys were silently ignored; the loop assigned them regardless. `Record` declares no
+  `__set` and no `#[AllowDynamicProperties]`, so a typo'd key created a **dynamic property**: the
+  write appeared to succeed, the value was retrievable, and no column ever read it — the exact
+  failure the contract existed to prevent. It was also an upgrade blocker, dynamic property
+  creation being deprecated on PHP 8.2 and an `Error` on PHP 9, so every caller passing a superset
+  array (a request payload, a CSV row, a fixture with extra keys) was carrying one.
+
+  The exception names the key, the class and the known properties. Keys are *property* names, which
+  differ from column names wherever a column declares a `name:` override, so the check runs against
+  the new memoized `TableSchema::columnProperties()` rather than the column map. `newWith()`
+  delegates to `set()` and inherits the behaviour.
+
+  Filtering to declared properties — making the code match the old docblock — was the alternative,
+  and was rejected: silently dropping a typo'd key is strictly worse than rejecting it. Callers
+  that deliberately pass a superset must now filter at the call site.
 
 - **`LockSet::acquire()` takes a `Connection`, not a `DbSession`** — *breaking*. It does not merely
   execute SQL, it **generates** it: quoting the table and PK, and asking whether the backend has a
@@ -55,6 +82,33 @@ All notable changes to this project are documented here. The format is based on
   the column type. `attrecord-migrations` >= 0.3 uses this to close the corresponding blind spot.
 
 ### Added
+
+- **`$ignoreColumns` can drop a column from the UPDATE only**, on `save()`, `upsertAll()` and its
+  chunked and lockless paths. It used to act symmetrically — out of the INSERT (letting the DB
+  default fire) *and* out of the UPDATE `SET`. The asymmetric case had no expression at all: write
+  a value on insert, then never overwrite it. A flat list cannot say it, because dropping the
+  column from the insert means a new row never receives the value; dirty tracking cannot either,
+  since such a column is legitimately dirty from having just been computed.
+
+  ```php
+  ignoreColumns: ['status']                     // both phases — unchanged
+  ignoreColumns: ['update' => ['parent_id']]    // inserted once, then protected
+  ```
+
+  The two shapes are told apart by key type (a list has integer keys), so a column literally named
+  `update` is never ambiguous. `save()` needs no phase resolution beyond picking the set — one save
+  is an insert or an update, never both.
+
+  There is deliberately **no `insert` phase**, for a structural reason rather than a scope cut: in
+  the deadlock-safe keyed upsert the UPDATE step reads each value from the row the INSERT step
+  wrote, so a column absent from the insert cannot be an update target. The sets can diverge in one
+  direction only, and an `insert` key would therefore mean different things per strategy. A flat
+  list already covers "drop it from both".
+
+  An include-list (name the columns to write) was considered and rejected: an INSERT must emit a
+  complete row, so naming a subset yields not a partial write but a row carrying PHP property
+  defaults in every unnamed column. On the update side it is largely redundant — dirty tracking
+  already scopes the `SET`.
 
 - **`Record::clearConnections()`** — forget the default and all per-class connections. Test
   support: asserting that a component works on the connection it was *given* is an assertion only a

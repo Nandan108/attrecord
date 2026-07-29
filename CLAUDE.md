@@ -71,7 +71,6 @@ updated through the Locked keyed-upsert path on PG, add typed literals to the de
 ## Commit & release
 
 - Detailed, conventional commits. Breaking changes get a `!` and a **Breaking** note in the CHANGELOG.
-- `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` trailer.
 - **Releases are CI-gated — do NOT hand-create `vX.Y.Z` tags.** Packagist publishes on tag existence,
   so the tag must be a *product* of green CI, not a precondition. Flow: promote the CHANGELOG section →
   push the release commit to `main` → run the **Release** workflow (Actions → Release → Run workflow →
