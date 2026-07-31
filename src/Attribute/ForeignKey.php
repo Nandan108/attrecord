@@ -26,10 +26,10 @@ use Nandan108\Attrecord\Schema\TableSchema;
  * Class-level and repeatable, mirroring the class-level form of {@see Index}: the local column
  * is a plain {@see Column} on this Record, and the FK is declared on the class.
  *
- *     #[Table(name: 'invflux_inventory_ledger')]
- *     #[ForeignKey(column: 'subject_id', references: Subject::class, onDelete: ForeignKeyAction::Restrict)]
- *     #[ForeignKey(column: 'from_slot_id', references: 'invflux_slotspace', onDelete: ForeignKeyAction::SetNull)]
- *     final class InventoryLedger extends Record { ... }
+ *     #[Table(name: 'audit_entries')]
+ *     #[ForeignKey(column: 'author_id', references: Author::class, onDelete: ForeignKeyAction::Restrict)]
+ *     #[ForeignKey(column: 'revision_id', references: 'revisions', onDelete: ForeignKeyAction::SetNull)]
+ *     final class AuditEntry extends Record { ... }
  *
  * Use {@see Relation} when you also want object hydration of the target; `#[ForeignKey]` is the
  * constraint-only declaration (and the only option when the target has no Record). The target

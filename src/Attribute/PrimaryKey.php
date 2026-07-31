@@ -8,9 +8,9 @@ namespace Nandan108\Attrecord\Attribute;
  * Declares a **composite** primary key — `PRIMARY KEY (a, b)` — for a Record that exists to
  * describe a table, not to be read and written through attrecord's CRUD.
  *
- *     #[Table(name: 'inventory_state')]
- *     #[PrimaryKey(columns: ['subject_id', 'slot_id'])]
- *     final class InventoryStateRecord extends Record { ... }
+ *     #[Table(name: 'article_tag')]
+ *     #[PrimaryKey(columns: ['article_id', 'tag_id'])]
+ *     final class ArticleTagRecord extends Record { ... }
  *
  * **DDL-only, and enforced as such.** Every CRUD path — `save()`, `find()`, `delete()`, the
  * `RecordSet` bulk writers, relation loading, `LockSet::acquire()` — assumes a single PK column

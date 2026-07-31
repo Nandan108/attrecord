@@ -15,11 +15,11 @@ use Nandan108\Attrecord\DbSession;
  *   $session = new CapturingDbSession();
  *   Record::setConnection(new Connection($session, new MysqlDialect()));
  *
- *   $po = new PurchaseOrder();
- *   $po->status = 'draft';
- *   $po->save();
+ *   $article = new Article();
+ *   $article->status = 'draft';
+ *   $article->save();
  *
- *   assertStringContainsString('INSERT INTO `invflux_purchase_orders`', $session->lastSql());
+ *   assertStringContainsString('INSERT INTO `articles`', $session->lastSql());
  *   assertSame(['draft', ...], $session->lastParams());
  *
  * @api

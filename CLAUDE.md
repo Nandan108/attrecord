@@ -26,6 +26,17 @@ difference, not a style one.
 5. **Docs move with the code.** A public-surface change updates **all three** doc homes:
    `README.md` (the human narrative guide), `docs/llm-reference.md` (the exhaustive AI-facing
    reference), and `CHANGELOG.md`. The README is the one that silently drifts — check it explicitly.
+6. **No consumer domain vocabulary in reference material.** attrecord is general-purpose
+   infrastructure published on its own. Docblock examples, README/`docs/` snippets and test
+   fixtures must read as if the library had no particular consumer: a reader has no idea what a
+   *subject*, a *slot* or a *purchase order* is, and should not need to. Reach for neutral shapes
+   — an `article`/`tag` junction, `audit_entries`, `owner_id`/`item_id` — that carry the same
+   structure without the domain.
+
+   The line is **domain versus architecture**, not "never name a consumer": the design docs
+   (`docs/arch-*.md`) cite InvFlux at length and should, because they record *why* a mechanism
+   exists and the driving consumer is part of that history. Reference material is different — it
+   ships to everyone as the description of the API.
 
 ## Cross-dialect gotchas (the running list — add to it every time one bites)
 

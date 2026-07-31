@@ -44,9 +44,9 @@ emits the PostgreSQL equivalent of the same schema — see
 a junction table, or any "one row per (a, b)" state table — declare it at class level:
 
 ```php
-#[Table(name: 'inventory_state')]
-#[PrimaryKey(columns: ['subject_id', 'slot_id'])]
-final class InventoryStateRecord extends Record { ... }
+#[Table(name: 'article_tag')]
+#[PrimaryKey(columns: ['article_id', 'tag_id'])]
+final class ArticleTagRecord extends Record { ... }
 ```
 
 All three dialects emit one `PRIMARY KEY (a, b)` clause. `TableSchema::pkColumns()` returns the
