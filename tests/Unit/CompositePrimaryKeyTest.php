@@ -50,10 +50,10 @@ final class CompositePrimaryKeyTest extends TestCase
 
     public function testTheSchemaCarriesTheOrderedMemberList(): void
     {
-        $schema = TableSchema::fromClass(CompositeStateRecord::class);
+        $schema = TableSchema::fromClass(CompositeKeyRecord::class);
 
-        self::assertSame(['subject_id', 'slot_id'], $schema->compositePk);
-        self::assertSame(['subject_id', 'slot_id'], $schema->pkColumns());
+        self::assertSame(['owner_id', 'item_id'], $schema->compositePk);
+        self::assertSame(['owner_id', 'item_id'], $schema->pkColumns());
     }
 
     /** Key order is physical index order, so it must survive exactly as declared. */
@@ -75,16 +75,16 @@ final class CompositePrimaryKeyTest extends TestCase
     /** @return iterable<string, array{object, string}> */
     public static function dialects(): iterable
     {
-        yield 'mysql' => [new MysqlDialect(), 'PRIMARY KEY (`subject_id`, `slot_id`)'];
-        yield 'pgsql' => [new PgsqlDialect(), 'PRIMARY KEY ("subject_id", "slot_id")'];
-        yield 'sqlite' => [new SqliteDialect(), 'PRIMARY KEY ("subject_id", "slot_id")'];
+        yield 'mysql' => [new MysqlDialect(), 'PRIMARY KEY (`owner_id`, `item_id`)'];
+        yield 'pgsql' => [new PgsqlDialect(), 'PRIMARY KEY ("owner_id", "item_id")'];
+        yield 'sqlite' => [new SqliteDialect(), 'PRIMARY KEY ("owner_id", "item_id")'];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('dialects')]
     public function testEveryDialectEmitsTheCompositeKey(object $dialect, string $expected): void
     {
         /** @var \Nandan108\Attrecord\SqlDialect $dialect */
-        $sql = $dialect->buildCreateTable(TableSchema::fromClass(CompositeStateRecord::class));
+        $sql = $dialect->buildCreateTable(TableSchema::fromClass(CompositeKeyRecord::class));
 
         self::assertStringContainsString($expected, $sql);
         // Exactly one PRIMARY KEY clause — not one per member.
@@ -141,7 +141,7 @@ final class CompositePrimaryKeyTest extends TestCase
         $this->expectException(SchemaException::class);
         $this->expectExceptionMessage('save() is not available');
 
-        (new CompositeStateRecord())->save();
+        (new CompositeKeyRecord())->save();
     }
 
     public function testDeleteRefuses(): void
@@ -149,7 +149,7 @@ final class CompositePrimaryKeyTest extends TestCase
         $this->expectException(SchemaException::class);
         $this->expectExceptionMessage('delete()');
 
-        (new CompositeStateRecord())->delete();
+        (new CompositeKeyRecord())->delete();
     }
 
     public function testBulkWritesRefuse(): void
@@ -157,7 +157,7 @@ final class CompositePrimaryKeyTest extends TestCase
         $this->expectException(SchemaException::class);
         $this->expectExceptionMessage('upsertAll()');
 
-        (new RecordSet([new CompositeStateRecord()]))->upsertAll();
+        (new RecordSet([new CompositeKeyRecord()]))->upsertAll();
     }
 
     /**
@@ -172,7 +172,7 @@ final class CompositePrimaryKeyTest extends TestCase
 
         LockSet::acquire(
             new Connection(new CapturingDbSession(), new MysqlDialect()),
-            [CompositeStateRecord::class => [1]],
+            [CompositeKeyRecord::class => [1]],
         );
     }
 
@@ -180,10 +180,10 @@ final class CompositePrimaryKeyTest extends TestCase
     public function testTheRefusalNamesTheKeyAndThePointOfTheFeature(): void
     {
         try {
-            (new CompositeStateRecord())->save();
+            (new CompositeKeyRecord())->save();
             self::fail('expected a SchemaException');
         } catch (SchemaException $e) {
-            self::assertStringContainsString('subject_id, slot_id', $e->getMessage(), 'names the actual key');
+            self::assertStringContainsString('owner_id, item_id', $e->getMessage(), 'names the actual key');
             self::assertStringContainsString('raw SQL', $e->getMessage(), 'says what to do instead');
         }
     }
@@ -195,7 +195,7 @@ final class CompositePrimaryKeyTest extends TestCase
         Record::setConnection(new Connection($session, new MysqlDialect()));
 
         // where() executes immediately and returns the result set.
-        CompositeStateRecord::where('subject_id', 1);
+        CompositeKeyRecord::where('owner_id', 1);
 
         self::assertNotSame([], $session->allCalls(), 'a WHERE-based read still runs');
     }
@@ -203,17 +203,17 @@ final class CompositePrimaryKeyTest extends TestCase
 
 // ---------------------------------------------------------------- fixtures
 
-/** @internal a hot-path state table: one row per (subject, slot), read and written by raw SQL */
-#[Table(name: 'attrecord_composite_state')]
-#[PrimaryKey(columns: ['subject_id', 'slot_id'])]
+/** @internal a state table keyed on two columns, read and written by raw SQL */
+#[Table(name: 'attrecord_composite_probe')]
+#[PrimaryKey(columns: ['owner_id', 'item_id'])]
 #[LockTier(1)]
-final class CompositeStateRecord extends Record
+final class CompositeKeyRecord extends Record
 {
     #[Column(ColumnType::IntUnsigned)]
-    public int $subject_id = 0;
+    public int $owner_id = 0;
 
     #[Column(ColumnType::Binary, length: 16)]
-    public string $slot_id = '';
+    public string $item_id = '';
 
     #[Column(ColumnType::IntUnsigned)]
     public int $quantity = 0;

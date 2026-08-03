@@ -136,6 +136,7 @@ This README is the narrative guide. Deeper references live in [`docs/`](docs/):
 - [arch-bulk-update-scaling.md](docs/arch-bulk-update-scaling.md) — the join-based bulk-`UPDATE` emitter and `upsertAll()` chunking rationale
 - [arch-unit-of-work.md](docs/arch-unit-of-work.md) — the planned `attrecord-uow` companion package: opt-in identity map + state-derived flush (and the non-goals fence)
 - [arch-migrations.md](docs/arch-migrations.md) — the design behind the [`attrecord-migrations`](https://github.com/Nandan108/attrecord-migrations) companion package: declarative schema convergence (introspect → diff → classified `plan()`/`apply()`), not migration files
+- [arch-schema-extension.md](docs/arch-schema-extension.md) — how a package that does not own a Record adds columns to its table: subclassing for typed access, root-delta registration, the default-or-nullable rule, and why dynamic properties are rejected
 - [design-note-no-name-auto-conversion.md](docs/design-note-no-name-auto-conversion.md) — why no auto snake/camel conversion
 
 ---

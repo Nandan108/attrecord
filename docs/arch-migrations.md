@@ -440,6 +440,15 @@ core never calls the companion; the companion only reads core's model and sessio
 cheapest possible coupling, and it is what makes this package safe to defer, version, or abandon
 without touching core.
 
+## 8.9 Extension by other packages
+
+Once a project's schema is declared and converged, the next question is how *other* packages extend
+it. The Record-level patterns — subclassing for typed access, root-delta registration, and the
+default-or-nullable rule that keeps extenders from breaking each other's inserts — are in
+[arch-schema-extension.md](arch-schema-extension.md). Convergence needs no change to support them:
+a host folds extender deltas into the desired schema before planning, exactly as it already folds
+runtime-known columns via `TableSchema::extendedWith()`.
+
 ## 9. The consumer proof: what InvFlux retires
 
 Every one of these hand-rolled sites is this package's job description (all present in
