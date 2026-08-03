@@ -495,6 +495,27 @@ A conflict key that includes a **generated column** (e.g. a `STORED`
 `IFNULL(scope_id, 0)`) works too — set the property to the value the DB will compute so
 the lookup matches; the column is still skipped in the INSERT (the DB recomputes it).
 
+#### Auto-managed timestamps
+
+`#[CreatedAt]` / `#[UpdatedAt]` are honoured here as everywhere else — and they must be **declared**,
+not left to a `DEFAULT CURRENT_TIMESTAMP` column default: attrecord writes every non-generated column
+in an INSERT, so an unset property binds an explicit `NULL`, which defeats the default and fails a
+`NOT NULL` column.
+
+The default (atomic) mode cannot know which branch the database will take, so it errs toward the
+INSERT-only meaning of each attribute:
+
+- **`#[UpdatedAt]`** is stamped and also added to the conflict `SET`, so the row gets a fresh value
+  whichever branch runs. Name the column yourself in `$updateColumns` and yours wins — the
+  auto-assignment only fills a gap, as in `updateWhere()`. It bumps unconditionally, since with no
+  loaded row there is no way to tell a no-op update from a real one.
+- **`#[CreatedAt]`** is stamped **only when the property is null**, so a value you set (importing
+  historical rows) survives, and it never enters the `SET`, so a conflicting write leaves the stored
+  one alone.
+
+With `preserveAutoIncrement: true` the row is resolved first, so the branch *is* known and each
+attribute applies exactly: both on the INSERT, `#[UpdatedAt]` alone on the UPDATE.
+
 #### Expression SET — preserve or compute a column on conflict
 
 `$updateColumns` also accepts a **`column => RawSql` map**, so a conflict-UPDATE can set a column to

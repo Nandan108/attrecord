@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-08-03
+
+One fix. A write path that quietly skipped the auto-managed timestamps, which on a `NOT NULL`
+timestamp column is not a wrong value but a failed write.
+
 ### Fixed
 
 - **`Record::upsertByUniqueKey()` now honours `#[CreatedAt]` / `#[UpdatedAt]`.** It built its INSERT
@@ -689,7 +694,10 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/Nandan108/attrecord/compare/v0.14.0...v0.14.1
+[0.14.0]: https://github.com/Nandan108/attrecord/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/Nandan108/attrecord/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/Nandan108/attrecord/compare/v0.11.0...v0.12.0
 [0.1.1]: https://github.com/Nandan108/attrecord/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Nandan108/attrecord/releases/tag/v0.1.0
