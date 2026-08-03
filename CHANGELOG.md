@@ -6,6 +6,33 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Record::upsertByUniqueKey()` now honours `#[CreatedAt]` / `#[UpdatedAt]`.** It built its INSERT
+  parameters straight off the properties without ever stamping the auto-managed timestamps — the one
+  write path that skipped them, where `save()` and `RecordSet::upsertAll()` both call
+  `applyAutoTimestamps()`. Because attrecord writes *every* non-generated column, an unstamped
+  property bound an explicit `NULL`, and an explicit `NULL` defeats a `DEFAULT CURRENT_TIMESTAMP`
+  column default. On a `NOT NULL` timestamp column that is not a wrong value but a hard write
+  failure, so the first upsert of any new key threw.
+
+  Both variants are covered, each as precisely as it can be:
+
+  - The **atomic** path (`INSERT … ON DUPLICATE KEY UPDATE` / `ON CONFLICT DO UPDATE`) cannot know
+    which branch the database will take. `#[UpdatedAt]` is stamped and mirrored into the conflict
+    SET — unless the caller drives that column themselves, matching how `updateWhere()` fills only
+    a gap — so the row gets a fresh value either way. `#[CreatedAt]` is stamped **only when the
+    property is null**, so a value the caller supplied (importing historical rows) survives; it is
+    never added to the SET, so a conflicting write leaves the stored one alone.
+  - The **burn-free** path (`preserveAutoIncrement: true`) resolves the row first and so knows its
+    branch exactly: `#[CreatedAt]` and `#[UpdatedAt]` on the INSERT, `#[UpdatedAt]` alone on the
+    UPDATE, with `#[CreatedAt]` left untouched on the row *and* on the object.
+
+  A blind upsert bumps `#[UpdatedAt]` unconditionally: with no loaded row to diff against there is
+  no way to tell a no-op update from a real one, which is already how the set-based UPDATE paths
+  behave. `RecordSet::upsertAllByUniqueKey()` was never affected — it resolves PKs and delegates to
+  `upsertAll()`, which stamps correctly.
+
 ## [0.14.0] - 2026-07-29
 
 One feature, shipped narrow on purpose. A table keyed on two columns could not be declared at all,

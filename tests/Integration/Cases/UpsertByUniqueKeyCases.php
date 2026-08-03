@@ -12,6 +12,7 @@ use Nandan108\Attrecord\Exception\SchemaException;
 use Nandan108\Attrecord\RawSql;
 use Nandan108\Attrecord\Record;
 use Nandan108\Attrecord\RecordSet;
+use Nandan108\Attrecord\Tests\Fixtures\TimestampedUpsertRecord;
 use Nandan108\Attrecord\Tests\Fixtures\UpsertByUniqueKeyRecord;
 
 /**
@@ -31,7 +32,7 @@ trait UpsertByUniqueKeyCases
     /** @return list<class-string<Record>> */
     protected static function recordClasses(): array
     {
-        return [UpsertByUniqueKeyRecord::class];
+        return [UpsertByUniqueKeyRecord::class, TimestampedUpsertRecord::class];
     }
 
     public function testSingleUpsertInsertsThenUpdatesWithoutBurningAutoIncrement(): void
@@ -126,6 +127,111 @@ trait UpsertByUniqueKeyCases
         } catch (\Throwable $e) {
             $this->assertTrue($session->isDuplicateKeyError($e));
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Auto-managed timestamps (#[CreatedAt] / #[UpdatedAt])
+    // -----------------------------------------------------------------
+
+    /**
+     * Re-read the stored row for `$code` as `[created_at, updated_at]`, formatted to the microsecond.
+     *
+     * @return array{0: string, 1: string}
+     */
+    private function storedStamps(string $code): array
+    {
+        $row = TimestampedUpsertRecord::findOne('code = ?', [$code])
+            ?? throw new \RuntimeException("no attrecord_ts_upsert row for code '{$code}'");
+
+        // Both columns are NOT NULL, so a null here means the write bypassed the auto-stamping —
+        // which on a real backend would already have failed the INSERT.
+        return [
+            ($row->created_at ?? throw new \RuntimeException("created_at is null for '{$code}'"))->format('Y-m-d H:i:s.u'),
+            ($row->updated_at ?? throw new \RuntimeException("updated_at is null for '{$code}'"))->format('Y-m-d H:i:s.u'),
+        ];
+    }
+
+    public function testAtomicUpsertStampsTimestampsOnInsertAndBumpsUpdatedAtOnConflict(): void
+    {
+        // The columns are NOT NULL, so an unstamped property would bind an explicit NULL and the
+        // INSERT would fail outright — the write landing at all is half the assertion.
+        $a = new TimestampedUpsertRecord();
+        $a->code = 'alpha';
+        $a->name = 'Alpha';
+        $a->upsertByUniqueKey('uniq_ts_code', ['name']);
+
+        [$created, $updated] = $this->storedStamps('alpha');
+
+        // Conflict branch: updated_at moves, created_at is left to the stored row. The SET is driven
+        // by #[UpdatedAt] alone here — the caller never named the column.
+        usleep(2000);
+        $b = new TimestampedUpsertRecord();
+        $b->code = 'alpha';
+        $b->name = 'Alpha v2';
+        $b->upsertByUniqueKey('uniq_ts_code', ['name']);
+
+        [$created2, $updated2] = $this->storedStamps('alpha');
+        $this->assertSame('Alpha v2', TimestampedUpsertRecord::findOne('code = ?', ['alpha'])?->name);
+        $this->assertSame($created, $created2);
+        $this->assertGreaterThan($updated, $updated2);
+    }
+
+    public function testBurnFreeUpsertStampsOnInsertAndBumpsUpdatedAtOnUpdate(): void
+    {
+        $a = new TimestampedUpsertRecord();
+        $a->code = 'beta';
+        $a->name = 'Beta';
+        $a->upsertByUniqueKey('uniq_ts_code', ['name'], preserveAutoIncrement: true);
+
+        [$created, $updated] = $this->storedStamps('beta');
+
+        usleep(2000);
+        $b = new TimestampedUpsertRecord();
+        $b->code = 'beta';
+        $b->name = 'Beta v2';
+        $b->upsertByUniqueKey('uniq_ts_code', ['name'], preserveAutoIncrement: true);
+
+        // This variant knows it took the UPDATE branch, so created_at is exact — never restamped,
+        // on the row or on the object.
+        [$created2, $updated2] = $this->storedStamps('beta');
+        $this->assertSame($created, $created2);
+        $this->assertGreaterThan($updated, $updated2);
+        $this->assertNull($b->created_at, 'the UPDATE branch must not stamp #[CreatedAt] onto the object');
+    }
+
+    public function testUpsertPreservesAnExplicitlySetCreatedAt(): void
+    {
+        // Importing historical rows: a created_at the caller supplied is an INSERT-only value and
+        // must survive, unlike updated_at which is always bumped.
+        $historic = new \DateTimeImmutable('2001-02-03 04:05:06.000000');
+        $a = new TimestampedUpsertRecord();
+        $a->code = 'gamma';
+        $a->name = 'Gamma';
+        $a->created_at = $historic;
+        $a->upsertByUniqueKey('uniq_ts_code', ['name']);
+
+        [$created, $updated] = $this->storedStamps('gamma');
+        $this->assertSame($historic->format('Y-m-d H:i:s.u'), $created);
+        $this->assertGreaterThan($historic->format('Y-m-d H:i:s.u'), $updated);
+    }
+
+    public function testCallerDrivenUpdatedAtWins(): void
+    {
+        (new TimestampedUpsertRecord())->withCode('delta', 'Delta')->upsertByUniqueKey('uniq_ts_code', ['name']);
+
+        // An explicit SET for the #[UpdatedAt] column is left alone — the auto-assignment only fills
+        // a gap, exactly as the set-based UPDATE paths do.
+        $pinned = '2010-01-01 00:00:00.000000';
+        $b = new TimestampedUpsertRecord();
+        $b->code = 'delta';
+        $b->name = 'Delta v2';
+        $b->upsertByUniqueKey('uniq_ts_code', [
+            'name',
+            'updated_at' => new RawSql('?', [$pinned]),
+        ]);
+
+        [, $updated] = $this->storedStamps('delta');
+        $this->assertSame($pinned, $updated);
     }
 
     // -----------------------------------------------------------------

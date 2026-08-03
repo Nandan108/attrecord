@@ -167,6 +167,18 @@ Auto-managed timestamps, typed `?\DateTimeImmutable`. `#[CreatedAt]` is set on I
 `updateWhere()` / `updateByWhere()` / `updateByUniqueKey()` — in all cases unless the caller sets the
 column explicitly.
 
+**Declare them; don't lean on a column default.** attrecord writes *every* non-generated column in an
+INSERT, so an unstamped property binds an explicit `NULL` — and an explicit `NULL` defeats
+`DEFAULT CURRENT_TIMESTAMP`, failing a `NOT NULL` column outright. A DDL default is a backstop for
+raw-SQL writes, never a substitute for the attribute.
+
+On the **blind** upsert paths (`upsertByUniqueKey()`, where the row is keyed by a unique key rather
+than a PK the caller holds) the branch the database will take isn't knowable, so: `#[UpdatedAt]` is
+always bumped and mirrored into the conflict `SET`, while `#[CreatedAt]` is stamped **only when the
+property is null** and never enters the `SET` — a caller-supplied value survives, and a conflicting
+write leaves the stored one alone. With `preserveAutoIncrement: true` the row is resolved first, so
+the branch *is* known and each is applied exactly.
+
 ### `#[Version]` (property-level, on an integer column)
 
 Optimistic-locking version — *detects* a concurrent write instead of preventing it. Seeded to `1` on

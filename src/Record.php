@@ -881,6 +881,41 @@ abstract class Record
     }
 
     /**
+     * Set auto-managed timestamps for a **blind** upsert — one whose branch (INSERT vs conflicting
+     * UPDATE) is not known from loaded state, because the row is keyed by a unique key rather than
+     * by a PK the caller holds.
+     *
+     * {@see Attribute\UpdatedAt} is always bumped: with no loaded row to compare against there is no
+     * way to tell a no-op update from a real one, so this matches the set-based UPDATE paths
+     * ({@see autoUpdatedAtAssignment()}), which also bump unconditionally.
+     *
+     * {@see Attribute\CreatedAt} is stamped only when the property is still null. It is an
+     * INSERT-only value, so a record that already carries one — hydrated, or set explicitly when
+     * importing historical rows — keeps it.
+     *
+     * @return string|null the #[UpdatedAt] column name when one was stamped, so the caller can add
+     *                     it to the conflict-branch SET; null when the schema declares none
+     */
+    private function applyBlindUpsertTimestamps(TableSchema $schema): ?string
+    {
+        $now = new \DateTimeImmutable();
+
+        if (null !== $schema->createdAtColumn) {
+            $createdProp = $schema->propFor($schema->createdAtColumn);
+            if (null === ($this->{$createdProp} ?? null)) {
+                $this->{$createdProp} = $now;
+            }
+        }
+
+        if (null === $schema->updatedAtColumn) {
+            return null;
+        }
+        $this->{$schema->propFor($schema->updatedAtColumn)} = $now;
+
+        return $schema->updatedAtColumn;
+    }
+
+    /**
      * Build the auto-managed `updated_at = now` assignment for the bulk-UPDATE paths
      * ({@see updateWhere()} / {@see updateByWhere()} / {@see updateByUniqueKey()}), so #[UpdatedAt]
      * stays consistent with {@see save()}. Returns `[setFragment, boundValue]`, or null when the
@@ -1525,6 +1560,15 @@ abstract class Record
             return;
         }
 
+        // Stamp #[CreatedAt]/#[UpdatedAt] before the INSERT values are read off the properties, then
+        // mirror #[UpdatedAt] into the SET (unless the caller drives that column themselves) so the
+        // conflict branch lands the same fresh value the INSERT branch would have written. A `null`
+        // expression renders `col = <incoming>` and binds no extra param, so appending is order-safe.
+        $updatedAtCol = $this->applyBlindUpsertTimestamps($schema);
+        if (null !== $updatedAtCol && !\array_key_exists($updatedAtCol, $setExprs)) {
+            $setExprs[$updatedAtCol] = null;
+        }
+
         $columnNames = [];
         $params = [];
         foreach ($schema->columns as $colName => $col) {
@@ -1590,6 +1634,15 @@ abstract class Record
             );
 
             if (null !== $existing) {
+                // A known UPDATE: bump #[UpdatedAt] only. #[CreatedAt] belongs to the stored row and
+                // is never in the SET, so leaving the property alone keeps the object honest too.
+                if (null !== $schema->updatedAtColumn) {
+                    $this->{$schema->propFor($schema->updatedAtColumn)} = new \DateTimeImmutable();
+                    if (!in_array($schema->updatedAtColumn, $updateColumns, true)) {
+                        $updateColumns[] = $schema->updatedAtColumn;
+                    }
+                }
+
                 $setParts = [];
                 $setParams = [];
                 foreach ($updateColumns as $colName) {
@@ -1607,6 +1660,9 @@ abstract class Record
                 }
                 $this->{$schema->pkProp} = ColumnSerializer::fromDb($pkValue, $schema->columns[$pk], $existing);
             } else {
+                // A known INSERT — stamp both timestamps exactly as save() does for a new record.
+                $this->applyAutoTimestamps(true);
+
                 $columnNames = [];
                 $params = [];
                 foreach ($schema->columns as $colName => $col) {
