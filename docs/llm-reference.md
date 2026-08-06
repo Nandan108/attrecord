@@ -147,7 +147,7 @@ All attributes are `readonly`. Param order below matches the constructor.
 | `length` | `?int` | `null` | `VarChar`/`Char`/`Binary`/`VarBinary`/`Bit`. Required for `VarChar`/`Char` at DDL build. |
 | `precision` | `?int` | `null` | `Decimal`: total digits (required, with `scale`). `DateTime`/`Timestamp`: fractional-seconds 0–6 (optional). |
 | `scale` | `?int` | `null` | `Decimal` scale (required); forbidden elsewhere. |
-| `default` | `int\|float\|string\|bool\|null` | `null` | Literal DEFAULT (DDL). Mutually exclusive with `defaultExpr`. On INSERT a **NOT-NULL** column left `null` is omitted so this default fires (see note below); a **nullable** column with a default still writes its `null` (null means NULL, not "use the default"). |
+| `default` | `int\|float\|string\|bool\|\BackedEnum\|null` | `null` | Literal DEFAULT (DDL). Mutually exclusive with `defaultExpr`. A **backed enum case** is accepted and unwrapped to its backing value, so `default: Status::Active` ≡ `default: 'active'` (see note below). On INSERT a **NOT-NULL** column left `null` is omitted so this default fires; a **nullable** column with a default still writes its `null` (null means NULL, not "use the default"). |
 | `defaultExpr` | `?string` | `null` | Raw SQL DEFAULT expression (e.g. `'CURRENT_TIMESTAMP'`). Same insert-omission rule as `default`. |
 | `onUpdate` | `?string` | `null` | Raw SQL `ON UPDATE` (MySQL DDL only; ignored by PG). |
 | `comment` | `?string` | `null` | Column comment (DDL). |
@@ -158,6 +158,22 @@ All attributes are `readonly`. Param order below matches the constructor.
 
 Property-level `#[UniqueKey('name')]` / `#[Index('name')]` (no `columns`) attach the property's
 column to a single-column key.
+
+**`default:` with a backed enum case.** `default: Status::Active` names the vocabulary that owns the
+value instead of restating it, so a renumbered case can't leave a stale default behind. The case is
+unwrapped where the attribute becomes a `ColumnDefinition`, so every dialect and the DDL producer
+still see only scalars and the emitted SQL is byte-identical to the literal form.
+
+Works on **any** column type — the unwrap keys off the value, not `ColumnType::Enum` — so an
+int-backed case suits an `Int` column and a string-backed one a `VarChar`. Backing value and column
+type must still agree: a string-backed case on an `Int` column silently emits `DEFAULT 0`, the same
+coercion a mismatched string literal has always received (inherited, not introduced).
+
+On **PHP 8.1 this is the only form available**. The obvious workaround, `default: Status::Active->value`,
+is a property fetch, and property fetches aren't valid constant expressions before 8.2 — written in an
+attribute it doesn't degrade, it makes the whole class unparseable the moment it autoloads
+(`Constant expression contains invalid operations`). Since that only bites on 8.1, a package
+declaring `php ^8.1` can ship it broken indefinitely while every dev machine runs 8.3.
 
 ### `#[CreatedAt]` / `#[UpdatedAt]` (property-level, on a DateTime/Timestamp column)
 

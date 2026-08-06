@@ -6,6 +6,36 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-06
+
+One feature, backward compatible — the `default:` parameter type is widened, not changed. It reads
+better, and on PHP 8.1 it is the only form that works at all.
+
+### Added
+
+- **`#[Column(default: …)]` accepts a backed enum case.** `default: Status::Active` now works
+  alongside `default: 'active'`. The case is unwrapped to its backing value at the single point
+  where the attribute becomes a `ColumnDefinition`, so `ColumnDefinition`, every dialect and the DDL
+  producer keep dealing in scalars only — the emitted SQL is byte-identical to the literal form.
+
+  ```php
+  #[Column(ColumnType::Enum, enumValues: ['draft', 'active'], default: Status::Active)]
+  public string $status = 'active';
+  ```
+
+  Two reasons, and the second is the urgent one.
+
+  It reads better: the attribute names the vocabulary that owns the value instead of restating it,
+  so a renumbered case cannot leave a stale default behind.
+
+  More importantly, **it is the only form available below PHP 8.2.** The natural workaround,
+  `default: Status::Active->value`, is a property fetch, and property fetches are not valid constant
+  expressions before 8.2. Written in an attribute it does not degrade gracefully: the whole class
+  becomes unparseable and the process dies with *"Constant expression contains invalid operations"*
+  the moment it autoloads. Because the failure is confined to 8.1, a package declaring `php ^8.1`
+  can ship that false claim for months while every developer machine runs 8.3 — which is exactly
+  how a downstream package found it.
+
 ## [0.14.1] - 2026-08-03
 
 One fix. A write path that quietly skipped the auto-managed timestamps, which on a `NOT NULL`
@@ -694,7 +724,8 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/Nandan108/attrecord/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/Nandan108/attrecord/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/Nandan108/attrecord/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/Nandan108/attrecord/compare/v0.12.0...v0.13.0

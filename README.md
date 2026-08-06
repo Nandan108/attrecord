@@ -20,6 +20,7 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
   relation types incl. **many-to-many** (pivot) and **has-many-through**
 - Lifecycle hooks — `beforeSave()`/`afterSave()`, `beforeDelete()`/`afterDelete()`, `afterLoad()`
 - Auto-managed timestamps via `#[CreatedAt]` / `#[UpdatedAt]`
+- Column defaults may be given as a **backed enum case** (`default: Status::Active`) — the only form that parses on PHP 8.1
 - find-or-create ergonomics — `firstOrNew()` / `findOrCreate()` / `updateOrCreate()` (array-match)
 - Aggregate finders — `countWhere()` / `sumWhere()` / `avgWhere()` / `minWhere()` / `maxWhere()` / `existsWhere()`
 - Domain invariants enforced at assignment and save time via a `validate()` hook
@@ -704,13 +705,38 @@ carry extra columns. Adding a name the class already declares throws.
 ```php
 #[Column(
     type:        ColumnType::DateTime,
-    default:     null,                    // literal default (int|float|string|bool|null)
+    default:     null,                    // literal default (int|float|string|bool|BackedEnum|null)
     defaultExpr: 'CURRENT_TIMESTAMP',     // raw SQL default expression (mutually exclusive with default)
     onUpdate:    'CURRENT_TIMESTAMP',     // raw SQL ON UPDATE clause
     comment:     'When the order was placed',
     enumValues:  null,                    // list<string> — required for ColumnType::Enum and Set
 )]
 ```
+
+#### `default:` accepts a backed enum case
+
+```php
+#[Column(ColumnType::Enum, enumValues: ['draft', 'active'], default: Status::Active)]
+public string $status = 'active';
+```
+
+Equivalent to `default: 'active'` — the case is unwrapped where the attribute becomes a
+`ColumnDefinition`, so every dialect and the DDL producer still deal in scalars and the emitted SQL
+is byte-identical. Preferred anyway, because the attribute names the vocabulary that owns the value
+rather than restating it: renumber a case and the default follows.
+
+**Any column type, not just `ColumnType::Enum`.** The unwrap is on the value, not the column, so an
+int-backed case is a fine default for an `Int` column and a string-backed one for a `VarChar`. The
+backing value and the column type do have to agree, though: a *string*-backed case on an `Int`
+column yields `DEFAULT 0`, silently — the same coercion a mismatched string literal has always got,
+so this is a sharp edge inherited rather than introduced.
+
+On **PHP 8.1 it is the only form that works.** The obvious alternative,
+`default: Status::Active->value`, is a property fetch — not a valid constant expression before 8.2 —
+and in an attribute it doesn't degrade gracefully: the class becomes unparseable and the process
+dies with *"Constant expression contains invalid operations"* as soon as it autoloads. Because that
+only bites on 8.1, a package declaring `php ^8.1` can ship it broken for months while every
+developer machine runs 8.3.
 
 `#[Table]` carries only cross-dialect fields (`name`, `primaryKey`, `comment`).
 A key spanning several columns is declared separately with
@@ -1693,7 +1719,7 @@ that has to be remembered everywhere.
     length:        255,         // for VarChar/Char/Binary/VarBinary; also enforced at DDL generation time
     precision:     10,          // Decimal: total digits (required, paired with scale); DateTime/Timestamp: fractional-seconds 0-6 (optional)
     scale:         2,           // Decimal scale (required); forbidden on other types
-    default:       null,        // literal DEFAULT value (int|float|string|bool|null); see DDL section
+    default:       null,        // literal DEFAULT value (int|float|string|bool|BackedEnum|null); see DDL section
     defaultExpr:   null,        // raw SQL DEFAULT expression, e.g. 'CURRENT_TIMESTAMP'
     onUpdate:      null,        // raw SQL ON UPDATE expression, e.g. 'CURRENT_TIMESTAMP'
     comment:       null,        // column comment (DDL-only)
