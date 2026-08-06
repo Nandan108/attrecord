@@ -462,7 +462,12 @@ final class TableSchema
                     scale: $colAttr->scale,
                     uniqueKeyNames: $ukNames,
                     indexNames: $ixNames,
-                    default: $colAttr->default,
+                    // A backed-enum default is unwrapped here, at the single point where the
+                    // attribute becomes a definition, so ColumnDefinition and every dialect keep
+                    // dealing in scalars only.
+                    default: $colAttr->default instanceof \BackedEnum
+                        ? $colAttr->default->value
+                        : $colAttr->default,
                     defaultExpr: $colAttr->defaultExpr,
                     onUpdate: $colAttr->onUpdate,
                     comment: $colAttr->comment,
