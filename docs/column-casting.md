@@ -333,6 +333,104 @@ Casters have **no effect on generated DDL**. A casted column's SQL type is exact
 its `#[Column]` declares — a value object stored in a `ColumnType::Json` column still
 emits `JSON`. Casting is purely a runtime value mapping.
 
+### `JsonCaster` does not require a `Json` column
+
+Only the *auto-attach* rule above is tied to `ColumnType::Json`. An **explicit** caster
+attribute wins unconditionally, so a JSON payload can live in any string column:
+
+```php
+#[Column(ColumnType::VarChar, length: 128, nullable: true)]
+#[JsonCaster]
+public ?array $meta = null;
+```
+
+That emits `VARCHAR(128)` and round-trips normally — encode on write, decode on read.
+
+Worth doing when the payload is **small and bounded**, for two reasons that have nothing
+to do with bytes on disk (InnoDB stores a short `TEXT` inline much like a `VARCHAR`, so
+the size argument is weaker than it looks):
+
+- **Indexability.** A `VARCHAR` takes a full index and can be `UNIQUE`; `LONGTEXT` needs a
+  prefix index and cannot practically be unique on the whole value.
+- **In-memory temp tables.** `GROUP BY` / `ORDER BY` / `DISTINCT` touching a `TEXT` column
+  can force the internal temp table to disk on MariaDB. A `VARCHAR` avoids that.
+
+What you give up: the engine's own JSON validation (MariaDB attaches `json_valid()` to a
+real `JSON` column), and on PostgreSQL you get `varchar` rather than `JSONB` — no jsonb
+operators, no GIN index. MySQL/MariaDB JSON functions still work on a string column, since
+they parse it, so `JSON_EXTRACT(meta, '$.x')` is unaffected.
+
+> **Size it generously, and make overflow loud.** `{"from":0,"to":2}` is already 17 bytes;
+> one nested key clears 32. If a payload outgrows the column, a strict `sql_mode` raises an
+> error — but a permissive one **truncates the write silently**, and truncated JSON is
+> *invalid* JSON. The failure then surfaces much later as a `JsonException` on read, far
+> from its cause. Don't rely on the server's mode being strict: assert the encoded length in
+> the Record's `validate()` hook.
+
+Note that `nullable:` is a **column constraint and is independent of the PHP type** — the
+`?` on `?array $meta` is not consulted. That separation is deliberate: a property routinely
+has to hold `null` for the window *before its value exists*, while the column stays
+`NOT NULL`. Two canonical cases, differing only in who fills the gap:
+
+```php
+#[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+public ?int $id = null;                       // the database supplies it, on INSERT
+
+#[Column(ColumnType::DateTime, precision: 6)]
+#[CreatedAt]
+public ?\DateTimeImmutable $created_at = null; // attrecord supplies it, before the INSERT
+```
+
+Inferring `nullable:` from the PHP type would get both of these exactly backwards.
+
+This shape is also where a gap bites hardest, so it is worth stating what *cannot* rescue
+it: **a DDL default is not a fallback.** attrecord writes every non-generated column, so an
+unset property binds an explicit `NULL` — and an explicit `NULL` overrides
+`DEFAULT CURRENT_TIMESTAMP` rather than deferring to it. On a `NOT NULL` column the result
+is not a wrong value but a failed write. Declare `#[CreatedAt]` / `#[UpdatedAt]`; treat the
+column default as a backstop for raw-SQL paths only.
+
+---
+
+## JSON portability — object key order is not preserved everywhere
+
+`ColumnType::Json` maps to a different engine type per dialect, and they disagree about
+whether an object's key order survives a round trip:
+
+| Backend | attrecord emits | Object key order |
+| --- | --- | --- |
+| MySQL 8 | `JSON` (binary) | **normalized** — sorted by key length, then bytes |
+| PostgreSQL | `JSONB` | **normalized** — same rule; also de-duplicates keys and drops whitespace |
+| MariaDB | `LONGTEXT` + `json_valid()` | preserved verbatim |
+| SQLite | `TEXT` | preserved verbatim |
+
+So `{"from":0,"to":2,"a":1}` reads back unchanged on MariaDB/SQLite, and as
+`{"a":1,"to":2,"from":0}` on MySQL/PostgreSQL.
+
+**The rule: never depend on the key order of a JSON column.** JSON objects are unordered by
+specification (RFC 8259), so order-dependent code is already incorrect — the dialect split
+only makes it visible. Two practical consequences:
+
+- **Compare order-insensitively.** A test asserting a decoded array with `assertSame` is
+  order-sensitive and will pass on one backend and fail on another. Sort recursively first,
+  or compare with `==` rather than `===`.
+- **`GROUP BY` on a JSON column groups by the *stored* bytes.** On the normalizing backends
+  that works, because the engine canonicalizes for you. On MariaDB/SQLite it does not: the
+  same logical payload written with keys in two different orders forms two groups.
+
+This is easy to miss in development, because it only appears when the engine you test on
+differs from the engine you deploy to.
+
+If you ever need payloads that group or hash consistently, canonicalize **on write**
+(`toDb()`), never on read — the read side cannot fix bytes the server already stored.
+`JsonCaster` is deliberately non-final for exactly this, so a `SortedJsonCaster` overriding
+`toDb()` with a recursive key sort is a few lines. Two caveats before you reach for it:
+it is **not retroactive** (rows written earlier keep their original order and stay in
+separate groups until rewritten), and key order is only one component of byte-canonical
+JSON — encode flags, float formatting and duplicate keys matter too. For grouping
+specifically, a hash or generated column over the canonical form is usually the better
+design than `GROUP BY` on the payload itself, and it can be indexed.
+
 ---
 
 ## Limitations

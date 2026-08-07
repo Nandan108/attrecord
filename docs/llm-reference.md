@@ -604,6 +604,11 @@ Built-in casters (all extend abstract `Cast implements ColumnCaster`, used as at
 - `#[EpochCaster]` — integer epoch column ↔ `\DateTimeImmutable`.
 - `#[JsonCaster(array|bool $excludeNullFields = false)]` — JSON column ↔ array / `JsonCastable`
   object. `excludeNullFields` drops null keys on write (whole payload `true`, or a field list).
+  Only the *auto-attach* is tied to `ColumnType::Json`; declared explicitly it works on any string
+  column, so a small bounded payload can live in an indexable `VarChar` instead of `LONGTEXT`
+  (watch silent truncation under a permissive `sql_mode`). **Never depend on JSON object key
+  order** — MySQL/`JSONB` normalize it, MariaDB/SQLite preserve it, so order-sensitive comparison
+  and `GROUP BY` on the column behave differently per backend. Both: docs/column-casting.md.
 - `#[EnumCaster(class-string<\BackedEnum> $enum)]` — scalar column ↔ a **backed enum** (property typed
   as the enum). Normalizes the raw scalar to the enum backing before `::from()`, so int- and
   string-backed enums both round-trip; a non-backed enum is rejected at construction. Use it to type a
