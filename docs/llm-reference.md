@@ -52,6 +52,11 @@ Record::setConnection($conn);          // global default for all Records
 Record::setTablePrefix('wp_');         // optional; prepended to every Table name
 ```
 
+> **Two installs may share one database** (from 0.16.0). FK constraint names carry a 6-hex digest of
+> the prefix — `fk_ec2dc5_orders_customer_id` under `wp_` — because InnoDB scopes constraint names
+> per *database*, not per table; an unprefixed install omits the digest. Names past 64 chars fold the
+> column into a digest. See docs/ddl-generation.md.
+
 - `Connection` is a `final` value object: `public readonly DbSession $session`,
   `public readonly SqlDialect $dialect`. Its constructor runs
   `$dialect->connectionInitStatements()` against the session (per-connection baseline setup —

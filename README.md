@@ -229,6 +229,15 @@ Record::setTablePrefix('wp_');   // Order → `wp_orders`, OrderLine → `wp_ord
 The prefix is prepended to whatever appears in `#[Table(name: …)]`. Changing it clears
 the schema cache so subsequent operations see the new prefix.
 
+**Two installs may share one database** — two WordPress sites at `wp_` and `blog_`, or a platform
+cutover running two hosts against one database during the transition. This works because foreign-key
+constraint names carry a fixed-width digest of the prefix (`fk_ec2dc5_orders_customer_id` under
+`wp_`): InnoDB scopes constraint names per *database*, not per table, so without it the second
+install's `CREATE TABLE` fails with errno 121. **Before 0.16.0 that configuration silently did not
+work**, despite the multi-tenant use advertised above. Details, including how names stay inside the
+64-character identifier limit:
+[ddl-generation.md](docs/ddl-generation.md#fk-constraint-naming--and-why-several-installs-may-share-one-database).
+
 ### 3 — Use
 
 ```php

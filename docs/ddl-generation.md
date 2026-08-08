@@ -28,7 +28,7 @@ $sql     = $dialect->buildCreateTable($schema);
 //   PRIMARY KEY (`id`),
 //   UNIQUE KEY `uk_orders_external` (`external_ref`),
 //   KEY `idx_orders_status` (`status`, `created_at`),
-//   CONSTRAINT `fk_orders_customer_id`
+//   CONSTRAINT `fk_ec2dc5_orders_customer_id`
 //     FOREIGN KEY (`customer_id`) REFERENCES `wp_customers` (`id`)
 //     ON DELETE RESTRICT ON UPDATE RESTRICT
 // ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -234,9 +234,33 @@ always skipped.
 
 `ForeignKeyAction` is an enum: `Restrict`, `Cascade`, `SetNull`, `NoAction`, `SetDefault`.
 
-FK constraint names follow the convention `fk_{tableName}_{foreignKeyColumn}`.
-If two FKs would collide (same FK column on the same table — should never happen),
-schema build throws.
+### FK constraint naming — and why several installs may share one database
+
+Constraint names follow `fk_{prefixDigest}_{tableName}_{foreignKeyColumn}`, where `{prefixDigest}`
+is the first six hex characters of `sha256(Record::tablePrefix())` and `{tableName}` has that prefix
+removed. An **unprefixed** install omits the digest entirely and gets the plain
+`fk_{tableName}_{foreignKeyColumn}`. So `wp_orders.customer_id` yields
+`fk_ec2dc5_orders_customer_id`, and `ps_orders.customer_id` yields `fk_2f9391_orders_customer_id`.
+
+**Why the digest is there.** InnoDB scopes constraint names **per database, not per table**. Two
+installs can legitimately share one database — a platform cutover running two hosts against it
+during a transition, or two WordPress sites at `wp_` and `blog_` on shared hosting — and without the
+prefix in the name both derive the same one, so the second `CREATE TABLE` fails with errno 121,
+*"duplicate key on write or update"*. **Several installs in one database is supported from 0.16.0**;
+before that it silently was not.
+
+**Why a digest rather than the prefix itself.** Including the prefix verbatim also makes the name
+unique, but then its length grows with the prefix and overflows the 64-character identifier limit on
+a long or hardened one — and hardening guidance actively recommends long random prefixes. A
+fixed-width digest costs the same seven characters whatever the prefix.
+
+**Long names fold rather than overflow.** Even with the digest, a long table plus a long column can
+exceed 64. Past the limit the *column* is replaced by a 10-hex digest of `table.column` and the
+table name is kept — the more useful half when reading an error message. Deterministic, and provably
+within the limit for any input.
+
+If two FKs would collide (same FK column on the same table — should never happen), schema build
+throws.
 
 ### `#[ForeignKey]` — constraint-only foreign keys (class-level, repeatable)
 
@@ -427,7 +451,7 @@ $sql = (new PgsqlDialect())->buildCreateTable(TableSchema::fromClass(OrderRecord
 //   ...
 //   PRIMARY KEY ("id"),
 //   CONSTRAINT "uk_orders_external" UNIQUE ("external_ref"),
-//   CONSTRAINT "fk_orders_customer_id" FOREIGN KEY ("customer_id")
+//   CONSTRAINT "fk_ec2dc5_orders_customer_id" FOREIGN KEY ("customer_id")
 //     REFERENCES "wp_customers" ("id") ON DELETE RESTRICT ON UPDATE RESTRICT
 // );
 // CREATE INDEX IF NOT EXISTS "idx_orders_status" ON "wp_orders" ("status", "created_at")
