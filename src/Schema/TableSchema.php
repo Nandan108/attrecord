@@ -934,8 +934,7 @@ final class TableSchema
             }
             $seenColumns[$fkColumn] = true;
 
-            $shortened = (string) preg_replace('/^[a-z0-9]+_/', '', $tableName);
-            $constraintName = 'fk_'.('' !== $shortened ? $shortened : $tableName).'_'.$fkColumn;
+            $constraintName = self::foreignKeyConstraintName($tablePrefix, $tableName, $fkColumn);
 
             $fks[] = new ForeignKeyDefinition(
                 constraintName: $constraintName,

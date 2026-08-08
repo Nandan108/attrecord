@@ -146,7 +146,7 @@ final class MysqlDialectCreateTableTest extends TestCase
         // Default target column is `id`; constraint name follows the fk_<table>_<col>
         // convention (the leading "attrecord_" segment is stripped to stay compact).
         $this->assertStringContainsString(
-            'CONSTRAINT `fk_ledger_slot_id` FOREIGN KEY (`slot_id`) REFERENCES `attrecord_slots` (`id`) ON DELETE SET NULL ON UPDATE RESTRICT',
+            'CONSTRAINT `fk_attrecord_ledger_slot_id` FOREIGN KEY (`slot_id`) REFERENCES `attrecord_slots` (`id`) ON DELETE SET NULL ON UPDATE RESTRICT',
             $sql,
         );
     }
@@ -156,7 +156,7 @@ final class MysqlDialectCreateTableTest extends TestCase
         $sql = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlForeignKeyRecord::class));
 
         $this->assertStringContainsString(
-            'CONSTRAINT `fk_ledger_owner_id` FOREIGN KEY (`owner_id`) REFERENCES `attrecord_owners` (`owner_pk`) ON DELETE CASCADE ON UPDATE RESTRICT',
+            'CONSTRAINT `fk_attrecord_ledger_owner_id` FOREIGN KEY (`owner_id`) REFERENCES `attrecord_owners` (`owner_pk`) ON DELETE CASCADE ON UPDATE RESTRICT',
             $sql,
         );
     }
@@ -183,7 +183,7 @@ final class MysqlDialectCreateTableTest extends TestCase
         $sql = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlForeignKeyRecord::class));
 
         $this->assertStringContainsString(
-            'CONSTRAINT `fk_ledger_user_id` FOREIGN KEY (`user_id`) REFERENCES `attrecord_users` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT',
+            'CONSTRAINT `fk_attrecord_ledger_user_id` FOREIGN KEY (`user_id`) REFERENCES `attrecord_users` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT',
             $sql,
         );
     }

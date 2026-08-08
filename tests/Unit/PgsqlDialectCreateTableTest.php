@@ -251,7 +251,7 @@ final class PgsqlDialectCreateTableTest extends TestCase
         $sql = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlForeignKeyRecord::class));
 
         $this->assertStringContainsString(
-            'CONSTRAINT "fk_ledger_slot_id" FOREIGN KEY ("slot_id") REFERENCES "attrecord_slots" ("id") ON DELETE SET NULL ON UPDATE RESTRICT',
+            'CONSTRAINT "fk_attrecord_ledger_slot_id" FOREIGN KEY ("slot_id") REFERENCES "attrecord_slots" ("id") ON DELETE SET NULL ON UPDATE RESTRICT',
             $sql,
         );
     }

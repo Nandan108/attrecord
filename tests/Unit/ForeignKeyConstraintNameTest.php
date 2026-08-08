@@ -6,6 +6,7 @@ namespace Nandan108\Attrecord\Tests\Unit;
 
 use Nandan108\Attrecord\Record;
 use Nandan108\Attrecord\Schema\TableSchema;
+use Nandan108\Attrecord\Tests\Fixtures\DdlForeignKeyRecord;
 use Nandan108\Attrecord\Tests\Fixtures\DdlOrderRecord;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
@@ -75,6 +76,31 @@ final class ForeignKeyConstraintNameTest extends TestCase
         // No prefix → no discriminator needed, and the full table name is kept. Note it is *not*
         // stripped to `ddl_orders`: that stripping was the defect, guessing a prefix by regex.
         self::assertSame(['fk_attrecord_ddl_orders_customer_id'], $this->fkNamesForPrefix(''));
+    }
+
+    #[Test]
+    public function constraintOnlyForeignKeysAreDiscriminatedToo(): void
+    {
+        // #[ForeignKey] (class-level, no relation property) is named on a *separate* code path from
+        // #[Relation]. It was missed by the first pass of this fix, and nothing caught it because
+        // no test exercised that path with a prefix set — so every constraint-only FK still
+        // collided. Both paths are asserted here.
+        Record::setTablePrefix('wp_');
+        TableSchema::clearCache();
+        $wp = array_map(
+            static fn ($fk): string => $fk->constraintName,
+            TableSchema::fromClass(DdlForeignKeyRecord::class)->foreignKeys,
+        );
+
+        Record::setTablePrefix('ps_');
+        TableSchema::clearCache();
+        $ps = array_map(
+            static fn ($fk): string => $fk->constraintName,
+            TableSchema::fromClass(DdlForeignKeyRecord::class)->foreignKeys,
+        );
+
+        self::assertNotEmpty($wp);
+        self::assertSame([], array_intersect($wp, $ps), 'constraint-only FK names must not repeat across prefixes');
     }
 
     #[Test]
