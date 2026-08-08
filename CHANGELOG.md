@@ -68,23 +68,21 @@ names. Leaving them is safe; the reasoning is under the entry.
   *column* becomes a 10-hex digest and the table name is kept, that being the more useful half in an
   error message. The result is deterministic and provably ≤ 64 for any input.
 
-  **Why this is marked breaking, and what converging an existing database actually does.** A rename
-  is not one change: `attrecord-migrations` plans `add_foreign_key` (`Safe`) plus
-  `drop_foreign_key` (`Destructive`), because MySQL and MariaDB have no `RENAME CONSTRAINT`. At the
-  default `Safe` ceiling the add is applied and the drop is not, so the column ends up carrying
-  **both** constraints — equivalent in effect, but a redundant constraint and its backing index —
-  and the plan never re-plans empty. Verified against MariaDB rather than reasoned:
+  **Why this is marked breaking, and what converging an existing database does.** Existing databases
+  carry the old constraint names, so a converged install sees FK-name drift. Fresh installs are
+  unaffected — declared and live names agree, and the golden invariant holds.
 
-  ```
-  planned            add_foreign_key   fk_ec2dc5_…_customer_id   safe
-                     drop_foreign_key  fk_…_customer_id          destructive
-  after apply        both constraints present
-  re-plan            1 change, indefinitely
-  ```
+  **Pair this with `attrecord-migrations` ^0.5.** That release recognises a renamed constraint by
+  *shape* and emits it as a single atomic `rename_foreign_key` change, so the drift converges
+  cleanly: nothing is touched at the default `Safe` ceiling on MySQL/MariaDB, one `Destructive` run
+  completes it and re-plans empty, and PostgreSQL applies it at the default ceiling via
+  `RENAME CONSTRAINT`. Verified against MariaDB and PostgreSQL.
 
-  Fresh installs are unaffected — declared and live names agree, and the golden invariant holds.
-  For an existing database, either run one convergence at the `Destructive` ceiling so the old
-  constraint is dropped, or rebuild it. Doing nothing is tolerable but leaves the duplicate.
+  On **`attrecord-migrations` ^0.4 or earlier** the rename is planned as two independent changes —
+  `add_foreign_key` (`Safe`) and `drop_foreign_key` (`Destructive`), MySQL having no
+  `RENAME CONSTRAINT` — so a default-ceiling run applies the add and skips the drop, leaving the
+  column carrying **both** constraints plus a redundant backing index, and a plan that never
+  re-plans empty. Upgrade the companion, or run one `Destructive` convergence, or rebuild.
 
   There is no pressure to converge at all: the collision this fixes can only happen at
   `CREATE TABLE`, so a database that already holds an install has by definition not collided.
