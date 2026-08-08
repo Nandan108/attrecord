@@ -47,10 +47,10 @@ attrecord's *typed, schema-authoring, contention-hardened* design diverges from 
 | Pattern | Active Record | Active Record | Data Mapper | Active Record |
 | Framework coupling | Standalone, framework-agnostic | Standalone, framework-agnostic | Standalone (Symfony-friendly) | Laravel-native (standalone via `illuminate/database`) |
 | Runtime dependencies | **None** | **None** (PDO ext) | Several (DBAL, …) | `illuminate/*` |
-| Install footprint (`vendor/`) | **1 package · ~440 KB** | 1 package · ~280 KB | ~22 packages · ~1.6 MB | ~26 packages · ~2.3 MB |
+| Install footprint (`vendor/`) | **1 package · ~458 KB** | 1 package · ~280 KB | ~22 packages · ~1.6 MB | ~26 packages · ~2.3 MB |
 | Schema mapping | PHP 8 attributes only | **Introspected from the live DB** (no code mapping) | Attributes / XML / YAML | Conventions (schema lives in migrations, not the model) |
 | Column access / typing | **Typed properties** (psalm-checked) | Dynamic `__get`/`__set` (magic) | Typed properties | Dynamic `$attributes` (magic) |
-| Schema changes | Emits `CREATE TABLE` from attributes; forward migrations via a planned opt-in add-on (not in core) | None — the DB *is* the source; no DDL/migrations | `doctrine/migrations` | Laravel migrations |
+| Schema changes | Emits `CREATE TABLE` from attributes; **declarative convergence** (diff the live DB against the attributes, apply a classified plan — no migration files) via the optional `attrecord-migrations` companion, kept out of core on purpose | None — the DB *is* the source; no DDL/migrations | `doctrine/migrations` | Laravel migrations |
 | Query building | Finders + immutable `WhereClause` + `RawSql` | Dynamic finders + string conditions (`find_by_x`) | DQL + QueryBuilder | Fluent query builder |
 | Relation types | has-many / belongs-to / has-one, **polymorphic**, many-to-many, has-many-through | `has_many` / `belongs_to` / `has_one` / HABTM / `through`; no polymorphic | `OneToOne` / `OneToMany` / `ManyToOne` / `ManyToMany`; no polymorphic associations (inheritance mapping instead), no `through` shorthand | Richest set: `hasOne`/`hasMany`/`belongsTo`/`belongsToMany`, `hasOneThrough`/`hasManyThrough`, full `morph*` family |
 | Relation loading | **Imperative eager only** — `load()` / `loadMissing()`, one `IN (…)` per level; accessing an unloaded relation **never queries**, so an N+1 has to be written rather than tripped into | **Lazy** on property access; `include` for eager loading | **Lazy** by default via proxies; eager via fetch mode or DQL `JOIN FETCH` | **Lazy** on property access; `with()` eager, `load()` deferred-eager, opt-in `preventLazyLoading()` guard |
@@ -64,14 +64,14 @@ attrecord's *typed, schema-authoring, contention-hardened* design diverges from 
 
 <sub>attrecord and php-activerecord ship as a **single package with zero runtime dependencies**
 (php-activerecord needs a PDO driver extension); their figures are shipped source — attrecord `src/`
-≈ 440 KB at v0.13.0 across 67 files, php-activerecord `lib/` ≈ 280 KB. attrecord's raw figure is
-mostly prose: only ~180 KB of it is code, the other 59% docblocks — so it compresses to **137 KB
-zipped**, and the whole `composer require` download (adding README + LICENSE + composer.json) is
-**~167 KB zipped**. All four columns are uncompressed on-disk sizes, which is the number that
-matters for a `vendor/` directory; the zipped figures are attrecord's alone and are not a
-comparison. The optional
-[attrecord-migrations](https://github.com/Nandan108/attrecord-migrations) companion adds ~134 KB
-(~61 KB zipped) for consumers who want schema convergence. The dependency points one way — it
+≈ 458 KB at v0.16.0 across 68 files, php-activerecord `lib/` ≈ 280 KB. A large share of attrecord's
+raw figure is prose: 45% of those bytes are comments, leaving ~252 KB of code — so it compresses to
+**143 KB zipped**, and the whole `composer require` download (adding README + LICENSE +
+composer.json) is **~176 KB zipped**. All four columns are uncompressed on-disk sizes, which is the
+number that matters for a `vendor/` directory; the zipped figures are attrecord's alone and are not
+a comparison. The optional
+[attrecord-migrations](https://github.com/Nandan108/attrecord-migrations) companion adds ~143 KB of
+source (~64 KB as a `composer require` download) for consumers who want schema convergence. The dependency points one way — it
 requires attrecord, not the reverse — so `composer require nandan108/attrecord` never brings it
 along; you get it only by asking for it.
 Doctrine and Eloquent figures are a full `composer require --prefer-dist` install **including their
@@ -88,11 +88,14 @@ unit of work, lazy object graphs, DQL, a full migrations toolchain — and don't
 **Reach for Eloquent** when you're in Laravel (or want its ergonomics standalone) and value the
 convention-driven speed and enormous ecosystem.
 
-**Reach for attrecord** when you want a small, dependency-free, framework-agnostic Active Record where
-the PHP class *is* the schema (attributes → emitted DDL; declarative migrations are a planned opt-in
-add-on), and you need strong
-multi-backend, bulk-write, and concurrency ergonomics — accepting a young, pre-1.0 library with a
-deliberately smaller surface and ecosystem.
+**Reach for attrecord** when you want a small, dependency-free, framework-agnostic Active Record
+where the PHP class *is* the schema (attributes → emitted DDL, with declarative schema convergence
+in the optional [attrecord-migrations](https://github.com/Nandan108/attrecord-migrations)
+companion); when you want your **columns to be typed properties your analyser and IDE can actually
+see** — the other Active Records reach columns through magic accessors, so every one of them is
+`mixed` to a static analyser, while attrecord's own surface is Psalm-clean at level 1; and when you
+need strong multi-backend, bulk-write, and concurrency ergonomics — accepting a young, pre-1.0
+library with a deliberately smaller surface and ecosystem.
 
 ---
 
@@ -229,13 +232,17 @@ Record::setTablePrefix('wp_');   // Order → `wp_orders`, OrderLine → `wp_ord
 The prefix is prepended to whatever appears in `#[Table(name: …)]`. Changing it clears
 the schema cache so subsequent operations see the new prefix.
 
-**Two installs may share one database** — two WordPress sites at `wp_` and `blog_`, or a platform
-cutover running two hosts against one database during the transition. This works because foreign-key
-constraint names carry a fixed-width digest of the prefix (`fk_ec2dc5_orders_customer_id` under
-`wp_`): InnoDB scopes constraint names per *database*, not per table, so without it the second
-install's `CREATE TABLE` fails with errno 121. **Before 0.16.0 that configuration silently did not
-work**, despite the multi-tenant use advertised above. Details, including how names stay inside the
-64-character identifier limit:
+**On MySQL and MariaDB, two installs may share one database** — two WordPress sites at `wp_` and
+`blog_`, or a platform cutover running two hosts against one database during the transition. This
+works because foreign-key constraint names carry a fixed-width digest of the prefix
+(`fk_ec2dc5_orders_customer_id` under `wp_`): InnoDB scopes constraint names per *database*, not per
+table, so without it the second install's `CREATE TABLE` fails with errno 121. **Before 0.16.0 that
+configuration silently did not work**, despite the multi-tenant use advertised above.
+
+**On PostgreSQL, use a schema per install instead.** The prefix is not enough there: index and
+unique-key names are ones you choose and live in the schema-wide relation namespace, so a second
+install collides on `uniq_…` before any constraint name is reached. Full scoping table and the
+64-character budget:
 [ddl-generation.md](docs/ddl-generation.md#fk-constraint-naming--and-why-several-installs-may-share-one-database).
 
 ### 3 — Use

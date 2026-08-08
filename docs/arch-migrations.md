@@ -1,16 +1,22 @@
 # Schema evolution (design note — the `attrecord-migrations` companion package)
 
-> **Status:** BUILT as **`attrecord-migrations`** (v0.1, sibling repo) against this contract; the
-> core seams of §8.1 shipped in attrecord. This note remains the design authority — §7 (Non-goals)
-> is the fence, and §8 explains why the companion package — not core — is the vehicle. Notable
-> v0.1 realities discovered in the build (all fail-safe per §4.2): SQLite column-modify/FK changes
-> are Manual (the §4.4 rebuild is still phase 2); enum members are introspectable on MySQL-family
-> only (PG/SQLite keep them in unmodeled CHECK constraints); MariaDB stores JSON as LONGTEXT, so
+> **Status:** BUILT as **`attrecord-migrations`** (sibling repo, published on Packagist) against
+> this contract; the core seams of §8.1 shipped in attrecord. This note remains the design authority
+> — §7 (Non-goals) is the fence, and §8 explains why the companion package, not core, is the vehicle.
+>
+> **Standing realities** discovered in the build, all fail-safe per §4.2: SQLite column-modify and
+> FK changes are Manual (the §4.4 rebuild is still phase 2); MariaDB stores JSON as LONGTEXT, so
 > that family folds; an index whose leading columns are a live FK's columns is recognized as that
 > FK's supporting plumbing and never proposed for dropping — **by shape, not by name**, because an
 > engine-created index outlives the constraint it was named after and can remain load-bearing for a
 > *different* FK on the same column (MySQL then refuses the `DROP INDEX`); the advisory lock is
-> bypassed on SQLite (single-writer, no GET_LOCK).
+> bypassed on SQLite (single-writer, no `GET_LOCK`).
+>
+> **Resolved since the first draft**, so read the above as the *current* fence rather than the
+> original one: enum member drift is now visible on PostgreSQL and SQLite too, recovered from the
+> named CHECK constraint; creation order is derived rather than demanded, and a circular FK pair
+> converges by deferring one edge; composite primary keys are compared; and a foreign-key rename is
+> detected by shape and applied atomically (§4.3).
 > **Theme:** the Record class is already the schema. Evolution is therefore **convergence** —
 > introspect the live database, diff it against the attribute-derived `TableSchema`, and apply a
 > classified, guarded `ALTER` plan — not a second source of truth maintained as a chain of
@@ -215,6 +221,28 @@ Index / unique-key / FK level: compared by **name + column list** (+ FK target/a
 are Safe (with the §3.1 marker); drops are Destructive; a same-name-different-definition entry
 plans as drop **then** add — the pair inheriting Destructive, so a redefinition never silently
 slips through under the Safe ceiling.
+
+**A foreign-key *rename*, unlike a column rename, is inferred — and that is not a contradiction.** A
+constraint holds no data, and its shape — local columns, target table and columns, referential
+actions — fully determines what it enforces; the name is decoration. A leftover desired name and a
+leftover live name of identical shape are therefore provably the same constraint, not a
+type-similarity guess. The column rule is strict for the opposite reason: there the data *is* the
+point, and a wrong pairing destroys it.
+
+Left unpaired the two halves classify differently — the add Safe, the drop Destructive — so a
+Safe-ceiling run would apply **half** a rename: adding the new constraint while keeping the old one,
+leaving a redundant constraint plus its backing index and a plan that never re-plans empty. They are
+emitted as one `rename_foreign_key` change instead, so a single ceiling decision covers both
+statements. Pairing is declined when more than one live constraint matches the shape — two identical
+constraints are already redundant with each other, so there is no fact about which was renamed, and
+guessing would drop an arbitrary one; that falls back to plain add + drop.
+
+Its cost, and so its class, is per dialect. PostgreSQL has `ALTER TABLE … RENAME CONSTRAINT`, a
+catalogue-only update with no validation or rewrite: **Safe**. MySQL and MariaDB have no equivalent,
+so the identical outcome costs an `ADD FOREIGN KEY` that validates every existing row under a
+metadata lock, plus a `DROP` — real work on a large table, and not something to do unattended at
+boot: **Destructive**. The fallback adds *before* dropping, so the column is never momentarily
+unconstrained. SQLite cannot address a constraint separately at all: Manual.
 
 ### 4.4 SQLite: the rebuild boundary (phased)
 

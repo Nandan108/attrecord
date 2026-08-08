@@ -41,3 +41,37 @@ pruning + near-free retention via `DROP PARTITION` (vs. expensive `DELETE`).
 
 `FULLTEXT KEY (…)` for natural-language search columns. No consumer need on the horizon;
 captured only for completeness.
+
+---
+
+## Prefix-scoped index names on PostgreSQL — *deferred, no consumer*
+
+0.16.0 made **several prefixed installs in one database** work on MySQL/MariaDB by putting a digest
+of the table prefix into foreign-key constraint names. The same configuration still fails on
+**PostgreSQL**, for a different identifier: index and unique-key names live in the schema-wide
+relation namespace there, so a second install collides on `relation "uniq_sku" already exists`
+before any constraint name is reached. Scoping table in
+[ddl-generation.md](ddl-generation.md#fk-constraint-naming--and-why-several-installs-may-share-one-database).
+
+**If built, prefix — don't hash.** The digest exists to solve a *length* problem: an FK name already
+embeds a long table name, so a long or hardened prefix added verbatim overflowed the identifier
+limit. An index name is short and user-chosen, so `wp_uniq_sku` fits comfortably inside PostgreSQL's
+63 and stays readable in an error message. Hashing there would cost legibility for nothing.
+
+**It is runtime-transparent, which makes it cheaper than it looks.** `upsertByUniqueKey('uniq_sku')`
+resolves the declared name to *columns* (`$schema->uniqueKeys[$conflictKey]`), and both
+`ON CONFLICT (cols)` and `ON DUPLICATE KEY UPDATE` name columns rather than the index — so renaming
+the physical index breaks nothing attrecord does. The costs are raw SQL that names an index, index
+hints, and mangled names in engine error messages.
+
+**Why it is deferred.** The only beneficiary is *two installs in one PostgreSQL schema*, and
+PostgreSQL already answers that better: a **schema per install** isolates everything rather than just
+names, costs nothing, and is what the docs recommend. Building name-mangling for a configuration we
+steer people away from is effort pointed the wrong way — and it would be another breaking change to
+every PostgreSQL install's physical schema. No consumer can reach it either: InvFlux is MySQL-only,
+as is its PrestaShop adapter.
+
+**Trigger to revisit:** a consumer needing prefix-based multi-tenancy on PostgreSQL — a hosting
+product that cannot grant schema creation, for instance. Unlike the FK case this only touches index
+and unique-key emission, and it should be PostgreSQL-only: MySQL scopes index names per table, so
+prefixing them there would mangle names for no benefit.

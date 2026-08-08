@@ -242,12 +242,29 @@ removed. An **unprefixed** install omits the digest entirely and gets the plain
 `fk_{tableName}_{foreignKeyColumn}`. So `wp_orders.customer_id` yields
 `fk_ec2dc5_orders_customer_id`, and `ps_orders.customer_id` yields `fk_2f9391_orders_customer_id`.
 
+Both naming paths are covered — `#[Relation]`-derived keys and class-level `#[ForeignKey]`
+(constraint-only) keys alike.
+
 **Why the digest is there.** InnoDB scopes constraint names **per database, not per table**. Two
 installs can legitimately share one database — a platform cutover running two hosts against it
 during a transition, or two WordPress sites at `wp_` and `blog_` on shared hosting — and without the
 prefix in the name both derive the same one, so the second `CREATE TABLE` fails with errno 121,
-*"duplicate key on write or update"*. **Several installs in one database is supported from 0.16.0**;
-before that it silently was not.
+*"duplicate key on write or update"*.
+
+**Several prefixed installs in one database is therefore supported on MySQL and MariaDB from
+0.16.0**; before that it silently was not. Scoping, all verified rather than inferred:
+
+| Identifier | MySQL / MariaDB | PostgreSQL |
+| --- | --- | --- |
+| FK constraint name | **per database** — hence the digest | per table |
+| CHECK constraint name (enum columns) | not generated — native `ENUM` | per table; duplicates are fine |
+| index / unique-key name | per table | **per schema** |
+
+**On PostgreSQL the prefix is not sufficient**, and this is not something the digest can fix: index
+and unique-key names are *yours* (`#[Index('idx_name')]`, `#[UniqueKey('uniq_sku')]`) and live in the
+schema-wide relation namespace, so a second install in the same schema fails with
+`relation "uniq_sku" already exists` before any constraint name is reached. The idiomatic separation
+on PostgreSQL is a **schema per install** (`search_path`), which sidesteps the question entirely.
 
 **Why a digest rather than the prefix itself.** Including the prefix verbatim also makes the name
 unique, but then its length grows with the prefix and overflows the 64-character identifier limit on

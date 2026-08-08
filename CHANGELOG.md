@@ -6,6 +6,28 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-08-08
+
+**Several prefixed installs may now share one database, on MySQL and MariaDB.** Two WordPress sites
+at `wp_` and `blog_`, or a platform cutover running two hosts against one database during the
+transition — configurations the table-prefix feature has always implied and which silently did not
+work, because foreign-key constraint names dropped the prefix and InnoDB scopes those names per
+*database*, not per table. The second install's `CREATE TABLE` failed with errno 121. That is the
+headline here; the rest of the entry is how the name stays unique without overflowing the
+64-character identifier limit.
+
+**Not on PostgreSQL**, and no constraint-naming change can fix that: index and unique-key names are
+user-declared and live in the schema-wide relation namespace, so a second install collides on
+`relation "uniq_sku" already exists` before any constraint name is reached. Use a schema per install
+there — it isolates everything rather than just names. Verified scoping table in
+[ddl-generation.md](docs/ddl-generation.md#fk-constraint-naming--and-why-several-installs-may-share-one-database).
+
+Alongside it, a feature about the same underlying theme — values a database round-trips differently
+than you wrote them — this time JSON object keys, which only half the supported engines preserve.
+
+**Contains a breaking change (`!`)** — existing databases carry the old foreign-key constraint
+names. Leaving them is safe; the reasoning is under the entry.
+
 ### Changed
 
 - **! Foreign-key constraint names now carry a digest of the table prefix.** Previously the prefix
@@ -35,18 +57,37 @@ All notable changes to this project are documented here. The format is based on
   a `/^[a-z0-9]+_/` regex — that guess was the defect, and it also mangled unprefixed tables
   (`attrecord_ddl_orders` → `fk_ddl_orders_…`, eating a real part of the name).
 
+  **Both naming paths are covered** — `#[Relation]`-derived keys *and* class-level `#[ForeignKey]`
+  (constraint-only) keys. They are named at two separate sites, and the first pass of this fix
+  converted only one, leaving every constraint-only FK still colliding. Nothing caught it because no
+  test exercised that path with a prefix set; one does now.
+
   **Long names are folded rather than truncated blindly.** `fk_ + digest + table + column` still
   overflows on real schemas — InvFlux's
   `invflux_subject_stock_management_events.reconciliation_run_id` reaches 71 — so past the limit the
   *column* becomes a 10-hex digest and the table name is kept, that being the more useful half in an
   error message. The result is deterministic and provably ≤ 64 for any input.
 
-  **Why this is marked breaking.** Existing databases carry the old names, so a converged install
-  sees FK-name drift. It is safe to leave: the collision only occurs at `CREATE TABLE`, and a
-  database that already holds an install has by definition not collided. `attrecord-migrations`
-  classifies `drop_foreign_key` as `Destructive`, so at the default `Safe` ceiling the rename is
-  *reported and not applied* — existing tables keep their names unless a Destructive-ceiling run is
-  made deliberately.
+  **Why this is marked breaking, and what converging an existing database actually does.** A rename
+  is not one change: `attrecord-migrations` plans `add_foreign_key` (`Safe`) plus
+  `drop_foreign_key` (`Destructive`), because MySQL and MariaDB have no `RENAME CONSTRAINT`. At the
+  default `Safe` ceiling the add is applied and the drop is not, so the column ends up carrying
+  **both** constraints — equivalent in effect, but a redundant constraint and its backing index —
+  and the plan never re-plans empty. Verified against MariaDB rather than reasoned:
+
+  ```
+  planned            add_foreign_key   fk_ec2dc5_…_customer_id   safe
+                     drop_foreign_key  fk_…_customer_id          destructive
+  after apply        both constraints present
+  re-plan            1 change, indefinitely
+  ```
+
+  Fresh installs are unaffected — declared and live names agree, and the golden invariant holds.
+  For an existing database, either run one convergence at the `Destructive` ceiling so the old
+  constraint is dropped, or rebuild it. Doing nothing is tolerable but leaves the duplicate.
+
+  There is no pressure to converge at all: the collision this fixes can only happen at
+  `CREATE TABLE`, so a database that already holds an install has by definition not collided.
 
 ### Added
 
@@ -804,7 +845,8 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/Nandan108/attrecord/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/Nandan108/attrecord/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/Nandan108/attrecord/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/Nandan108/attrecord/compare/v0.13.0...v0.14.0
