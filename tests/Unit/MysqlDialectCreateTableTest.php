@@ -360,7 +360,7 @@ final class MysqlDialectCreateTableTest extends TestCase
         $sql = $this->dialect->buildCreateTable(TableSchema::fromClass(DdlOrderRecord::class));
 
         $this->assertStringContainsString(
-            'CONSTRAINT `fk_ddl_orders_customer_id` FOREIGN KEY (`customer_id`)'
+            'CONSTRAINT `fk_attrecord_ddl_orders_customer_id` FOREIGN KEY (`customer_id`)'
                 .' REFERENCES `attrecord_users` (`id`)'
                 .' ON DELETE CASCADE ON UPDATE RESTRICT',
             $sql,

@@ -6,6 +6,48 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **! Foreign-key constraint names now carry a digest of the table prefix.** Previously the prefix
+  was *stripped* from the name, which made two installs sharing one database collide: InnoDB scopes
+  constraint names **per database, not per table**, so `wp_invflux_subject_identifiers` and
+  `ps_invflux_subject_identifiers` both wanted `fk_invflux_subject_identifiers_subject_id` and the
+  second `CREATE TABLE` died with errno 121, *"duplicate key on write or update"*.
+
+  Two configurations hit it: a PrestaShop→WooCommerce cutover running both hosts against one
+  database, and two WordPress sites at `wp_` and `blog_` on shared hosting. WordPress multisite
+  escaped by luck — `wp_2_` left `2_` behind after stripping — so it would not show up in multisite
+  testing.
+
+  ```
+  before   fk_invflux_subject_identifiers_subject_id          (identical for every prefix)
+  after    fk_ec2dc5_invflux_subject_identifiers_subject_id   (wp_)
+           fk_2f9391_invflux_subject_identifiers_subject_id   (ps_)
+  ```
+
+  The digest is the first 6 hex of `sha256(prefix)` — collision avoidance between installs on one
+  machine, not a cryptographic claim. It is **fixed-width on purpose**: simply *not* stripping would
+  have made the name grow with the prefix and overflow the 64-character identifier limit for a long
+  or hardened prefix. An unprefixed install gets no digest and keeps a fully readable
+  `fk_<table>_<column>`.
+
+  The prefix is now taken from `Record::tablePrefix()` and removed exactly, rather than guessed with
+  a `/^[a-z0-9]+_/` regex — that guess was the defect, and it also mangled unprefixed tables
+  (`attrecord_ddl_orders` → `fk_ddl_orders_…`, eating a real part of the name).
+
+  **Long names are folded rather than truncated blindly.** `fk_ + digest + table + column` still
+  overflows on real schemas — InvFlux's
+  `invflux_subject_stock_management_events.reconciliation_run_id` reaches 71 — so past the limit the
+  *column* becomes a 10-hex digest and the table name is kept, that being the more useful half in an
+  error message. The result is deterministic and provably ≤ 64 for any input.
+
+  **Why this is marked breaking.** Existing databases carry the old names, so a converged install
+  sees FK-name drift. It is safe to leave: the collision only occurs at `CREATE TABLE`, and a
+  database that already holds an install has by definition not collided. `attrecord-migrations`
+  classifies `drop_foreign_key` as `Destructive`, so at the default `Safe` ceiling the rename is
+  *reported and not applied* — existing tables keep their names unless a Destructive-ceiling run is
+  made deliberately.
+
 ### Added
 
 - **`#[JsonCaster(sortKeys: true)]` — canonical object key order on the backends that don't

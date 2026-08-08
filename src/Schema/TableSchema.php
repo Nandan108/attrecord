@@ -36,6 +36,12 @@ use Nandan108\Attrecord\JsonCastable;
  */
 final class TableSchema
 {
+    /**
+     * Maximum identifier length shared by MySQL, MariaDB and PostgreSQL (PG's `NAMEDATALEN` is 63,
+     * one less, but its FK names are per-table and it never sees the collision this guards).
+     */
+    private const MAX_IDENTIFIER_LENGTH = 64;
+
     /** @var array<string, ColumnDefinition>  column name → definition */
     public readonly array $columns;
 
@@ -656,7 +662,7 @@ final class TableSchema
         }
 
         // --- Foreign keys from owning-side relations ---
-        $foreignKeys = self::collectForeignKeys($class, $tableName, $relations, $columns);
+        $foreignKeys = self::collectForeignKeys($class, $tableName, \Nandan108\Attrecord\Record::tablePrefix(), $relations, $columns);
 
         // --- Dialect-specific options (read by the matching dialect only) ---
         $mysqlOptionsAttrs = $reflClass->getAttributes(MysqlTableOptions::class);
@@ -775,9 +781,56 @@ final class TableSchema
     }
 
     /**
+     * Name a foreign-key constraint uniquely per *install*, within the 64-character identifier limit.
+     *
+     * InnoDB scopes constraint names **per database, not per table**, so two installs sharing one
+     * database — a PrestaShop→WooCommerce cutover running both hosts against it, or two WordPress
+     * sites at `wp_` and `blog_` on shared hosting — must not derive the same name for the same
+     * logical table. The table prefix is the only thing distinguishing them, so it has to survive
+     * into the name.
+     *
+     * It cannot survive *verbatim*: a long prefix would push the name past 64 characters. Instead a
+     * **fixed-width digest** of the prefix goes in, which keeps the total independent of how long
+     * the prefix is — the property a raw prefix lacks, and which stripping the prefix (the previous
+     * behaviour) lacked in the other direction by making distinct installs collide.
+     *
+     * Six hex characters is ample: this distinguishes installs on one machine, not adversaries.
+     *
+     * The natural form is `fk_<digest>_<table>_<column>`. Long names still overflow — InvFlux's own
+     * `invflux_subject_stock_management_events.reconciliation_run_id` reaches 71 — so past the limit
+     * the *column* is folded into a digest and the table name kept, that being the more useful half
+     * when reading an error message. The result is deterministic and always within the limit.
+     */
+    private static function foreignKeyConstraintName(string $tablePrefix, string $tableName, string $column): string
+    {
+        $logical = '' !== $tablePrefix && str_starts_with($tableName, $tablePrefix)
+            ? substr($tableName, \strlen($tablePrefix))
+            : $tableName;
+
+        $head = 'fk_';
+        if ('' !== $tablePrefix) {
+            $head .= substr(hash('sha256', $tablePrefix), 0, 6).'_';
+        }
+
+        $name = $head.$logical.'_'.$column;
+        if (\strlen($name) <= self::MAX_IDENTIFIER_LENGTH) {
+            return $name;
+        }
+
+        $digest = substr(hash('sha256', $logical.'.'.$column), 0, 10);
+        $room = self::MAX_IDENTIFIER_LENGTH - \strlen($head) - 1 - \strlen($digest);
+
+        return $head.substr($logical, 0, max(0, $room)).'_'.$digest;
+    }
+
+    /**
      * Derive FK definitions from owning-side relations (ManyToOne, OneToOne).
      *
      * @param class-string                      $class
+     * @param string                            $tablePrefix the live `Record::tablePrefix()`, passed in
+     *                                                       rather than inferred from `$tableName`, so the
+     *                                                       constraint name can distinguish two installs
+     *                                                       sharing one database
      * @param array<string, RelationDefinition> $relations
      * @param array<string, ColumnDefinition>   $columns
      *
@@ -786,6 +839,7 @@ final class TableSchema
     private static function collectForeignKeys(
         string $class,
         string $tableName,
+        string $tablePrefix,
         array $relations,
         array $columns,
     ): array {
@@ -846,11 +900,7 @@ final class TableSchema
             }
             $seenColumns[$fkColumn] = true;
 
-            // Strip leading "prefix_" from the table name to keep the
-            // constraint name compact when a prefix is in use. Falls back to
-            // the full table name when no underscore appears.
-            $shortened = (string) preg_replace('/^[a-z0-9]+_/', '', $tableName);
-            $constraintName = 'fk_'.('' !== $shortened ? $shortened : $tableName).'_'.$fkColumn;
+            $constraintName = self::foreignKeyConstraintName($tablePrefix, $tableName, $fkColumn);
 
             /** @var class-string $targetClass */
             $fks[] = new ForeignKeyDefinition(
