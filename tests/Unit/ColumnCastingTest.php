@@ -117,6 +117,102 @@ final class ColumnCastingTest extends TestCase
     }
 
     #[Test]
+    public function jsonCasterLeavesKeyOrderAloneByDefault(): void
+    {
+        $col = $this->colDef(ColumnType::Json, new JsonCaster());
+
+        self::assertSame(
+            '{"bb":1,"aa":2,"c":3}',
+            ColumnSerializer::toParam(['bb' => 1, 'aa' => 2, 'c' => 3], $col),
+        );
+    }
+
+    #[Test]
+    public function sortKeysOrdersByLengthThenBytes(): void
+    {
+        // The rule MySQL's binary JSON and PostgreSQL's JSONB apply internally. Verified against
+        // PostgreSQL 16: '{"bb":1,"aa":2,"c":3,"dddd":4,"ab":5}'::jsonb
+        //             -> {"c": 3, "aa": 2, "ab": 5, "bb": 1, "dddd": 4}
+        // A plain ksort() would give aa,ab,bb,c,dddd — lexicographic, and wrong for this purpose.
+        $col = $this->colDef(ColumnType::Json, new JsonCaster(sortKeys: true));
+
+        self::assertSame(
+            '{"c":3,"aa":2,"ab":5,"bb":1,"dddd":4}',
+            ColumnSerializer::toParam(['bb' => 1, 'aa' => 2, 'c' => 3, 'dddd' => 4, 'ab' => 5], $col),
+        );
+    }
+
+    #[Test]
+    public function sortKeysIsRecursiveAndOrderIndependent(): void
+    {
+        $col = $this->colDef(ColumnType::Json, new JsonCaster(sortKeys: true));
+
+        // Two payloads that differ only in key order — at both levels — must encode identically.
+        // That equality is the whole point: it is what makes GROUP BY meaningful on MariaDB/SQLite.
+        $a = ['zz' => ['yy' => 1, 'x' => 2], 'a' => 3];
+        $b = ['a' => 3, 'zz' => ['x' => 2, 'yy' => 1]];
+
+        self::assertSame(
+            ColumnSerializer::toParam($a, $col),
+            ColumnSerializer::toParam($b, $col),
+        );
+        self::assertSame('{"a":3,"zz":{"x":2,"yy":1}}', ColumnSerializer::toParam($a, $col));
+    }
+
+    #[Test]
+    public function sortKeysNeverReordersLists(): void
+    {
+        $col = $this->colDef(ColumnType::Json, new JsonCaster(sortKeys: true));
+
+        // A JSON array carries meaning in its order; only objects may be sorted. The nested
+        // objects inside the list are still sorted.
+        self::assertSame(
+            '{"xs":[3,1,2],"ys":[{"b":1,"aa":2}]}',
+            ColumnSerializer::toParam(['ys' => [['aa' => 2, 'b' => 1]], 'xs' => [3, 1, 2]], $col),
+        );
+    }
+
+    #[Test]
+    public function sortKeysPreservesEmptyObjectEncoding(): void
+    {
+        $col = $this->colDef(ColumnType::Json, new JsonCaster(sortKeys: true));
+
+        // stdClass must survive as stdClass: converting it to an array would silently turn an
+        // empty object `{}` into an empty list `[]` — a changed payload, not a reordered one.
+        self::assertSame(
+            '{"b":{},"aa":{"k":1}}',
+            ColumnSerializer::toParam(['aa' => (object) ['k' => 1], 'b' => (object) []], $col),
+        );
+    }
+
+    #[Test]
+    public function sortKeysAppliesToJsonSerializableValueObjects(): void
+    {
+        $col = $this->colDef(ColumnType::Json, new JsonCaster(sortKeys: true));
+
+        $vo = new class implements \JsonSerializable {
+            /** @return array<string, mixed> */
+            public function jsonSerialize(): array
+            {
+                return ['bb' => 1, 'c' => 2, 'aa' => 3];
+            }
+        };
+
+        self::assertSame('{"c":2,"aa":3,"bb":1}', ColumnSerializer::toParam($vo, $col));
+    }
+
+    #[Test]
+    public function sortKeysComposesWithExcludeNullFields(): void
+    {
+        $col = $this->colDef(ColumnType::Json, new JsonCaster(excludeNullFields: true, sortKeys: true));
+
+        self::assertSame(
+            '{"c":3,"aa":1}',
+            ColumnSerializer::toParam(['aa' => 1, 'bbb' => null, 'c' => 3], $col),
+        );
+    }
+
+    #[Test]
     public function epochCasterIsAuthoritativeOverIntegerArm(): void
     {
         $col = $this->colDef(ColumnType::BigIntUnsigned, new EpochCaster(), phpType: \DateTimeImmutable::class);

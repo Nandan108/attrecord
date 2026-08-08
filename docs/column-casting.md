@@ -421,15 +421,43 @@ only makes it visible. Two practical consequences:
 This is easy to miss in development, because it only appears when the engine you test on
 differs from the engine you deploy to.
 
-If you ever need payloads that group or hash consistently, canonicalize **on write**
-(`toDb()`), never on read — the read side cannot fix bytes the server already stored.
-`JsonCaster` is deliberately non-final for exactly this, so a `SortedJsonCaster` overriding
-`toDb()` with a recursive key sort is a few lines. Two caveats before you reach for it:
-it is **not retroactive** (rows written earlier keep their original order and stay in
-separate groups until rewritten), and key order is only one component of byte-canonical
-JSON — encode flags, float formatting and duplicate keys matter too. For grouping
-specifically, a hash or generated column over the canonical form is usually the better
-design than `GROUP BY` on the payload itself, and it can be indexed.
+### `sortKeys:` — canonical key order on the preserving backends
+
+When payloads must group, hash or compare consistently, opt into sorting **on write**:
+
+```php
+#[Column(ColumnType::Json)]
+#[JsonCaster(sortKeys: true)]
+public array $payload = [];
+```
+
+`{"bb":1,"aa":2,"c":3,"dddd":4,"ab":5}` is then stored as
+`{"c":3,"aa":2,"ab":5,"bb":1,"dddd":4}` — **key length ascending, then bytewise**, which is
+the rule the normalizing engines apply internally, so a MariaDB or SQLite row now matches
+what MySQL or PostgreSQL would have stored for the same payload. Note this is deliberately
+**not** `ksort()`: lexicographic order (`aa, ab, bb, c, dddd`) would make MariaDB disagree
+with the very engines it is imitating.
+
+It applies on `toDb()` only — grouping and hashing act on stored bytes, and the read side
+cannot repair bytes the server already holds. It is applied on every dialect, including the
+ones that would have normalized anyway: the result is identical, and a caster whose output
+depended on the ambient dialect would stop being the pure, stateless mapping the rest of the
+contract assumes. Lists are recursed into but never reordered, and `stdClass` stays
+`stdClass` so an empty object keeps encoding as `{}` rather than collapsing to `[]`.
+
+Two things it does **not** do:
+
+- **It is not retroactive.** Rows written before it was enabled keep their original key order
+  and go on forming their own groups until rewritten. Enabling it on live data implies a
+  rewrite migration — the kind of thing discovered only after an aggregate reports wrong
+  numbers.
+- **It is not "canonical JSON".** Key order is one input to byte-equality alongside encode
+  flags, float formatting, unicode escaping and duplicate keys. The narrow name is
+  deliberate.
+
+For grouping specifically, a hash or generated column over the sorted form is usually a
+better design than `GROUP BY` on the payload itself — indexable, and no filesort over a
+`LONGTEXT`. It needs the same canonical encoding, so the requirement lands here either way.
 
 ---
 

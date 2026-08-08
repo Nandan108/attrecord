@@ -602,8 +602,11 @@ is authoritative: it owns both directions and native type handling is bypassed.
 Built-in casters (all extend abstract `Cast implements ColumnCaster`, used as attributes):
 - `#[DateTimeCaster(string $timezone = 'UTC')]` — column ↔ `\DateTimeImmutable`.
 - `#[EpochCaster]` — integer epoch column ↔ `\DateTimeImmutable`.
-- `#[JsonCaster(array|bool $excludeNullFields = false)]` — JSON column ↔ array / `JsonCastable`
-  object. `excludeNullFields` drops null keys on write (whole payload `true`, or a field list).
+- `#[JsonCaster(array|bool $excludeNullFields = false, bool $sortKeys = false)]` — JSON column ↔
+  array / `JsonCastable` object. `excludeNullFields` drops null keys on write (whole payload `true`,
+  or a field list). `sortKeys` recursively orders object keys on write by **length then bytes** (the
+  rule MySQL `JSON` / PG `JSONB` use internally — *not* `ksort`), so MariaDB/SQLite store what the
+  normalizing engines would; lists are never reordered. Not retroactive.
   Only the *auto-attach* is tied to `ColumnType::Json`; declared explicitly it works on any string
   column, so a small bounded payload can live in an indexable `VarChar` instead of `LONGTEXT`
   (watch silent truncation under a permissive `sql_mode`). **Never depend on JSON object key

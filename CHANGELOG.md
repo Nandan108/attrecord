@@ -6,6 +6,44 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **`#[JsonCaster(sortKeys: true)]` — canonical object key order on the backends that don't
+  normalize.** Opt-in, off by default, applied on write.
+
+  `ColumnType::Json` maps to engine types that disagree about whether an object's key order
+  survives a round trip: MySQL (binary `JSON`) and PostgreSQL (`JSONB`) normalize it, MariaDB
+  (`LONGTEXT`) and SQLite (`TEXT`) store the bytes verbatim. MySQL and PG also *compare* JSON
+  semantically, so `GROUP BY` / `DISTINCT` / a unique index over such a column already behaves
+  correctly there. **On MariaDB and SQLite it does not** — the same logical payload written with
+  keys in two orders is two different strings, hence two groups. That is what this fixes.
+
+  ```php
+  #[Column(ColumnType::Json)]
+  #[JsonCaster(sortKeys: true)]
+  public array $payload = [];
+  ```
+
+  The ordering is **key length ascending, then bytewise** — the rule the normalizing engines
+  apply internally, so a MariaDB row now matches what MySQL/PG would have stored. Deliberately
+  **not** `ksort()`: lexicographic order would make MariaDB disagree with the very engines it is
+  imitating. Verified against PostgreSQL 16, whose `jsonb_object_keys` returns `c, aa, ab, bb,
+  dddd` for `{"bb":1,"aa":2,"c":3,"dddd":4,"ab":5}` — exactly what the caster now emits.
+
+  Applied in `toDb()` only: grouping and hashing act on stored bytes, and the read side cannot
+  repair bytes the server already holds. Applied on every dialect, including the ones that would
+  have normalized anyway — the result is identical, and a caster whose output varied with the
+  ambient dialect would stop being the pure, stateless mapping the rest of the contract assumes
+  (`ColumnCaster::toDb()` receives no dialect, and most of its 27 call sites have none to give).
+
+  Lists are recursed into but never reordered; `stdClass` stays `stdClass`, so an empty object
+  keeps encoding as `{}` instead of collapsing to `[]`.
+
+  **Not retroactive** — rows written before it was enabled keep their original order and go on
+  forming their own groups until rewritten; enabling it on live data implies a rewrite migration.
+  And it is **not "canonical JSON"**: key order is one input to byte-equality alongside encode
+  flags, float formatting, unicode escaping and duplicate keys. The narrow name is deliberate.
+
 ## [0.15.0] - 2026-08-06
 
 One feature, backward compatible — the `default:` parameter type is widened, not changed. It reads
