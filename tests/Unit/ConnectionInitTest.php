@@ -7,6 +7,7 @@ namespace Nandan108\Attrecord\Tests\Unit;
 use Nandan108\Attrecord\Connection;
 use Nandan108\Attrecord\Dialect\MysqlDialect;
 use Nandan108\Attrecord\Dialect\PgsqlDialect;
+use Nandan108\Attrecord\Schema\CheckDefinition;
 use Nandan108\Attrecord\Schema\ColumnDefinition;
 use Nandan108\Attrecord\Schema\ForeignKeyDefinition;
 use Nandan108\Attrecord\Schema\TableSchema;
@@ -155,6 +156,11 @@ final class RecordingInitDialect implements SqlDialect
     public function buildForeignKeyLine(ForeignKeyDefinition $fk): string
     {
         return $fk->constraintName;
+    }
+
+    public function buildCheckLine(CheckDefinition $check): string
+    {
+        return $check->constraintName;
     }
 
     public function renderColumnType(ColumnDefinition $col): string

@@ -6,6 +6,78 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-08-18
+
+**`#[Check]` — table-level CHECK constraints.** A boolean expression every row must satisfy,
+declared on the class, emitted into `CREATE TABLE` on all three dialects and available as a
+fragment for `ALTER TABLE … ADD`.
+
+The rules that motivate it are the ones a column cannot express: *only a unit may be tracked*,
+*a batch must name its parent*. Both are conditional — a legality rule and a NOT NULL that applies
+to one kind of row — and both are already enforced in the application that owns them. What the
+constraint adds is the writes that never reach that application: a CLI, a neighbouring plugin,
+someone at a SQL prompt.
+
+**Contains a breaking change (`!`)** for external `SqlDialect` implementers — one new interface
+method. None are known outside this repository.
+
+### Added
+
+- **`#[Check(name, expression)]`, class-level and repeatable.** The expression is passed to the
+  engine **verbatim**: nothing here parses it, which is what makes each engine's full expression
+  language available and equally leaves portability to the author — a MySQL-only function fails at
+  `CREATE TABLE` on PostgreSQL, loudly, which is the right moment to find out.
+
+  A CHECK is row-local by nature. It sees one row's columns, cannot query another table or row (no
+  engine allows a subquery here), and is not evaluated against existing rows until something
+  rewrites them. Rules spanning rows stay in the application, with the constraint carrying the
+  single-row *projection* of the rule.
+
+  Refused at schema-build time: a repeated name, an empty name or expression, and a name colliding
+  with the `chk_<column>_enum` constraint that carries an enum column's members on PostgreSQL and
+  SQLite — taking that name would replace the member list with a rule and drop the enum's
+  enforcement on those two backends.
+
+  **Enforcement is version-dependent in the direction that hurts**: MySQL enforces from 8.0.16 and
+  **parses-then-ignores** the clause on 8.0.0–8.0.15, so the DDL succeeds and the guarantee is
+  absent. MariaDB enforces from 10.2.1; PostgreSQL and SQLite always. A consumer that cannot pin its
+  host's version should treat a CHECK as defence in depth, never as the only guard.
+
+- **`SqlDialect::buildCheckLine(CheckDefinition): string`** — the same fragment `CREATE TABLE`
+  embeds, exposed for `ALTER TABLE … ADD`, alongside `buildColumnLine()` and
+  `buildForeignKeyLine()`. One rendering authority for both statements, forever.
+
+  **Breaking for external `SqlDialect` implementers** (one new interface method) — none known;
+  the three shipped dialects and the test double are updated.
+
+- **`TableSchema::$checks`** — `array<string, CheckDefinition>` keyed by *emitted* constraint name,
+  each definition also carrying the declared name and the expression as written.
+
+### Constraint naming — two digests, two problems
+
+The emitted name is `chk_{prefixDigest}_{declaredName}_{expressionDigest}`.
+
+The **prefix digest** is 0.16.0's foreign-key story repeated: MySQL scopes CHECK constraint names
+**per database** — verified, `ERROR 3822 Duplicate check constraint name` — so two installs sharing
+one database would collide on an identical declaration. Same mechanism, same six hex characters,
+omitted entirely when there is no prefix. MariaDB, PostgreSQL and SQLite scope per table and would
+not have needed it.
+
+The **expression digest** has no foreign-key equivalent, and it is the more interesting half. No
+engine gives the expression back the way it was written: MySQL re-prints it with charset introducers
+and brackets of its own (`((\`kind\` = _latin1'unit') or …)`), PostgreSQL adds `::text` casts. So
+schema tooling comparing a live expression to a declared one cannot distinguish *the author changed
+the rule* from *the engine spells it differently* — and the fail-safe reading of that ambiguity,
+assume the engine, is exactly the one that silently withholds a corrected rule from every database
+that already has the old one. That failure mode is not hypothetical; it is what generated-column
+expressions did until `attrecord-migrations` 0.5.2.
+
+Digesting the expression into the name removes the comparison from the problem. An edited expression
+**is** a differently-named constraint, so name-only convergence adds the new one and drops its
+predecessor, with no expression comparison anywhere. Whitespace is normalized before digesting, so
+re-indenting an expression is not a schema change. Long declared names fold to stay within the
+64-character identifier limit, keeping both digests.
+
 ## [0.16.0] - 2026-08-08
 
 **Several prefixed installs may now share one database, on MySQL and MariaDB.** Two WordPress sites
@@ -843,7 +915,8 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/Nandan108/attrecord/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/Nandan108/attrecord/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/Nandan108/attrecord/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/Nandan108/attrecord/compare/v0.14.0...v0.14.1

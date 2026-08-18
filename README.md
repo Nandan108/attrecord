@@ -27,6 +27,7 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
 - Deadlock-safe locking helpers (`LockTier`, `LockSet`, `Transaction`) + advisory locks
 - Unique-key aware upserts — single (`upsertByUniqueKey`) and bulk (`RecordSet::upsertAllByUniqueKey`), with an optional **auto-increment-burn-free** mode; plus `updateByUniqueKey`
 - Constraint-only foreign keys via `#[ForeignKey]` — declare an FK whose target has no Record (or that you don't want to hydrate)
+- Table-level CHECK constraints via `#[Check]` — a row-local invariant the database enforces, on all three dialects
 - Three included `DbSession` adapters: **PDO** (works with MySQL, MariaDB, PostgreSQL, and SQLite), plus MySQL/MariaDB-only **mysqli** and WordPress **`wpdb`**
 - Psalm-clean at level 1
 
@@ -685,6 +686,41 @@ $sql = (new SqliteDialect())->buildCreateTable(TableSchema::fromClass(Order::cla
 // );
 // CREATE INDEX "idx_status_date" ON "orders" ("status", "created_at")
 ```
+
+### `#[Check]` — table-level CHECK constraints
+
+A boolean expression every row must satisfy, declared on the class and emitted into `CREATE TABLE`
+on all three dialects:
+
+```php
+#[Table(name: 'subjects')]
+#[Check('tracking_unit_only', "kind = 'unit' OR tracking = 'none'")]
+#[Check('batch_has_parent', "kind <> 'batch' OR parent_id IS NOT NULL")]
+final class Subject extends Record { ... }
+
+// CONSTRAINT `chk_ec2dc5_tracking_unit_only_9f2e11` CHECK (kind = 'unit' OR tracking = 'none'),
+// CONSTRAINT `chk_ec2dc5_batch_has_parent_4a71c0`   CHECK (kind <> 'batch' OR parent_id IS NOT NULL)
+```
+
+The expression is passed to the engine **verbatim** — nothing here parses it, so each engine's full
+expression language is available and portability is yours to keep. A CHECK is row-local by nature:
+it sees one row, cannot query another table, and is not applied to existing rows until they are
+rewritten. Rules spanning rows belong in your application, with the CHECK carrying the single-row
+projection as a backstop against writes that never pass through it.
+
+The **emitted name is not the declared one** — `chk_{prefixDigest}_{name}_{expressionDigest}` — and
+each digest answers a different problem. MySQL scopes CHECK names *per database*, so the prefix
+digest keeps two installs sharing one apart, exactly as it does for a foreign key. The expression
+digest is subtler: no engine stores the expression as written (MySQL adds charset introducers,
+PostgreSQL adds casts), so tooling comparing live to declared cannot tell an edited rule from a
+re-spelled one — and the safe reading of that ambiguity is the one that never delivers a correction.
+With the digest in the name, an edited expression simply *is* a different constraint. Whitespace is
+normalized first, so re-indenting is not a schema change.
+
+**Enforcement is version-dependent in one direction worth knowing**: MySQL enforces from 8.0.16 and
+**silently ignores** the clause on 8.0.0–8.0.15; MariaDB enforces from 10.2.1; PostgreSQL and SQLite
+always. If you cannot pin your host's version, treat a CHECK as defence in depth, never as the only
+guard.
 
 ### Two seams for evolution tooling
 

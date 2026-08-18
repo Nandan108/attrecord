@@ -6,6 +6,7 @@ namespace Nandan108\Attrecord\Dialect;
 
 use Nandan108\Attrecord\Enum\ColumnType;
 use Nandan108\Attrecord\Enum\GeneratedColumnMode;
+use Nandan108\Attrecord\Schema\CheckDefinition;
 use Nandan108\Attrecord\Schema\ColumnDefinition;
 use Nandan108\Attrecord\Schema\ForeignKeyDefinition;
 use Nandan108\Attrecord\Schema\TableSchema;
@@ -349,6 +350,11 @@ final class MysqlDialect implements SqlDialect
             $lines[] = '  KEY '.$this->quoteIdentifier($ixName).' ('.$quotedCols.')';
         }
 
+        // CHECK constraints
+        foreach ($schema->checks as $check) {
+            $lines[] = '  '.$this->buildCheckLine($check);
+        }
+
         // FOREIGN KEYs
         foreach ($schema->foreignKeys as $fk) {
             if (\in_array($fk->constraintName, $omitForeignKeys, true)) {
@@ -455,6 +461,13 @@ final class MysqlDialect implements SqlDialect
             .' ('.$this->quoteIdentifier($fk->targetColumnName()).')'
             .' ON DELETE '.$fk->onDelete->value
             .' ON UPDATE '.$fk->onUpdate->value;
+    }
+
+    #[\Override]
+    public function buildCheckLine(CheckDefinition $check): string
+    {
+        return 'CONSTRAINT '.$this->quoteIdentifier($check->constraintName)
+            .' CHECK ('.$check->expression.')';
     }
 
     /**

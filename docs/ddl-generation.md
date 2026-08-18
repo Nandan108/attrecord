@@ -257,7 +257,7 @@ prefix in the name both derive the same one, so the second `CREATE TABLE` fails 
 | Identifier | MySQL / MariaDB | PostgreSQL |
 | --- | --- | --- |
 | FK constraint name | **per database** — hence the digest | per table |
-| CHECK constraint name (enum columns) | not generated — native `ENUM` | per table; duplicates are fine |
+| CHECK constraint name (`#[Check]`, and the enum columns' own on PG/SQLite) | **per database** — hence the digest, see `#[Check]` below | per table |
 | index / unique-key name | per table | **per schema** |
 
 **On PostgreSQL the prefix is not sufficient**, and this is not something the digest can fix: index
@@ -350,6 +350,62 @@ Rules enforced at schema build:
 `#[Index]` mirrors `#[UniqueKey]` exactly; the only difference is that it emits
 `KEY` rather than `UNIQUE KEY`.
 
+### `#[Check]` — table-level CHECK constraints (class-level, repeatable)
+
+A boolean expression every row must satisfy, emitted into `CREATE TABLE` on all three dialects:
+
+```php
+#[Table(name: 'subjects')]
+#[Check('tracking_unit_only', "kind = 'unit' OR tracking = 'none'")]
+#[Check('batch_has_parent', "kind <> 'batch' OR parent_id IS NOT NULL")]
+final class Subject extends Record { ... }
+```
+
+The expression is **passed to the engine verbatim** — nothing here parses it, which is what makes
+each engine's full expression language available and equally makes portability the author's
+business. An expression using a MySQL-only function fails at `CREATE TABLE` on PostgreSQL, loudly,
+which is the right moment to find out.
+
+Refused at schema-build time: a repeated name, an empty name or expression, and a name colliding
+with the `chk_<column>_enum` constraint that carries an enum column's members on PostgreSQL and
+SQLite (taking that name would replace the member list with a rule and drop the enum's enforcement
+on those two backends).
+
+**What a CHECK can and cannot be.** It is row-local: it sees one row's columns, cannot query
+another table or another row (no engine permits a subquery here), and is not evaluated against rows
+that already exist until something rewrites them. Rules spanning rows stay in the application, with
+the CHECK carrying the single-row *projection* of the rule — defence against writes that never pass
+through the application at all: a CLI, a neighbouring plugin, someone at a SQL prompt.
+
+**Enforcement is version-dependent, in one direction that matters.** MySQL enforces from 8.0.16;
+**8.0.0–8.0.15 parse the clause and ignore it**, so the DDL succeeds and the guarantee is simply
+absent. MariaDB enforces from 10.2.1, PostgreSQL and SQLite always. A consumer that cannot pin its
+host's version — a WordPress plugin, say — should treat a CHECK as a backstop, never as the only
+guard.
+
+#### CHECK constraint naming
+
+The emitted name is `chk_{prefixDigest}_{declaredName}_{expressionDigest}`, so
+`#[Check('tracking_unit_only', …)]` on a `wp_` install becomes something like
+`chk_ec2dc5_tracking_unit_only_9f2e11`. Two digests, for two unrelated problems:
+
+- **The prefix digest** is the foreign-key story exactly: MySQL scopes CHECK constraint names
+  **per database** (`ERROR 3822 Duplicate check constraint name`), so two installs sharing one must
+  not derive the same name. Same mechanism, same six hex characters, omitted when the prefix is
+  empty. (MariaDB, PostgreSQL and SQLite scope per table and would not need it.)
+- **The expression digest** has no foreign-key equivalent. No engine gives the expression back as
+  written — MySQL re-prints it with charset introducers and its own brackets, PostgreSQL adds
+  `::text` casts — so schema tooling comparing live against declared cannot distinguish *the author
+  changed the rule* from *the engine spells it differently*. The fail-safe reading of that ambiguity
+  (assume the engine) is the one that would silently withhold a corrected rule from every database
+  that has the old one. Digesting the expression into the name removes the comparison from the
+  problem: an edited expression **is** a differently-named constraint, so name-only convergence adds
+  the new one and drops its predecessor. Whitespace is normalized first, so re-indenting an
+  expression is not a schema change.
+
+Long declared names fold rather than overflow the 64-character limit: the name is truncated, both
+digests kept.
+
 ---
 
 ## Schema layer
@@ -370,6 +426,7 @@ Rules enforced at schema build:
 - `$reflProperties` — `array<string, \ReflectionProperty>` keyed by **column name** (paired with `$columns`).
 - `$uniqueKeys`, `$indexes` — `array<string, list<string>>` mapping key name → ordered column names.
 - `$foreignKeys` — `list<ForeignKeyDefinition>` collected from owning-side relations (`ManyToOne`, `OneToOne`) with `emitFk: true`, plus any class-level `#[ForeignKey]` (Record-less FKs). A `ForeignKeyDefinition` resolves its target through `targetTableName()` / `targetColumnName()` — lazily from the target Record for the relation form, or from the explicit (prefix-applied) table + column for the `#[ForeignKey]` form.
+- `$checks` — `array<string, CheckDefinition>` from class-level `#[Check]`, keyed by the **emitted** constraint name (what the database and any schema tooling see). Each definition also carries `$declaredName`, the name as written in the attribute, for error messages that should quote the author back to themselves.
 - `$comment` — from `#[Table]`.
 - `$mysqlOptions` — `?MysqlTableOptions` from the optional `#[MysqlTableOptions]` class-level attribute. Null when the attribute is absent; `MysqlDialect` resolves field-by-field against its own defaults.
 - `propFor(string $columnName): string` — resolves a column name to its corresponding property name (used by relation loaders that translate `#[Relation]` column refs to PHP property accessors).
@@ -490,7 +547,8 @@ $sql = (new PgsqlDialect())->buildCreateTable(TableSchema::fromClass(OrderRecord
   declarations match other concerns like compound query patterns.)
 - **Per-column charset / collation** — table-level only for now. Add per-column
   if a real need arises.
-- **CHECK constraints** — not modelled in `#[Column]` today; defer.
+- **Column-level CHECK constraints** — a CHECK is declared on the class, not the column (see
+  `#[Check]` above); a single-column rule is written as a table-level one naming that column.
 - **Partial / functional indexes** — out of scope.
 - **Tablespace, ROW_FORMAT, key block size, etc.** — out of scope.
 

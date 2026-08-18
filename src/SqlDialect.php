@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord;
 
+use Nandan108\Attrecord\Schema\CheckDefinition;
 use Nandan108\Attrecord\Schema\ColumnDefinition;
 use Nandan108\Attrecord\Schema\ForeignKeyDefinition;
 use Nandan108\Attrecord\Schema\TableSchema;
@@ -237,8 +238,8 @@ interface SqlDialect
     /**
      * Emit a `CREATE TABLE` statement for a compiled {@see TableSchema}.
      *
-     * Includes primary key, unique keys, secondary indexes, and FOREIGN KEY
-     * constraints derived from owning-side relations. Table options (engine,
+     * Includes primary key, unique keys, secondary indexes, CHECK constraints, and FOREIGN
+     * KEY constraints derived from owning-side relations. Table options (engine,
      * charset, collation, comment) are dialect-dependent and may be ignored
      * by non-MySQL dialects.
      *
@@ -274,6 +275,21 @@ interface SqlDialect
      * @see https://github.com/Nandan108/attrecord/blob/main/docs/arch-migrations.md §8.1
      */
     public function buildForeignKeyLine(ForeignKeyDefinition $fk): string;
+
+    /**
+     * Render one table-level CHECK constraint as a DDL fragment — the
+     * `CONSTRAINT name CHECK (expression)` line used inside {@see buildCreateTable()}, without
+     * leading indentation or a trailing comma.
+     *
+     * Public for the same reason as {@see buildColumnLine()}: `ALTER TABLE … ADD {fragment}` must
+     * render identically to CREATE. (SQLite has no such ALTER — the table must be rebuilt — so
+     * there the fragment is only ever used by CREATE.)
+     *
+     * The expression is emitted **verbatim**: no dialect parses or rewrites it.
+     *
+     * @see https://github.com/Nandan108/attrecord/blob/main/docs/arch-migrations.md §8.1
+     */
+    public function buildCheckLine(CheckDefinition $check): string;
 
     /**
      * Render one column's bare SQL type — the `TYPE` token of {@see buildColumnLine()} without

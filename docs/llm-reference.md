@@ -250,6 +250,28 @@ records. The **keyed bulk upsert does not yet guard or bump** (per-row version p
 | `onDelete` | `ForeignKeyAction` | `Restrict` | |
 | `onUpdate` | `ForeignKeyAction` | `Restrict` | |
 
+### `#[Check]` (class-level, repeatable — v0.17.0)
+| Param | Type | Notes |
+|---|---|---|
+| `name` | `string` | Constraint base name, unique per Record. |
+| `expression` | `string` | Boolean SQL expression, emitted **verbatim** (nothing parses it). |
+
+Table-level CHECK constraint, emitted into `CREATE TABLE` on all three dialects and rendered as a
+fragment by `SqlDialect::buildCheckLine()`.
+
+- **Emitted name is not the declared name**: `chk_{prefixDigest}_{name}_{expressionDigest}`. The
+  prefix digest is the foreign-key story (MySQL scopes CHECK names **per database** — `ERROR 3822`);
+  the expression digest makes an edited expression a differently-named constraint, so name-only
+  convergence adds/drops it rather than comparing expressions no engine stores verbatim. Whitespace
+  is normalized before digesting. `CheckDefinition` carries `$constraintName`, `$declaredName`,
+  `$expression`; `TableSchema::$checks` is keyed by emitted name.
+- **Refused at schema build**: duplicate name, empty name/expression, and a name equal to
+  `chk_{column}_enum` (the enum-member constraint on PG/SQLite).
+- **Row-local only** — no subqueries, no cross-row rules, not applied to existing rows until they
+  are rewritten.
+- **Enforcement**: MySQL **8.0.16+** (8.0.0–8.0.15 parse and ignore), MariaDB 10.2.1+, PostgreSQL
+  and SQLite always.
+
 ### `#[LockTier]` (class-level)
 | Param | Type | Notes |
 |---|---|---|
@@ -687,6 +709,7 @@ string works and wrapping is unnecessary (but harmless).
 `buildUpsertSql(string $tableName, string $pkColumn, array $columnNames, array $rows, array $updateColumns, array $rowDirtyColumns = []): UpsertSql`,
 `buildCreateTable(TableSchema $schema, bool $ifNotExists = false, array $omitForeignKeys = []): string`,
 `buildColumnLine(ColumnDefinition $col): string`, `buildForeignKeyLine(ForeignKeyDefinition $fk): string`,
+`buildCheckLine(CheckDefinition $check): string`,
 `renderColumnType(ColumnDefinition $col): string` (the bare TYPE token alone)
 (public DDL fragment builders — the exact `name TYPE …` / `CONSTRAINT … FOREIGN KEY …` lines
 `buildCreateTable()` embeds, exposed so schema-evolution tooling composes `ALTER TABLE … ADD/MODIFY …`

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord\Schema;
 
 use Nandan108\Attrecord\Attribute\Cast;
+use Nandan108\Attrecord\Attribute\Check;
 use Nandan108\Attrecord\Attribute\Column;
 use Nandan108\Attrecord\Attribute\CreatedAt;
 use Nandan108\Attrecord\Attribute\ForeignKey;
@@ -85,12 +86,22 @@ final class TableSchema
     public readonly array $foreignKeys;
 
     /**
+     * Table-level CHECK constraints from class-level #[Check] attributes, in declaration order.
+     * Keyed by the *emitted* constraint name, which is what the database and any schema tooling
+     * see; the declared name is on the definition.
+     *
+     * @var array<string, CheckDefinition>
+     */
+    public readonly array $checks;
+
+    /**
      * @param array<string, ColumnDefinition>    $columns
      * @param array<string, RelationDefinition>  $relations
      * @param array<string, \ReflectionProperty> $reflProperties
      * @param array<string, list<string>>        $uniqueKeys
      * @param array<string, list<string>>        $indexes
      * @param list<ForeignKeyDefinition>         $foreignKeys
+     * @param array<string, CheckDefinition>     $checks
      */
     private function __construct(
         public readonly string $tableName,
@@ -111,6 +122,7 @@ final class TableSchema
         array $uniqueKeys,
         array $indexes,
         array $foreignKeys,
+        array $checks,
         public readonly ?string $comment,
         public readonly ?MysqlTableOptions $mysqlOptions,
         /** Column name auto-set to now on INSERT ({@see CreatedAt}), or null. */
@@ -126,6 +138,7 @@ final class TableSchema
         $this->uniqueKeys = $uniqueKeys;
         $this->indexes = $indexes;
         $this->foreignKeys = $foreignKeys;
+        $this->checks = $checks;
         $this->dataColumnNames = array_values(
             array_filter(array_keys($columns), fn (string $n): bool => $n !== $pk),
         );
@@ -661,6 +674,9 @@ final class TableSchema
             $indexes[$ixAttr->name] = $ixAttr->columns;
         }
 
+        // --- Class-level #[Check] ---
+        $checks = self::collectChecks($class, $reflClass, $tableName, \Nandan108\Attrecord\Record::tablePrefix(), $columns);
+
         // --- Foreign keys from owning-side relations ---
         $foreignKeys = self::collectForeignKeys($class, $tableName, \Nandan108\Attrecord\Record::tablePrefix(), $relations, $columns);
 
@@ -679,6 +695,7 @@ final class TableSchema
             uniqueKeys: $uniqueKeys,
             indexes: $indexes,
             foreignKeys: $foreignKeys,
+            checks: $checks,
             comment: $tableAttr->comment,
             mysqlOptions: $mysqlOptions,
             createdAtColumn: $createdAtColumn,
@@ -821,6 +838,108 @@ final class TableSchema
         $room = self::MAX_IDENTIFIER_LENGTH - \strlen($head) - 1 - \strlen($digest);
 
         return $head.substr($logical, 0, max(0, $room)).'_'.$digest;
+    }
+
+    /**
+     * Name a CHECK constraint uniquely per *install* and per *expression*.
+     *
+     * The prefix digest is there for the same reason it is on a foreign key — MySQL scopes CHECK
+     * names per database, so two installs sharing one must not derive the same name — and is built
+     * the same way, so see {@see foreignKeyConstraintName()} for why a digest rather than the
+     * prefix itself.
+     *
+     * The expression digest is the part with no foreign-key equivalent, and it exists because no
+     * engine gives the expression back the way it was written: MySQL re-prints it with charset
+     * introducers and brackets of its own, PostgreSQL adds casts. Comparing a live expression to a
+     * declared one therefore cannot distinguish "the author changed the rule" from "the engine
+     * spells it differently", and the fail-safe reading of that ambiguity — assume the engine —
+     * silently withholds a corrected rule from every database that already has the old one.
+     * Digesting the expression into the *name* removes the comparison from the problem: an edited
+     * expression is a differently-named constraint, so name-only convergence adds the new one and
+     * drops the old.
+     *
+     * Whitespace is normalized before digesting, so re-indenting an expression is not a schema
+     * change; nothing else is, so any edit to what it *says* moves the digest.
+     */
+    private static function checkConstraintName(string $tablePrefix, string $declaredName, string $expression): string
+    {
+        $head = 'chk_';
+        if ('' !== $tablePrefix) {
+            $head .= substr(hash('sha256', $tablePrefix), 0, 6).'_';
+        }
+
+        $exprDigest = substr(hash('sha256', trim((string) preg_replace('/\s+/', ' ', $expression))), 0, 6);
+        $tail = '_'.$exprDigest;
+
+        $room = self::MAX_IDENTIFIER_LENGTH - \strlen($head) - \strlen($tail);
+
+        return $head.substr($declaredName, 0, max(0, $room)).$tail;
+    }
+
+    /**
+     * Compile the class-level #[Check] attributes into definitions keyed by emitted name.
+     *
+     * @param class-string                    $class
+     * @param \ReflectionClass<object>        $reflClass
+     * @param array<string, ColumnDefinition> $columns
+     *
+     * @return array<string, CheckDefinition>
+     */
+    private static function collectChecks(
+        string $class,
+        \ReflectionClass $reflClass,
+        string $tableName,
+        string $tablePrefix,
+        array $columns,
+    ): array {
+        $checks = [];
+        /** @psalm-var array<string, true> $declared */
+        $declared = [];
+
+        foreach ($reflClass->getAttributes(Check::class) as $checkAttrRefl) {
+            $checkAttr = $checkAttrRefl->newInstance();
+            $name = $checkAttr->name;
+
+            if ('' === trim($name)) {
+                throw new SchemaException(sprintf('%s: #[Check] requires a non-empty name.', $class));
+            }
+            if ('' === trim($checkAttr->expression)) {
+                throw new SchemaException(sprintf(
+                    '%s: #[Check(\'%s\')] requires a non-empty boolean SQL expression.',
+                    $class,
+                    $name,
+                ));
+            }
+            if (isset($declared[$name])) {
+                throw new SchemaException(sprintf(
+                    '%s: CHECK constraint "%s" is declared twice; constraint names must be unique per table.',
+                    $class,
+                    $name,
+                ));
+            }
+
+            // The enum-emulation CHECKs that PostgreSQL and SQLite carry for an #[Column] of type
+            // Enum/Set are named from the column, and are owned by the column rather than by the
+            // author. A #[Check] landing on one of those names would replace a member list with a
+            // rule and take the enum's enforcement with it, so it is refused by name.
+            foreach ($columns as $colName => $_col) {
+                if (ColumnDefinition::enumCheckConstraintName($colName) === $name) {
+                    throw new SchemaException(sprintf(
+                        '%s: #[Check(\'%s\')] collides with the CHECK constraint that carries column "%s"\'s '
+                        .'enum members on PostgreSQL and SQLite. Pick another name.',
+                        $class,
+                        $name,
+                        $colName,
+                    ));
+                }
+            }
+
+            $declared[$name] = true;
+            $constraintName = self::checkConstraintName($tablePrefix, $name, $checkAttr->expression);
+            $checks[$constraintName] = new CheckDefinition($constraintName, $name, $checkAttr->expression);
+        }
+
+        return $checks;
     }
 
     /**
@@ -1119,6 +1238,7 @@ final class TableSchema
             uniqueKeys: [...$this->uniqueKeys, ...$uniqueKeys],
             indexes: [...$this->indexes, ...$indexes],
             foreignKeys: $this->foreignKeys,
+            checks: $this->checks,
             comment: $this->comment,
             mysqlOptions: $this->mysqlOptions,
             createdAtColumn: $this->createdAtColumn,

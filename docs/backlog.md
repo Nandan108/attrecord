@@ -8,21 +8,8 @@ work and starts being a second, staler set of docs.
 ## DDL features not yet modelled by the producer
 
 The DDL producer ([ddl-generation.md](ddl-generation.md)) emits columns, defaults, generated
-columns, primary/unique keys, indexes, and foreign keys. What it does **not** model, all surfaced
-while evaluating a "single source of DDL" move for a consumer (InvFlux):
-
-### `#[Check]` — CHECK constraints — *small, low priority*
-
-Declarative row/column invariant, e.g. `CHECK (quantity >= 0)` or `CHECK (status IN (…))`,
-emitted into `CREATE TABLE`. Cheap to add (one more clause in `buildCreateTable`).
-
-- **Value:** defense-in-depth — a DB-level invariant that holds even against a buggy or
-  raw-SQL write path (e.g. a non-negative-quantity backstop on an inventory balances table).
-- **Caveat to document if built:** enforcement is engine/version-dependent — MySQL **8.0.16+**
-  enforces, MySQL **5.7 parses and silently ignores**, MariaDB enforces from **10.2.1+**. So a
-  consumer that can't pin the host DB version (e.g. a WordPress plugin) must treat it as
-  supplementary, never the sole guard.
-- **Status:** nice-to-have; not requested by any consumer yet.
+columns, primary/unique keys, indexes, foreign keys and CHECK constraints. What it does **not**
+model, all surfaced while evaluating a "single source of DDL" move for a consumer (InvFlux):
 
 ### Partitioning — *deferred, heavy, design-against-a-real-table*
 
