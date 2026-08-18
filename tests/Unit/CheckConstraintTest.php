@@ -77,7 +77,10 @@ final class CheckConstraintTest extends TestCase
 
         self::assertCount(2, $checks);
         self::assertSame('tracking_unit_only', $checks[0]->declaredName);
-        self::assertStringStartsWith('chk_tracking_unit_only_', $checks[0]->constraintName);
+        // Digests either side, but the rule's own name stays legible in the middle — it is what a
+        // violation message quotes, and the half that says what was actually broken.
+        self::assertStringStartsWith('chk_', $checks[0]->constraintName);
+        self::assertStringContainsString('_tracking_unit_only_', $checks[0]->constraintName);
         self::assertSame("kind = 'unit' OR tracking = 'none'", $checks[0]->expression);
     }
 
@@ -90,6 +93,19 @@ final class CheckConstraintTest extends TestCase
         // foreign-key situation, and the same digest answers it.
         self::assertNotSame($this->namesForPrefix('wp_'), $this->namesForPrefix('blog_'));
         self::assertNotSame($this->namesForPrefix('wp_'), $this->namesForPrefix(''));
+    }
+
+    #[Test]
+    public function theSameRuleOnTwoTablesGetsTwoNames(): void
+    {
+        // MySQL scopes CHECK names per *database*, so the same rule written on two tables —
+        // `qty_non_negative` on an order line and on a purchase-order line, say — would collide
+        // inside a single install if the table did not reach the name. It reaches it through the
+        // scope digest, which covers prefix and table together.
+        $a = array_keys(TableSchema::fromClass(CheckSharedNameARecord::class)->checks);
+        $b = array_keys(TableSchema::fromClass(CheckSharedNameBRecord::class)->checks);
+
+        self::assertNotSame($a, $b);
     }
 
     #[Test]
@@ -241,4 +257,26 @@ final class CheckEnumCollisionRecord extends Record
     public ?int $id = null;
     #[Column(ColumnType::Enum, enumValues: ['draft', 'live'])]
     public string $status = 'draft';
+}
+
+/** @internal */
+#[Table(name: 'attrecord_chk_shared_a')]
+#[Check('qty_non_negative', 'qty >= 0')]
+final class CheckSharedNameARecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+    #[Column(ColumnType::IntUnsigned)]
+    public int $qty = 0;
+}
+
+/** @internal */
+#[Table(name: 'attrecord_chk_shared_b')]
+#[Check('qty_non_negative', 'qty >= 0')]
+final class CheckSharedNameBRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+    #[Column(ColumnType::IntUnsigned)]
+    public int $qty = 0;
 }

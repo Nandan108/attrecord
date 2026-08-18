@@ -385,14 +385,18 @@ guard.
 
 #### CHECK constraint naming
 
-The emitted name is `chk_{prefixDigest}_{declaredName}_{expressionDigest}`, so
-`#[Check('tracking_unit_only', …)]` on a `wp_` install becomes something like
-`chk_ec2dc5_tracking_unit_only_9f2e11`. Two digests, for two unrelated problems:
+The emitted name is `chk_{scopeDigest}_{declaredName}_{expressionDigest}`, so
+`#[Check('tracking_unit_only', …)]` becomes something like
+`chk_d138a3_tracking_unit_only_9f2e11`. Two digests, for two unrelated problems:
 
-- **The prefix digest** is the foreign-key story exactly: MySQL scopes CHECK constraint names
-  **per database** (`ERROR 3822 Duplicate check constraint name`), so two installs sharing one must
-  not derive the same name. Same mechanism, same six hex characters, omitted when the prefix is
-  empty. (MariaDB, PostgreSQL and SQLite scope per table and would not need it.)
+- **The scope digest** covers the table prefix *and* the table, because MySQL scopes CHECK
+  constraint names **per database** (`ERROR 3822 Duplicate check constraint name`) where every other
+  supported engine scopes them per table. The prefix half is the foreign-key story exactly — two
+  installs sharing one database must not derive the same name. The table half is what a foreign key
+  gets for free by carrying the table name in the clear: without it the *same rule on two tables*
+  collides inside one install, which `#[Check('qty_non_negative', 'qty >= 0')]` on two different
+  line tables would do immediately. Digested rather than spelled out so the name stays within the
+  limit for any table name; the cost is that a violation message names the rule but not the table.
 - **The expression digest** has no foreign-key equivalent. No engine gives the expression back as
   written — MySQL re-prints it with charset introducers and its own brackets, PostgreSQL adds
   `::text` casts — so schema tooling comparing live against declared cannot distinguish *the author

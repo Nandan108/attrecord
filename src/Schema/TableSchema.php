@@ -841,35 +841,46 @@ final class TableSchema
     }
 
     /**
-     * Name a CHECK constraint uniquely per *install* and per *expression*.
+     * Name a CHECK constraint uniquely per *install*, per *table* and per *expression*.
      *
-     * The prefix digest is there for the same reason it is on a foreign key — MySQL scopes CHECK
-     * names per database, so two installs sharing one must not derive the same name — and is built
-     * the same way, so see {@see foreignKeyConstraintName()} for why a digest rather than the
-     * prefix itself.
+     * MySQL scopes CHECK constraint names **per database** (`ERROR 3822 Duplicate check constraint
+     * name`) where every other supported engine scopes them per table. So everything that
+     * distinguishes one declaration from another has to survive into the name, and two things do:
      *
-     * The expression digest is the part with no foreign-key equivalent, and it exists because no
-     * engine gives the expression back the way it was written: MySQL re-prints it with charset
-     * introducers and brackets of its own, PostgreSQL adds casts. Comparing a live expression to a
-     * declared one therefore cannot distinguish "the author changed the rule" from "the engine
-     * spells it differently", and the fail-safe reading of that ambiguity — assume the engine —
-     * silently withholds a corrected rule from every database that already has the old one.
-     * Digesting the expression into the *name* removes the comparison from the problem: an edited
-     * expression is a differently-named constraint, so name-only convergence adds the new one and
-     * drops the old.
+     * - **The scope digest** covers the table prefix *and* the table. The prefix half is the
+     *   foreign-key story — two installs sharing one database must not derive the same name (see
+     *   {@see foreignKeyConstraintName()} for why a digest rather than the prefix itself). The
+     *   table half is what the foreign-key case gets for free by carrying the table name in the
+     *   clear: without it, the same rule written on two tables — `#[Check('qty_non_negative',
+     *   'qty >= 0')]` on an order line and on a purchase-order line — collides inside a single
+     *   install. Digested rather than spelled out so the name stays within the identifier limit for
+     *   any table name, at the cost of the table not being readable in a violation message; the
+     *   declared rule name, which says what was actually broken, stays legible instead.
      *
-     * Whitespace is normalized before digesting, so re-indenting an expression is not a schema
+     * - **The expression digest** has no foreign-key equivalent. No engine gives the expression
+     *   back the way it was written: MySQL re-prints it with charset introducers and brackets of
+     *   its own, PostgreSQL adds casts. Comparing a live expression to a declared one therefore
+     *   cannot distinguish "the author changed the rule" from "the engine spells it differently",
+     *   and the fail-safe reading of that ambiguity — assume the engine — silently withholds a
+     *   corrected rule from every database that already has the old one. Digesting the expression
+     *   into the *name* removes the comparison from the problem: an edited expression is a
+     *   differently-named constraint, so name-only convergence adds the new one and drops the old.
+     *
+     * Whitespace is normalized before digesting the expression, so re-indenting one is not a schema
      * change; nothing else is, so any edit to what it *says* moves the digest.
      */
-    private static function checkConstraintName(string $tablePrefix, string $declaredName, string $expression): string
-    {
-        $head = 'chk_';
-        if ('' !== $tablePrefix) {
-            $head .= substr(hash('sha256', $tablePrefix), 0, 6).'_';
-        }
+    private static function checkConstraintName(
+        string $tablePrefix,
+        string $tableName,
+        string $declaredName,
+        string $expression,
+    ): string {
+        $logical = '' !== $tablePrefix && str_starts_with($tableName, $tablePrefix)
+            ? substr($tableName, \strlen($tablePrefix))
+            : $tableName;
 
-        $exprDigest = substr(hash('sha256', trim((string) preg_replace('/\s+/', ' ', $expression))), 0, 6);
-        $tail = '_'.$exprDigest;
+        $head = 'chk_'.substr(hash('sha256', $tablePrefix.'|'.$logical), 0, 6).'_';
+        $tail = '_'.substr(hash('sha256', trim((string) preg_replace('/\s+/', ' ', $expression))), 0, 6);
 
         $room = self::MAX_IDENTIFIER_LENGTH - \strlen($head) - \strlen($tail);
 
@@ -935,7 +946,7 @@ final class TableSchema
             }
 
             $declared[$name] = true;
-            $constraintName = self::checkConstraintName($tablePrefix, $name, $checkAttr->expression);
+            $constraintName = self::checkConstraintName($tablePrefix, $tableName, $name, $checkAttr->expression);
             $checks[$constraintName] = new CheckDefinition($constraintName, $name, $checkAttr->expression);
         }
 

@@ -698,8 +698,8 @@ on all three dialects:
 #[Check('batch_has_parent', "kind <> 'batch' OR parent_id IS NOT NULL")]
 final class Subject extends Record { ... }
 
-// CONSTRAINT `chk_ec2dc5_tracking_unit_only_9f2e11` CHECK (kind = 'unit' OR tracking = 'none'),
-// CONSTRAINT `chk_ec2dc5_batch_has_parent_4a71c0`   CHECK (kind <> 'batch' OR parent_id IS NOT NULL)
+// CONSTRAINT `chk_d138a3_tracking_unit_only_9f2e11` CHECK (kind = 'unit' OR tracking = 'none'),
+// CONSTRAINT `chk_d138a3_batch_has_parent_4a71c0`   CHECK (kind <> 'batch' OR parent_id IS NOT NULL)
 ```
 
 The expression is passed to the engine **verbatim** — nothing here parses it, so each engine's full
@@ -708,9 +708,10 @@ it sees one row, cannot query another table, and is not applied to existing rows
 rewritten. Rules spanning rows belong in your application, with the CHECK carrying the single-row
 projection as a backstop against writes that never pass through it.
 
-The **emitted name is not the declared one** — `chk_{prefixDigest}_{name}_{expressionDigest}` — and
-each digest answers a different problem. MySQL scopes CHECK names *per database*, so the prefix
-digest keeps two installs sharing one apart, exactly as it does for a foreign key. The expression
+The **emitted name is not the declared one** — `chk_{scopeDigest}_{name}_{expressionDigest}` — and
+each digest answers a different problem. MySQL scopes CHECK names *per database*, so the scope
+digest — over the table prefix and the table together — keeps two installs sharing one apart, and
+keeps the same rule on two tables apart within one install. The expression
 digest is subtler: no engine stores the expression as written (MySQL adds charset introducers,
 PostgreSQL adds casts), so tooling comparing live to declared cannot tell an edited rule from a
 re-spelled one — and the safe reading of that ambiguity is the one that never delivers a correction.

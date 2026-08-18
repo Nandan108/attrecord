@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-08-18
+
+### Fixed
+
+- **A `#[Check]` constraint name now includes the table, so the same rule on two tables does not
+  collide.** MySQL scopes CHECK constraint names per *database*, and 0.17.0's name carried the table
+  prefix and the expression but not the table — so two Records declaring the same rule, say
+  `#[Check('qty_non_negative', 'qty >= 0')]` on an order line and on a purchase-order line, derived
+  one name and the second `CREATE TABLE` failed with `ERROR 3822 Duplicate check constraint name`.
+  That is the very collision the prefix digest exists to prevent, one scope in.
+
+  The prefix digest becomes a **scope** digest over prefix *and* table, so it distinguishes both
+  axes at the same six characters. Digested rather than spelled out, so the name stays within the
+  64-character limit for any table name; the declared rule name, which is the half that says what
+  was broken, stays legible in the middle either way.
+
+  **This changes emitted constraint names**, for a feature published the same day. A database
+  created with 0.17.0 carries the old names; `attrecord-migrations` will read them as undeclared and
+  propose replacing them, which is correct and the intended repair.
+
 ## [0.17.0] - 2026-08-18
 
 **`#[Check]` — table-level CHECK constraints.** A boolean expression every row must satisfy,
@@ -915,7 +935,8 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.17.1...HEAD
+[0.17.1]: https://github.com/Nandan108/attrecord/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/Nandan108/attrecord/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/Nandan108/attrecord/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/Nandan108/attrecord/compare/v0.14.1...v0.15.0

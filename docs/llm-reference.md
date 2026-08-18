@@ -259,8 +259,10 @@ records. The **keyed bulk upsert does not yet guard or bump** (per-row version p
 Table-level CHECK constraint, emitted into `CREATE TABLE` on all three dialects and rendered as a
 fragment by `SqlDialect::buildCheckLine()`.
 
-- **Emitted name is not the declared name**: `chk_{prefixDigest}_{name}_{expressionDigest}`. The
-  prefix digest is the foreign-key story (MySQL scopes CHECK names **per database** — `ERROR 3822`);
+- **Emitted name is not the declared name**: `chk_{scopeDigest}_{name}_{expressionDigest}`. The
+  scope digest covers table prefix **and** table, because MySQL scopes CHECK names **per database**
+  (`ERROR 3822`) — so it separates both two installs sharing a database and the same rule on two
+  tables (v0.17.1; 0.17.0 omitted the table and collided on the latter);
   the expression digest makes an edited expression a differently-named constraint, so name-only
   convergence adds/drops it rather than comparing expressions no engine stores verbatim. Whitespace
   is normalized before digesting. `CheckDefinition` carries `$constraintName`, `$declaredName`,
