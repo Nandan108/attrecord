@@ -6,6 +6,83 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-08-21
+
+**`ReferenceReader` — "what points *at* this row?"** A Record declares the foreign keys it owns, so
+the DDL producer could always say what a table points at. The inbound direction is in no Record at
+all — it is spread across every other table in the schema — so it is read from the live catalogue.
+
+### Added
+
+- **`ReferenceReader::inboundForeignKeys($session, $table, ?$column)`** → `list<InboundReference>`:
+  the child table, child column, constraint name, referenced column, and `ON DELETE` action of every
+  foreign key pointing at a table (optionally at one of its columns). `InboundReference` is a
+  read-model of its own rather than a `ForeignKeyDefinition`, which describes a constraint a Record
+  *declares* and resolves its target lazily — this is the other direction, from a different source,
+  and about child tables that may have no Record at all.
+
+- **`ReferenceReader::referencedKeys($session, $table, $column, $keys)`** → the subset of `$keys`
+  that some row somewhere references. **Bulk only, by design**: the set is answered in a `UNION` over
+  the referring tables, and there is deliberately no single-key primitive, because a query per key is
+  how a "which of these 500 can I remove" screen becomes a minute of database time. `array_diff()`
+  gives the unreferenced complement. Empty `$keys`, or a table nothing references, returns `[]`
+  without touching the database.
+
+  It returns **the caller's own values, in the order given** — not the driver's rendering of them.
+  That distinction is not cosmetic: mysqli hands back a signed `BIGINT` column as a numeric *string*
+  whatever was bound, so returning what the database said would quietly break
+  `in_array($key, $result, true)`, `array_flip()` and `array_intersect_key()` — each a natural thing
+  to do with a key set, and each would then report a referenced row as free to delete.
+
+  Large sets are **split across statements internally**. A UNION binds the key set once per referring
+  column, so a call costs referrers × keys placeholders, and every supported engine caps that:
+  MySQL and PostgreSQL speak a 16-bit parameter count, SQLite's `SQLITE_MAX_VARIABLE_NUMBER` defaults
+  lower still. Past the cap a statement does not run slowly, it fails — so a caller asking about
+  40 000 keys is using the method as intended and should not have to know.
+
+- **`ReferenceReaders::for($dialect)` / `::forConnection($connection)`** — the resolver. Kept off
+  `SqlDialect` deliberately: every method there builds a string and executes nothing, which is what
+  makes a dialect testable without a database, and on SQLite this is not one statement's worth of
+  string at all. An unrecognised dialect throws rather than guessing at a catalogue.
+
+### What it is, and what it is not
+
+**Reporting, not delete safety.** A key declared `ON DELETE RESTRICT` already makes the delete safe:
+the engine refuses it, atomically, with no race. Asking first and deleting after is a check-then-act
+with a gap in the middle. Ask in order to *tell someone* what is holding a row, or to count what is
+unreferenced, before anything is attempted.
+
+**Catalogue-only, permanently.** A referrer that stores a key without a foreign key — an id inside a
+JSON document, a meta row, a table in another schema — is invisible here. That is a property of the
+question rather than a gap in the answer.
+
+**Memoized per instance**, keyed by table and column: an `information_schema` scan is slow on a
+server with thousands of tables, which is ordinary shared hosting, and the answer changes only when
+the schema does. Per instance rather than statically, so lifetime stays the caller's decision — hold
+a reader for a request.
+
+### Three engines, three different catalogues
+
+- **MySQL / MariaDB** — `KEY_COLUMN_USAGE` joined to `REFERENTIAL_CONSTRAINTS` for the delete rule,
+  filtered on `REFERENCED_TABLE_NAME`: the same rows the outbound question reads, from the other end.
+  Scoped to `DATABASE()` on both sides, or a same-named table in another schema on the same server
+  contributes rows that have nothing to do with this install.
+- **PostgreSQL** — `pg_constraint`, not the standard views: `confrelid` *is* the referenced table, so
+  inbound is a plain equality instead of a four-view join, and `constraint_column_usage` is
+  permission-filtered in a way that can hide constraints from the very caller asking. `conkey` and
+  `confkey` are unnested **together**, so a composite key's column pairs stay matched rather than
+  becoming their cross product. `to_regclass()` resolves through `search_path`, which scopes the
+  answer for free.
+- **SQLite** — no constraint catalogue at all, and `PRAGMA foreign_key_list(t)` reports one table's
+  *outbound* keys. The obvious consequence would be a pragma per table in a loop; it is avoidable,
+  because every pragma is also a table-valued function, so `pragma_foreign_key_list(m.name)` joins
+  against `sqlite_master` and answers the whole schema in one statement. SQLite also stores no
+  queryable constraint *name* — the pragma reports an ordinal — so `$constraintName` there is
+  `childTable.childColumn`, which is the identity that actually exists, rather than a fabricated
+  match for whatever the DDL happened to call it. A constraint written `REFERENCES parent` with no
+  target column reports `to` as null; the parent's primary key is resolved rather than passed on, so
+  a caller filtering by column need not know that spelling exists.
+
 ## [0.17.1] - 2026-08-18
 
 ### Fixed
@@ -935,7 +1012,8 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.17.1...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/Nandan108/attrecord/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/Nandan108/attrecord/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/Nandan108/attrecord/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/Nandan108/attrecord/compare/v0.15.0...v0.16.0

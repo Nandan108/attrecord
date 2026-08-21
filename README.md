@@ -28,6 +28,7 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
 - Unique-key aware upserts — single (`upsertByUniqueKey`) and bulk (`RecordSet::upsertAllByUniqueKey`), with an optional **auto-increment-burn-free** mode; plus `updateByUniqueKey`
 - Constraint-only foreign keys via `#[ForeignKey]` — declare an FK whose target has no Record (or that you don't want to hydrate)
 - Table-level CHECK constraints via `#[Check]` — a row-local invariant the database enforces, on all three dialects
+- Inbound foreign keys via `ReferenceReader` — "what points **at** this row?", answered from the live catalogue, in bulk
 - Three included `DbSession` adapters: **PDO** (works with MySQL, MariaDB, PostgreSQL, and SQLite), plus MySQL/MariaDB-only **mysqli** and WordPress **`wpdb`**
 - Psalm-clean at level 1
 
@@ -722,6 +723,49 @@ normalized first, so re-indenting is not a schema change.
 **silently ignores** the clause on 8.0.0–8.0.15; MariaDB enforces from 10.2.1; PostgreSQL and SQLite
 always. If you cannot pin your host's version, treat a CHECK as defence in depth, never as the only
 guard.
+
+### `ReferenceReader` — what points *at* a row
+
+A Record declares the foreign keys it owns, so the DDL producer can always say what a table points
+**at**. The opposite direction is not in any Record — it is spread across every other table in the
+schema — so it is read from the live catalogue instead:
+
+```php
+use Nandan108\Attrecord\Schema\Reference\ReferenceReaders;
+
+$reader = ReferenceReaders::forConnection($connection);
+
+// Which columns anywhere reference this table?
+foreach ($reader->inboundForeignKeys($session, 'wp_invflux_document_parties') as $ref) {
+    printf("%s.%s (%s, ON DELETE %s)\n",
+        $ref->childTable, $ref->childColumn, $ref->constraintName, $ref->onDelete?->value ?? '?');
+}
+
+// Of these keys, which are actually used? One statement, however many keys.
+$used   = $reader->referencedKeys($session, 'wp_invflux_document_parties', 'content_hash', $hashes);
+$unused = array_diff($hashes, $used);
+```
+
+**Bulk by design.** `referencedKeys()` answers the set in a `UNION` over the referring tables, and
+there is deliberately no single-key primitive: a query per key is how a "which of these 500 can I
+remove" screen turns into a minute of database time. Ask for a list of one. Very large sets are split
+across statements internally, since every engine caps how many parameters one statement may carry.
+
+**You get your own values back**, in the order you gave them — not the driver's rendering of them.
+mysqli returns a signed `BIGINT` as a numeric string whatever was bound, so this is what keeps
+`in_array($key, $used, true)` and `array_flip($used)` honest.
+
+**For reporting, not for making a delete safe.** A foreign key declared `ON DELETE RESTRICT` already
+makes the delete safe — the engine refuses it, atomically, with no race. Asking first and deleting
+after is a check-then-act with a gap in the middle. Ask in order to *tell someone* what is holding a
+row, or to count what is unreferenced, before anything is attempted.
+
+**It sees only what the catalogue knows.** A referrer that stores a key without a foreign key — an id
+inside a JSON document, a meta row, a table in another schema — is invisible here and always will be.
+
+The catalogue read is memoized per reader instance (an `information_schema` scan is slow on a server
+with thousands of tables, and the answer changes only when the schema does), so hold a reader for a
+request and no longer.
 
 ### Two seams for evolution tooling
 

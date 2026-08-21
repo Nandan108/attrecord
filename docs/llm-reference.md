@@ -773,6 +773,42 @@ byte-identical to the plain call.
 
 **Breaking for external `SqlDialect` implementers** — the interface signature changed.
 
+### `ReferenceReader` — inbound foreign keys (v0.18.0)
+```php
+use Nandan108\Attrecord\Schema\Reference\ReferenceReaders;
+
+$reader = ReferenceReaders::forConnection($connection);   // or ::for($dialect)
+$reader->inboundForeignKeys(DbSession $s, string $table, ?string $column = null): list<InboundReference>
+$reader->referencedKeys(DbSession $s, string $table, string $column, list<scalar> $keys): list<scalar>
+```
+
+`InboundReference`: `$childTable`, `$childColumn`, `$constraintName`, `$referencedColumn`,
+`$onDelete` (`?ForeignKeyAction` — null when the engine reports an action with no case here, never a
+guess). Physical (prefixed) names throughout; nothing is resolved to a Record.
+
+- **Direction.** A Record declares only the keys it *owns*, so the outbound question is answerable
+  from attributes and the inbound one is not — it lives in the catalogue, and may involve tables with
+  no Record at all.
+- **`referencedKeys()` is bulk-only**: a `UNION` over the referring tables, chunked internally past
+  20 000 placeholders (referrers × keys; MySQL/PG cap at 16 bits, SQLite lower). No single-key
+  primitive, by design. Returns **the caller's own values in the caller's order** — not the driver's
+  rendering, so strict `in_array()` / `array_flip()` work (mysqli returns a signed BIGINT as a
+  string). `array_diff()` gives the complement. Returns `[]` without querying when `$keys` is empty
+  or nothing references the table.
+- **Reporting, not safety.** `ON DELETE RESTRICT` already makes a delete safe atomically; asking then
+  deleting is check-then-act. Use it to say *what* holds a row, or to count unreferenced ones.
+- **Catalogue-only.** An FK-less referrer (a key inside a JSON document, a meta row, another schema)
+  is invisible.
+- **Memoized per instance**, keyed by table+column — `information_schema` scans are slow on big
+  servers. Reader lifetime = one request.
+- Per engine: MySQL/MariaDB `KEY_COLUMN_USAGE` + `REFERENTIAL_CONSTRAINTS`, scoped to `DATABASE()`;
+  PostgreSQL `pg_constraint` (`confrelid = to_regclass(?)`, `search_path`-scoped, unnesting
+  `conkey`/`confkey` **together** so composite pairs stay matched); SQLite `sqlite_master` joined to
+  the `pragma_foreign_key_list()` table-valued function — one statement, not a pragma per table.
+  SQLite has no queryable constraint name, so `$constraintName` there is `childTable.childColumn`.
+- `ReferenceReaders::for()` throws `SchemaException` on an unrecognised dialect rather than guessing
+  a catalogue.
+
 ### `TableSchema::extendedWith()` — columns a class cannot declare (v0.12.0)
 ```php
 $schema = TableSchema::fromClass(SlotSpace::class)->extendedWith(
