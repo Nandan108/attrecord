@@ -326,8 +326,8 @@ needed. The plan accepts consumer steps attached **before or after** a planned c
 ```php
 // TEXT → JSON: wrap first (MySQL's MODIFY … JSON validates existing values and
 // rejects non-JSON), then let the planned ALTER run.
-$plan->withStep(
-    before: 'MODIFY COLUMN orders.payload',
+$plan = $plan->withStep(
+    before: 'modify_column orders.payload',
     run: fn (DbSession $s) => $s->exec(
         "UPDATE orders SET payload = JSON_OBJECT('data', payload) WHERE …",
     ),
@@ -337,9 +337,31 @@ $plan->withStep(
 ```
 
 Placement matters and is the consumer's call: wrap-before-ALTER vs backfill-after-ADD are both
-real. Steps run at their position in the apply order and are recorded in the ledger run. A planned
-change that only makes sense *with* its step (the `NOT NULL`-no-default Manual case of §4.3) is
-exactly what this unlocks: attach the backfill, and the pair applies as a unit.
+real. Steps run at their position in the apply order and are recorded in the ledger run.
+`withStep()` returns a **new** plan, keeping `Plan` the pure value object §3 says it is.
+
+The selector is `"kind table.subject"` (or `"kind table"` where a change has no subject), written
+in the differ's own `PlannedChange::$kind` vocabulary — the same strings a plan prints, so it can
+be read straight off `plan()`'s output rather than learned separately.
+
+**A selector matching no change is a no-op, deliberately.** The second time a converged install
+boots, the change was applied long ago and the plan is empty, while the consumer's code still
+attaches its step; an error there would fail every subsequent boot. The mistake that *can* be
+caught — a kind that does not exist — is refused when the step is written. Unmatched steps are
+recorded in the run ledger, so "my backfill never ran" is answerable after the fact.
+
+**The pair is not atomic on MySQL or MariaDB**, and no API here can make it so: DDL auto-commits on
+those engines (§5.2), so a step and its change cannot share a transaction, and a failure between
+them leaves one applied and not the other. PostgreSQL and SQLite have transactional DDL, where a
+caller may wrap the whole apply. Write steps to be re-runnable where the transform allows it — the
+same advice §6.2 gives for its own reasons.
+
+That constraint is also why the `NOT NULL`-no-default case of §4.3 stays **Manual** rather than
+being unlocked by attaching a backfill: the pair would have to apply atomically for the column to
+be tightened safely in one pass, which is exactly what the flagship engine cannot promise. The
+honest path there is the two-release one the `after:` example shows — add the column nullable and
+backfill it after the ADD, then tighten it in a later release, by which time the data satisfies the
+constraint and the tightening is an ordinary planned change.
 
 ### 6.2 Run-once data steps (shape change *without* a schema delta)
 
