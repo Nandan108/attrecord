@@ -34,7 +34,8 @@ final class Column
      * @param list<string>|null                      $enumValues    enum/Set allowed values; required for ColumnType::Enum and ColumnType::Set
      * @param string|null                            $generatedAs   Raw SQL expression for a generated column (e.g. 'IFNULL(scope_actor_id, 0)'). Mutually exclusive with $default, $defaultExpr, $onUpdate, $autoIncrement. The corresponding PHP property is read-only at the application layer — the database computes the value.
      * @param GeneratedColumnMode|null               $generatedMode Storage mode for the generated column. Defaults to `Stored` when $generatedAs is set and $generatedMode is omitted.
-     * @param string|null                            $renamedFrom   Previous column name, for schema-evolution tooling (the `attrecord-migrations` companion): a declared rename is emitted as data-preserving `RENAME COLUMN` instead of a destructive drop+add. **Inert in core** — stored on the ColumnDefinition, never read by CRUD or the DDL producer. Permanent, cheap documentation of the column's history. See https://github.com/Nandan108/attrecord/blob/main/docs/arch-migrations.md §4.3.
+     * @param string|null                            $renamedFrom   Previous column name, for schema-evolution tooling (the `attrecord-migrations` companion): a declared rename is emitted as data-preserving `RENAME COLUMN` instead of a destructive drop+add. **Inert in core** — stored on the ColumnDefinition, never read by CRUD or the DDL producer. Cheap documentation of the column's history, and the only thing standing between an upgrade and a drop+add that would take the data with it — which is why deleting one is a decision, not tidying. See https://github.com/Nandan108/attrecord/blob/main/docs/arch-migrations.md §4.3.
+     * @param string|null                            $renamedSince  Release the rename shipped in, for example '1.4.0'. **Opaque** — stored and never compared; see {@see Absent::$since}. Its purpose is to make "which of these markers still has a live install behind it?" a question a tool can answer, rather than one answered by memory.
      */
     public function __construct(
         public readonly ColumnType $type,
@@ -53,6 +54,7 @@ final class Column
         public readonly ?string $generatedAs = null,
         public readonly ?GeneratedColumnMode $generatedMode = null,
         public readonly ?string $renamedFrom = null,
+        public readonly ?string $renamedSince = null,
     ) {
     }
 }

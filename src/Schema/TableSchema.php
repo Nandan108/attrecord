@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord\Schema;
 
+use Nandan108\Attrecord\Attribute\Absent;
 use Nandan108\Attrecord\Attribute\Cast;
 use Nandan108\Attrecord\Attribute\Check;
 use Nandan108\Attrecord\Attribute\Column;
@@ -16,6 +17,7 @@ use Nandan108\Attrecord\Attribute\PrimaryKey as PrimaryKeyAttr;
 use Nandan108\Attrecord\Attribute\Relation;
 use Nandan108\Attrecord\Attribute\Table;
 use Nandan108\Attrecord\Attribute\UniqueKey;
+use Nandan108\Attrecord\Attribute\Unmanaged;
 use Nandan108\Attrecord\Attribute\UpdatedAt;
 use Nandan108\Attrecord\Attribute\Version;
 use Nandan108\Attrecord\Caster\EnumCaster;
@@ -25,6 +27,7 @@ use Nandan108\Attrecord\ColumnCaster;
 use Nandan108\Attrecord\Enum\ColumnType;
 use Nandan108\Attrecord\Enum\GeneratedColumnMode;
 use Nandan108\Attrecord\Enum\RelationType;
+use Nandan108\Attrecord\Enum\SchemaObjectKind;
 use Nandan108\Attrecord\Exception\SchemaException;
 use Nandan108\Attrecord\JsonCastable;
 
@@ -95,13 +98,43 @@ final class TableSchema
     public readonly array $checks;
 
     /**
-     * @param array<string, ColumnDefinition>    $columns
-     * @param array<string, RelationDefinition>  $relations
-     * @param array<string, \ReflectionProperty> $reflProperties
-     * @param array<string, list<string>>        $uniqueKeys
-     * @param array<string, list<string>>        $indexes
-     * @param list<ForeignKeyDefinition>         $foreignKeys
-     * @param array<string, CheckDefinition>     $checks
+     * Declared renames of indexes and unique keys — current name → {@see RenameDefinition}. One map
+     * for both, because the two share a namespace on every engine that has one.
+     *
+     * **Inert in core**, like every other evolution marker: what a table *was* called has no bearing
+     * on reading or writing it, and `CREATE TABLE` never mentions it.
+     *
+     * @var array<string, RenameDefinition>
+     */
+    public readonly array $indexRenames;
+
+    /**
+     * Schema objects declared **absent** ({@see Absent}), grouped by
+     * kind so a name that is legitimately reused across kinds stays unambiguous. Inert in core.
+     *
+     * @var array<value-of<SchemaObjectKind>, array<string, AbsentDefinition>>
+     */
+    public readonly array $absent;
+
+    /**
+     * Schema objects declared **not ours** ({@see Unmanaged}),
+     * grouped by kind: kind → name → true. Inert in core.
+     *
+     * @var array<value-of<SchemaObjectKind>, array<string, true>>
+     */
+    public readonly array $unmanaged;
+
+    /**
+     * @param array<string, ColumnDefinition>                                    $columns
+     * @param array<string, RelationDefinition>                                  $relations
+     * @param array<string, \ReflectionProperty>                                 $reflProperties
+     * @param array<string, list<string>>                                        $uniqueKeys
+     * @param array<string, list<string>>                                        $indexes
+     * @param list<ForeignKeyDefinition>                                         $foreignKeys
+     * @param array<string, CheckDefinition>                                     $checks
+     * @param array<string, RenameDefinition>                                    $indexRenames
+     * @param array<value-of<SchemaObjectKind>, array<string, AbsentDefinition>> $absent
+     * @param array<value-of<SchemaObjectKind>, array<string, true>>             $unmanaged
      */
     private function __construct(
         public readonly string $tableName,
@@ -123,6 +156,9 @@ final class TableSchema
         array $indexes,
         array $foreignKeys,
         array $checks,
+        array $indexRenames,
+        array $absent,
+        array $unmanaged,
         public readonly ?string $comment,
         public readonly ?MysqlTableOptions $mysqlOptions,
         /** Column name auto-set to now on INSERT ({@see CreatedAt}), or null. */
@@ -139,6 +175,9 @@ final class TableSchema
         $this->indexes = $indexes;
         $this->foreignKeys = $foreignKeys;
         $this->checks = $checks;
+        $this->indexRenames = $indexRenames;
+        $this->absent = $absent;
+        $this->unmanaged = $unmanaged;
         $this->dataColumnNames = array_values(
             array_filter(array_keys($columns), fn (string $n): bool => $n !== $pk),
         );
@@ -364,6 +403,8 @@ final class TableSchema
         $uniqueKeysFromProperty = [];
         /** @var array<string, true> $indexesFromProperty */
         $indexesFromProperty = [];
+        /** @var array<string, RenameDefinition> $indexRenames  current name → what it was called before */
+        $indexRenames = [];
 
         foreach ($reflClass->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
             if ($prop->isStatic()) {
@@ -401,6 +442,7 @@ final class TableSchema
                     $ukNames[] = $ukAttr->name;
                     $uniqueKeys[$ukAttr->name][] = $colName;
                     $uniqueKeysFromProperty[$ukAttr->name] = true;
+                    self::recordRename($class, $indexRenames, $ukAttr->name, $ukAttr->renamedFrom, $ukAttr->renamedSince);
                 }
 
                 $ixNames = [];
@@ -417,6 +459,7 @@ final class TableSchema
                     $ixNames[] = $ixAttr->name;
                     $indexes[$ixAttr->name][] = $colName;
                     $indexesFromProperty[$ixAttr->name] = true;
+                    self::recordRename($class, $indexRenames, $ixAttr->name, $ixAttr->renamedFrom, $ixAttr->renamedSince);
                 }
 
                 $propReflType = $prop->getType();
@@ -496,6 +539,7 @@ final class TableSchema
                         ? ($colAttr->generatedMode ?? GeneratedColumnMode::Stored)
                         : null,
                     renamedFrom: $colAttr->renamedFrom,
+                    renamedSince: $colAttr->renamedSince,
                 );
 
                 if (true === $colAttr->trimOnSave && !$col->isString) {
@@ -642,6 +686,7 @@ final class TableSchema
                 }
             }
             $uniqueKeys[$ukAttr->name] = $ukAttr->columns;
+            self::recordRename($class, $indexRenames, $ukAttr->name, $ukAttr->renamedFrom, $ukAttr->renamedSince);
         }
 
         // --- Class-level #[Index] ---
@@ -672,6 +717,7 @@ final class TableSchema
                 }
             }
             $indexes[$ixAttr->name] = $ixAttr->columns;
+            self::recordRename($class, $indexRenames, $ixAttr->name, $ixAttr->renamedFrom, $ixAttr->renamedSince);
         }
 
         // --- Class-level #[Check] ---
@@ -679,6 +725,9 @@ final class TableSchema
 
         // --- Foreign keys from owning-side relations ---
         $foreignKeys = self::collectForeignKeys($class, $tableName, \Nandan108\Attrecord\Record::tablePrefix(), $relations, $columns);
+
+        // --- Class-level #[Absent] --- last, so it can be checked against everything declared present
+        [$absent, $unmanaged] = self::collectExclusions($class, $reflClass, $columns, $uniqueKeys, $indexes, $checks, $foreignKeys);
 
         // --- Dialect-specific options (read by the matching dialect only) ---
         $mysqlOptionsAttrs = $reflClass->getAttributes(MysqlTableOptions::class);
@@ -696,6 +745,9 @@ final class TableSchema
             indexes: $indexes,
             foreignKeys: $foreignKeys,
             checks: $checks,
+            indexRenames: $indexRenames,
+            absent: $absent,
+            unmanaged: $unmanaged,
             comment: $tableAttr->comment,
             mysqlOptions: $mysqlOptions,
             createdAtColumn: $createdAtColumn,
@@ -885,6 +937,174 @@ final class TableSchema
         $room = self::MAX_IDENTIFIER_LENGTH - \strlen($head) - \strlen($tail);
 
         return $head.substr($declaredName, 0, max(0, $room)).$tail;
+    }
+
+    /**
+     * Record a declared index/unique-key rename, refusing the ways it can be written wrong.
+     *
+     * A composite key declared property-by-property repeats its name on every member, so the same
+     * rename legitimately arrives several times; agreeing repeats are folded, disagreeing ones are
+     * a mistake worth a message rather than a silent last-wins.
+     *
+     * @param array<string, RenameDefinition> $renames
+     */
+    private static function recordRename(
+        string $class,
+        array &$renames,
+        string $name,
+        ?string $from,
+        ?string $since,
+    ): void {
+        if (null === $from) {
+            if (null !== $since) {
+                throw new SchemaException(sprintf(
+                    '%s: "%s" gives `renamedSince` without `renamedFrom`; the version dates a rename, it does not declare one.',
+                    $class,
+                    $name,
+                ));
+            }
+
+            return;
+        }
+        if ($from === $name) {
+            throw new SchemaException(sprintf(
+                '%s: "%s" declares `renamedFrom` pointing at itself.',
+                $class,
+                $name,
+            ));
+        }
+        $existing = $renames[$name] ?? null;
+        if (null !== $existing && ($existing->from !== $from || $existing->since !== $since)) {
+            throw new SchemaException(sprintf(
+                '%s: "%s" declares two different renames ("%s" and "%s"); a composite may repeat the '
+                .'same one on each member, but they must agree.',
+                $class,
+                $name,
+                $existing->from,
+                $from,
+            ));
+        }
+        $renames[$name] = new RenameDefinition($from, $since);
+    }
+
+    /**
+     * The names an `#[Absent]` or `#[Unmanaged]` declaration carries, by kind. Both take the same
+     * five parameters, each accepting one name or a list of them.
+     *
+     * @return array<value-of<SchemaObjectKind>, list<string>>
+     */
+    private static function namesByKind(Absent | Unmanaged $attr): array
+    {
+        $byKind = [
+            SchemaObjectKind::Index->value      => $attr->index,
+            SchemaObjectKind::UniqueKey->value  => $attr->uniqueKey,
+            SchemaObjectKind::ForeignKey->value => $attr->foreignKey,
+            SchemaObjectKind::Check->value      => $attr->check,
+            SchemaObjectKind::Column->value     => $attr->column,
+        ];
+
+        $out = [];
+        foreach ($byKind as $kindValue => $names) {
+            $out[$kindValue] = null === $names ? [] : array_map(strval(...), (array) $names);
+        }
+
+        /** @psalm-var array<value-of<SchemaObjectKind>, list<string>> $out */
+        return $out;
+    }
+
+    /**
+     * Collect the two class-level markers that name objects the table's *declared* shape does not:
+     * `#[Absent]` (must not exist) and `#[Unmanaged]` (exists, but is not ours).
+     *
+     * Collected together because they share one validation: every name here must be absent from the
+     * declared shape and from the other marker. Declaring an object present and absent, or absent
+     * and unmanaged, states two things that cannot both hold, and the differ downstream could only
+     * resolve that by guessing which half was meant.
+     *
+     * @param array<string, ColumnDefinition> $columns
+     * @param array<string, list<string>>     $uniqueKeys
+     * @param array<string, list<string>>     $indexes
+     * @param array<string, CheckDefinition>  $checks
+     * @param list<ForeignKeyDefinition>      $foreignKeys
+     *
+     * @return array{array<value-of<SchemaObjectKind>, array<string, AbsentDefinition>>, array<value-of<SchemaObjectKind>, array<string, true>>}
+     */
+    private static function collectExclusions(
+        string $class,
+        \ReflectionClass $reflClass,
+        array $columns,
+        array $uniqueKeys,
+        array $indexes,
+        array $checks,
+        array $foreignKeys,
+    ): array {
+        $declaredFkNames = [];
+        foreach ($foreignKeys as $fk) {
+            $declaredFkNames[$fk->constraintName] = true;
+        }
+        /** @psalm-var array<value-of<SchemaObjectKind>, array<string, true>> $present */
+        $present = [
+            SchemaObjectKind::Index->value      => array_fill_keys(array_keys($indexes), true),
+            SchemaObjectKind::UniqueKey->value  => array_fill_keys(array_keys($uniqueKeys), true),
+            SchemaObjectKind::ForeignKey->value => $declaredFkNames,
+            SchemaObjectKind::Check->value      => array_fill_keys(array_keys($checks), true),
+            SchemaObjectKind::Column->value     => array_fill_keys(array_keys($columns), true),
+        ];
+
+        /** @psalm-var array<value-of<SchemaObjectKind>, array<string, AbsentDefinition>> $absent */
+        $absent = array_fill_keys(array_keys($present), []);
+        /** @psalm-var array<value-of<SchemaObjectKind>, array<string, true>> $unmanaged */
+        $unmanaged = array_fill_keys(array_keys($present), []);
+
+        foreach ([Absent::class, Unmanaged::class] as $attrClass) {
+            $short = '#['.substr((string) strrchr($attrClass, '\\'), 1).']';
+            foreach ($reflClass->getAttributes($attrClass) as $attrRefl) {
+                $attr = $attrRefl->newInstance();
+                if (!$attr instanceof Absent && !$attr instanceof Unmanaged) {
+                    continue; // unreachable: getAttributes() filtered by class
+                }
+                $named = false;
+                foreach (self::namesByKind($attr) as $kindValue => $names) {
+                    $kind = SchemaObjectKind::from($kindValue);
+                    foreach ($names as $name) {
+                        $named = true;
+                        if (isset($present[$kindValue][$name])) {
+                            throw new SchemaException(sprintf(
+                                '%s: %s "%s" is declared both present and %s. Remove one — the two '
+                                .'state different things about the same object.',
+                                $class,
+                                $kind->label(),
+                                $name,
+                                $short,
+                            ));
+                        }
+                        if (isset($absent[$kindValue][$name]) || isset($unmanaged[$kindValue][$name])) {
+                            throw new SchemaException(sprintf(
+                                '%s: %s "%s" is named by more than one #[Absent]/#[Unmanaged] declaration.',
+                                $class,
+                                $kind->label(),
+                                $name,
+                            ));
+                        }
+                        if ($attr instanceof Absent) {
+                            $absent[$kindValue][$name] = new AbsentDefinition($kind, $name, $attr->since);
+                        } else {
+                            $unmanaged[$kindValue][$name] = true;
+                        }
+                    }
+                }
+                if (!$named) {
+                    throw new SchemaException(sprintf(
+                        '%s: %s names nothing; give it at least one of index:, uniqueKey:, '
+                        .'foreignKey:, check: or column:.',
+                        $class,
+                        $short,
+                    ));
+                }
+            }
+        }
+
+        return [$absent, $unmanaged];
     }
 
     /**
@@ -1250,6 +1470,9 @@ final class TableSchema
             indexes: [...$this->indexes, ...$indexes],
             foreignKeys: $this->foreignKeys,
             checks: $this->checks,
+            indexRenames: $this->indexRenames,
+            absent: $this->absent,
+            unmanaged: $this->unmanaged,
             comment: $this->comment,
             mysqlOptions: $this->mysqlOptions,
             createdAtColumn: $this->createdAtColumn,

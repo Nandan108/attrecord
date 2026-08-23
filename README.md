@@ -767,9 +767,9 @@ The catalogue read is memoized per reader instance (an `information_schema` scan
 with thousands of tables, and the answer changes only when the schema does), so hold a reader for a
 request and no longer.
 
-### Two seams for evolution tooling
+### Seams for evolution tooling
 
-Both added in 0.12.0 for the [attrecord-migrations](https://github.com/Nandan108/attrecord-migrations)
+Added for the [attrecord-migrations](https://github.com/Nandan108/attrecord-migrations)
 companion, and inert unless you ask for them.
 
 **Creating a cycle.** Two tables that reference each other have no creation order that works while
@@ -794,6 +794,52 @@ $schema = TableSchema::fromClass(SlotSpace::class)->extendedWith(
 A derivation, not a from-scratch builder: the Record stays the source of truth for the table name,
 primary key, foreign keys and reflection data, so the result is an ordinary schema that happens to
 carry extra columns. Adding a name the class already declares throws.
+
+### Saying what the schema *does not* declare
+
+A `TableSchema` describes what exists. Three questions a converger has to answer are not in there
+at all, so they are declared beside the Record — all inert here, none of them reaching `CREATE
+TABLE`.
+
+**Is this the same object under a new name?**
+
+```php
+#[Index('idx_status_date', columns: ['status', 'created_at'], renamedFrom: 'idx_old_status_date', renamedSince: '1.4.0')]
+```
+
+A rename looks to a differ like one index appearing and another disappearing. Identical shapes are
+enough to pair them; the declaration is what survives an index being renamed *and* reshaped in the
+same release. `#[UniqueKey]` takes the same two parameters, and `#[Column(renamedFrom:)]` has since
+0.11.0 — there a rename is never *inferred*, because a wrong pairing there costs data rather than a
+rebuild.
+
+**Is this retired?**
+
+```php
+#[Absent(index: ['idx_legacy_sku', 'idx_legacy_isbn'], since: '1.4.0')]
+#[Absent(column: 'po_id', since: '2.0.0')]
+```
+
+Each parameter (`index:`, `uniqueKey:`, `foreignKey:`, `check:`, `column:`) takes one name or a
+list, and the attribute repeats so objects retired in different releases carry their own version.
+It asserts a fact about the present rather than recording an event, which is what keeps it
+idempotent: on an install that never had the object there is nothing to do, so the plan is still
+empty.
+
+`since:` is opaque — stored and printed, never compared, because this library does not know whether
+you ship semver, dates or plugin versions (and `version_compare('1.04.0', '1.4.0')` says *equal*).
+
+**Is this even ours?**
+
+```php
+#[Unmanaged(index: 'idx_dba_status_covering')]
+```
+
+The tuning index a DBA added after a slow query. Nothing distinguishes it from a leftover of your
+own except knowledge no introspection can recover, and left undeclared it reads as drift on every
+check forever.
+
+Declaring an object both present and absent, or absent and unmanaged, throws where it is written.
 
 ### Attribute fields used in DDL emission
 

@@ -218,9 +218,13 @@ Column-level, per table: match by name; then
   simply missing the column (`ADD`), and one matching the *current* name ignores the marker.
 
 Index / unique-key / FK level: compared by **name + column list** (+ FK target/actions). Additions
-are Safe (with the §3.1 marker); drops are Destructive; a same-name-different-definition entry
-plans as drop **then** add — the pair inheriting Destructive, so a redefinition never silently
-slips through under the Safe ceiling.
+are Safe (with the §3.1 marker). A same-name-different-definition entry plans as **one** change —
+`replace_index` / `replace_foreign_key` — carrying both the drop and the add: emitted separately
+they could be authorised separately, and a ceiling admitting the drop alone would leave the table
+with neither the live shape nor the desired one.
+
+Drops divide by whether the object **contradicts** the declared model, which is not the same
+question as whether the statement is lossy (§4.3bis).
 
 **A foreign-key *rename*, unlike a column rename, is inferred — and that is not a contradiction.** A
 constraint holds no data, and its shape — local columns, target table and columns, referential
@@ -237,12 +241,93 @@ statements. Pairing is declined when more than one live constraint matches the s
 constraints are already redundant with each other, so there is no fact about which was renamed, and
 guessing would drop an arbitrary one; that falls back to plain add + drop.
 
-Its cost, and so its class, is per dialect. PostgreSQL has `ALTER TABLE … RENAME CONSTRAINT`, a
-catalogue-only update with no validation or rewrite: **Safe**. MySQL and MariaDB have no equivalent,
-so the identical outcome costs an `ADD FOREIGN KEY` that validates every existing row under a
-metadata lock, plus a `DROP` — real work on a large table, and not something to do unattended at
-boot: **Destructive**. The fallback adds *before* dropping, so the column is never momentarily
-unconstrained. SQLite cannot address a constraint separately at all: Manual.
+Its *cost* is per dialect even though its class is not. PostgreSQL has `ALTER TABLE … RENAME
+CONSTRAINT`, a catalogue-only update with no validation or rewrite. MySQL and MariaDB have no
+equivalent, so the identical outcome costs an `ADD FOREIGN KEY` that validates every existing row
+under a metadata lock, plus a `DROP` — real work on a large table, though it destroys nothing and so
+stays Safe. The fallback adds *before* dropping, so the column is never momentarily unconstrained.
+SQLite cannot address a constraint separately at all: Manual.
+
+**An index rename is inferred on the same terms, and matters more.** An index holds no data either,
+so an orphaned desired name and an orphaned live name of identical shape are the same index. Left
+unpaired the halves classify differently — create Safe, drop Destructive — so a Safe-ceiling run
+builds the new index and keeps the old one *forever*: double the write cost on every insert, no
+error, and nothing in the plan to notice, since the leftover then reads as an ordinary undeclared
+index. One `rename_index` change avoids that.
+
+Here almost every engine can rename in the catalogue (`RENAME INDEX` on MySQL 5.7+/MariaDB 10.5.2+,
+`ALTER INDEX … RENAME TO` on PostgreSQL); SQLite cannot, and falls back to creating the new index
+before dropping the old — the opposite order to the FK fallback, for the same reason in mirror: an
+index is never momentarily missing.
+
+The catalogue rename is only correct while the **shape is unchanged**, since renaming keeps the live
+columns. Renaming *and* reshaping in one release is exactly the case shape-matching cannot see, and
+there `renamedFrom:` on `#[Index]` / `#[UniqueKey]` declares the pairing that no inference could
+recover; the change is then a rebuild under the new name.
+
+### 4.3bis Absence and ownership: what the schema does *not* declare
+
+Three distinct things can be true of a live object the Records do not declare, and the differ cannot
+tell them apart by introspection — the drift is identical on the wire. Two markers let the author
+say which, and the difference is authority, not loss.
+
+**`#[Absent(index: …, column: …, …, since: '1.4.0')]` — it should not exist.** A retired object that
+earlier releases created. The declaration answers the ownership question, so:
+
+- an **index or unique key** becomes Safe to drop. Undeclared it is Destructive, because an index
+  forbids nothing and therefore contradicts nothing: it is as likely to be an operator's tuning
+  index, and dropping that silently degrades a query plan under production load — the failure that
+  surfaces at 3am, far from the migration, with no error to grep for.
+- a **foreign key or CHECK** was already Safe (§4.3ter), so this only sharpens the reason text.
+- a **column stays Destructive.** Saying you meant it does not bring the values back. What it buys
+  is provenance: an operator reading a Destructive plan can tell the deliberate removal from the
+  surprise.
+
+It is an assertion about the present, not a record of an event, and that is what makes it
+idempotent: on an install that never had the object there is nothing to do, so the golden invariant
+(§1) holds with no ledger key to remember itself by.
+
+`since:` is **opaque** — stored, printed in the plan, never compared. This library does not know
+whether a consumer ships semver, dates or plugin versions, and PHP's own
+`version_compare('1.04.0', '1.4.0')` answers *equal*, so a guess would be a quiet wrong answer. Its
+purpose is to make "which of these markers still has a live install behind it?" answerable by a
+tool that knows the scheme.
+
+**Pruning a marker is safe, and that bounds how much machinery this deserves.** Delete an `#[Absent]`
+and the object falls back to the undeclared path — still *reported*, just Destructive rather than
+automatic. So a vendor who decides "every install has passed 1.4.0" can drop those lines and the
+worst case is that an ancient install needs one operator decision. The exception is a
+`PartiallyDeclared` table, where the drop loops are skipped entirely and a pruned marker means the
+object lingers unreported: do not prune there.
+
+**`#[Unmanaged(index: …, column: …)]` — it exists, and is not ours.** The DBA's covering index, a
+neighbouring plugin's column. Never converged, never dropped, never reported. This is
+`PartiallyDeclared` at object granularity, and preferable wherever the objects can be named: the
+interface buys its silence by going quiet about *all* drift on that table for good, whereas naming
+one object leaves everything else under the differ's eye.
+
+Neither marker reaches emitted DDL — a `CREATE TABLE` describes what exists, and an absence has
+nothing to say there. Both are refused where they are written if they contradict the declared shape
+(an object cannot be required and forbidden at once) or each other.
+
+### 4.3ter Why a constraint drop is Safe and an index drop is not
+
+`ChangeClass` reads as a lossiness ladder, but for drops the operative question is **contradiction**.
+A foreign key or CHECK is *prohibitive*: it rejects writes. One that is live and undeclared means the
+database refuses writes the Records permit, so leaving it in place is itself the failure mode — and
+silently, while every existing row happens to satisfy it. An undeclared FK carrying
+`ON DELETE CASCADE` goes further and *deletes rows*, which makes keeping it the lossy option and
+dropping it the preserving one.
+
+An index is *permissive*. It forbids nothing, so there is no contradiction to resolve and no
+convergence argument to make; keeping it costs some write amplification and some disk. Meanwhile
+being wrong about it is expensive and invisible, and re-adding one is a rebuild rather than a
+metadata write. So constraint drops are Safe, index drops need opt-in, and `#[Absent]` is how an
+author moves a specific index across that line.
+
+A `UNIQUE` index is prohibitive by this test and would classify Safe on the argument above; it is
+deliberately left Destructive, because dropping it *permits* the duplicate data that then blocks
+re-adding it — the one index property whose removal is not practically reversible.
 
 ### 4.4 SQLite: the rebuild boundary (phased)
 
@@ -444,9 +529,9 @@ The same two costs that sent the UoW out of core apply, plus a third specific to
 
 ### 8.1 The seams core must expose
 
-Two were foreseen; building the companion against a real schema turned up two more. All four ship
-in core and are useful independently of the companion. *(All landed — 1 and 2 in 0.11.0, 3 and 4
-in 0.12.0.)*
+Two were foreseen; building the companion against a real schema turned up three more. All ship in
+core and are useful independently of the companion. *(1 and 2 in 0.11.0, 3 and 4 in 0.12.0, 5 in
+0.19.0.)*
 
 1. **Promote the DDL fragment builders to the `SqlDialect` interface.** `buildColumnLine(ColumnDefinition): string`,
    `buildForeignKeyLine(ForeignKeyDefinition): string` and `renderColumnType(ColumnDefinition): string`
@@ -482,6 +567,14 @@ seams correctly and missed both *structural* ones.
    downstream has to cope with a class-less `TableSchema`. `plan()` / `fingerprint()` accept such a
    schema alongside class-strings, which is also why the companion's ordering is keyed by table
    name rather than by class.
+
+5. **The evolution markers** — `renamedFrom:` / `renamedSince:` on `#[Index]` and `#[UniqueKey]`,
+   `#[Absent]`, and `#[Unmanaged]`, collected onto `TableSchema` as `$indexRenames`, `$absent` and
+   `$unmanaged` (§4.3bis). All **inert in core**, in the same sense as `#[Column(renamedFrom:)]`:
+   nothing here is read by CRUD or by the DDL producer, because none of it describes the table's
+   shape. They exist because three questions the differ must answer are not recoverable from any
+   pair of schemas — *is this the same object under a new name*, *is this retired*, *is this even
+   ours* — and the only place the answer exists is beside the declaration.
 
 Everything else the companion needs — `TableSchema`'s public readonly model, `quoteIdentifier`,
 `toLiteral`, `withAdvisoryLock`, `buildCreateTable` for new tables and its own ledger — is already

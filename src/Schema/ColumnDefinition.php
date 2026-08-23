@@ -72,6 +72,8 @@ final class ColumnDefinition
         public readonly ?ColumnCaster $caster = null,
         /** Previous column name for schema-evolution tooling; inert in core (see Attribute\Column::$renamedFrom). */
         public readonly ?string $renamedFrom = null,
+        /** Release {@see $renamedFrom} shipped in; opaque and never compared (see Attribute\Absent::$since). */
+        public readonly ?string $renamedSince = null,
     ) {
         $this->isInteger = $type->isInteger();
         $this->isBool = $type->isBool();

@@ -6,6 +6,65 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-08-23
+
+**Three markers for what a table's shape does *not* say.** A `TableSchema` describes what exists,
+which leaves the companion converger unable to answer three questions that no pair of schemas
+contains: is this live object the same one under a new name, is it retired, or is it not ours at
+all. All three additions are **inert in core** — collected onto `TableSchema`, never read by CRUD
+and never emitted into DDL, in the same sense as `#[Column(renamedFrom:)]` before them.
+
+### Added
+
+- **`renamedFrom:` / `renamedSince:` on `#[Index]` and `#[UniqueKey]`**, collected as
+  `TableSchema::$indexRenames`. Until now only a *column* could declare its former name. An index
+  rename is the more urgent case in practice: it looks to a differ like an unrelated index appearing
+  and another disappearing, and those two halves classify differently, so a converger applying only
+  its safe half builds the new index and keeps the old one indefinitely — no error, double the write
+  cost. Shape-matching recovers the ordinary case on its own; a declaration is what survives an index
+  being renamed *and* reshaped in one release, where nothing relates the two.
+
+  On a composite declared property-by-property the rename may be repeated on each member; agreeing
+  repeats fold, disagreeing ones throw. `renamedSince` without `renamedFrom` throws — a version dates
+  a rename, it does not declare one.
+
+- **`#[Absent(index:, uniqueKey:, foreignKey:, check:, column:, since:)]`**, collected as
+  `TableSchema::$absent` — a named object that must **not** exist. Each parameter takes one name or a
+  list; the attribute is repeatable, so objects retired in different releases carry their own version.
+
+  It states a fact about the present rather than recording an event, which is what makes it
+  idempotent: on an install that never had the object there is nothing to do, so a schema carrying
+  `#[Absent]` still converges to an empty plan. A "drop this" step cannot have that property without
+  a ledger key to remember itself by.
+
+  `since:` is **opaque** — stored, never compared. This library does not know whether a consumer
+  ships semver, dates or plugin versions, and PHP's own `version_compare('1.04.0', '1.4.0')` answers
+  *equal*, so comparing here would be a quiet wrong answer rather than a loud unsupported one. It is
+  for the author, and for a pruning tool that knows the scheme.
+
+- **`#[Unmanaged(index:, uniqueKey:, foreignKey:, check:, column:)]`**, collected as
+  `TableSchema::$unmanaged` — a named object that exists on purpose, by another authority, and is
+  never to be converged or dropped. The DBA's covering index is the case: it forbids nothing, so
+  nothing distinguishes it from a leftover of our own except knowledge that no introspection can
+  recover, and left undeclared it reads as drift on every check until the reader learns to skim the
+  check. The companion's `PartiallyDeclared` answers the same question for a whole table and pays by
+  going quiet about all of it; naming one object leaves the rest under the differ's eye.
+
+- **`SchemaObjectKind`** — `index` / `unique_key` / `foreign_key` / `check` / `column` as a value,
+  with `label()` for messages. Both markers group by it, so a name legitimately reused across kinds
+  stays unambiguous.
+
+- **`RenameDefinition`** and **`AbsentDefinition`** value objects, plus `renamedSince` on
+  `ColumnDefinition` beside the existing `renamedFrom`.
+
+### Notes
+
+Declaring an object both present and absent, absent twice, or absent *and* unmanaged throws a
+`SchemaException` at schema-build time — where it is written, rather than as a puzzling plan later.
+
+Nothing here is required to keep working: every parameter is optional and trailing, every new
+`TableSchema` property is additive.
+
 ## [0.18.0] - 2026-08-21
 
 **`ReferenceReader` — "what points *at* this row?"** A Record declares the foreign keys it owns, so
@@ -1012,7 +1071,8 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/Nandan108/attrecord/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/Nandan108/attrecord/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/Nandan108/attrecord/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/Nandan108/attrecord/compare/v0.16.0...v0.17.0

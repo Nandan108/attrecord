@@ -160,9 +160,34 @@ All attributes are `readonly`. Param order below matches the constructor.
 | `generatedAs` | `?string` | `null` | Raw SQL expression → `GENERATED ALWAYS AS (...)`. Column excluded from writes. **Dialect-specific SQL.** |
 | `generatedMode` | `?GeneratedColumnMode` | `null` | `Stored` / `Virtual`. PG supports `Stored` only. |
 | `renamedFrom` | `?string` | `null` | Previous column name, for schema-evolution tooling (`attrecord-migrations`): a declared rename becomes data-preserving `RENAME COLUMN` instead of drop+add. **Inert in core** — stored on `ColumnDefinition`, never read by CRUD or the DDL producer. See docs/arch-migrations.md §4.3. |
+| `renamedSince` | `?string` | `null` | Release the rename shipped in. **Opaque** — stored, never compared (see `#[Absent]` below). |
 
 Property-level `#[UniqueKey('name')]` / `#[Index('name')]` (no `columns`) attach the property's
 column to a single-column key.
+
+### Declaring what is *not* in the schema
+
+Three class-level markers for the questions a converger cannot answer by introspection. All are
+**inert in core**: collected onto `TableSchema`, never read by CRUD, never emitted into DDL.
+
+| Marker | Collected as | Says |
+| --- | --- | --- |
+| `#[Index(…, renamedFrom:, renamedSince:)]`, `#[UniqueKey(…)]` | `$indexRenames` (name → `RenameDefinition`) | this index is the live one under a new name |
+| `#[Absent(index:, uniqueKey:, foreignKey:, check:, column:, since:)]` | `$absent` (kind → name → `AbsentDefinition`) | this named object must **not** exist |
+| `#[Unmanaged(index:, uniqueKey:, foreignKey:, check:, column:)]` | `$unmanaged` (kind → name → `true`) | this named object is another authority's; never touch it |
+
+Kinds are `SchemaObjectKind` (`index`, `unique_key`, `foreign_key`, `check`, `column`); use
+`SchemaObjectKind::Index->value` as the key. Each `#[Absent]`/`#[Unmanaged]` parameter accepts one
+name **or a list**, and both attributes are repeatable.
+
+`since:` is **opaque** — stored and reported, never compared: the scheme is the consumer's, and
+`version_compare('1.04.0', '1.4.0')` returns `0`. It exists so a pruning tool that knows the scheme
+can ask which markers still have live installs behind them.
+
+Refused at schema-build time (`SchemaException`): an object declared both present and absent or
+unmanaged; the same object named twice across the two markers; `#[Absent]`/`#[Unmanaged]` naming
+nothing; `renamedSince` without `renamedFrom`; a `renamedFrom` pointing at itself; and a composite
+key whose members declare *disagreeing* renames (agreeing repeats fold).
 
 **`default:` with a backed enum case.** `default: Status::Active` names the vocabulary that owns the
 value instead of restating it, so a renumbered case can't leave a stale default behind. The case is

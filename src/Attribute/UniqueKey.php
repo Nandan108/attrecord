@@ -34,12 +34,18 @@ namespace Nandan108\Attrecord\Attribute;
 final class UniqueKey
 {
     /**
-     * @param string            $name    index name (must be unique across the table)
-     * @param list<string>|null $columns required when used at class level; forbidden at property level
+     * @param string            $name         index name (must be unique across the table)
+     * @param list<string>|null $columns      required when used at class level; forbidden at property level
+     * @param string|null       $renamedFrom  previous key name — see {@see Index::__construct()},
+     *                                        which documents the parameter in full. **Inert in core.**
+     * @param string|null       $renamedSince release the rename shipped in, opaque — see
+     *                                        {@see Absent::$since}
      */
     public function __construct(
         public readonly string $name,
         public readonly ?array $columns = null,
+        public readonly ?string $renamedFrom = null,
+        public readonly ?string $renamedSince = null,
     ) {
     }
 }
