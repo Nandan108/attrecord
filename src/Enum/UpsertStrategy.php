@@ -14,6 +14,24 @@ namespace Nandan108\Attrecord\Enum;
  * (worst with secondary unique keys). Its join-UPDATE also masks per-row, so a heterogeneous batch
  * (records each carrying a different subset of changed columns) updates only each row's own fields.
  *
+ * **`Locked` is not deadlock-*proof*, and the one shape it does not cover is a single key.** On
+ * InnoDB, step 1 against a row that already exists leaves a **shared** lock on it (a plain
+ * `INSERT`/`INSERT IGNORE` takes S where `ON DUPLICATE KEY UPDATE` would take X); step 2 then asks
+ * for **exclusive** on that same row. Two sessions upserting the same existing row concurrently
+ * therefore each hold S and each wait for X — a **lock-conversion deadlock**: one row, one
+ * granularity, a mode conflict rather than an ordering one. (Conversion, not *escalation*, which
+ * means row→page→table and is a different thing InnoDB does not do.)
+ *
+ * The ordered `FOR UPDATE` cannot help here, and this is not a gap in it: inversion needs two or
+ * more resources to have an order at all, so with a single key there is nothing to order and the
+ * protection has no grip. Reachability is correspondingly narrow — two writers, the same key,
+ * overlapping in time — which is why it stays latent under single-writer flows.
+ *
+ * Callers who expect same-key concurrency should either wrap the call in a transaction-retry
+ * decorator ({@see \Nandan108\Attrecord\Session\RetryingDbSession}, whose retry is what makes a
+ * transient 1213 a non-event) or, for a homogeneous PK-keyed single-row write where the caveats
+ * below are all harmless, consider `Lockless` — whose single statement has no S→X step to convert.
+ *
  * `Lockless` — one single-statement `INSERT … VALUES (…),(…) ON DUPLICATE KEY UPDATE …`
  * (MySQL/MariaDB) / `… ON CONFLICT (pk) DO UPDATE SET …` (PostgreSQL/SQLite) — the engine's own
  * upsert, with **no** `SELECT … FOR UPDATE`. Taking no row locks is the point (hence the name), and
