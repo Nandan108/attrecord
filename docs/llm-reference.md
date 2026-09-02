@@ -28,7 +28,7 @@ prose and worked examples, and the topic docs in this directory for deep dives
 
 | Namespace | Contents |
 |---|---|
-| `Nandan108\Attrecord` | `Record`, `RecordSet`, `WhereClause`, `RawSql`, `Connection`, `DbSession`, `SqlDialect`, `AppendOnly` (marker), `ColumnSerializer` (internal), `ColumnCaster`, `JsonCastable`, `BinaryParam`, `LockSet`, `Transaction`, `SaveResult`, `UpsertSql`, `NamedPlaceholderSql` (internal) |
+| `Nandan108\Attrecord` | `Record`, `RecordSet`, `WhereClause`, `RawSql`, `Connection`, `DbSession`, `SqlDialect`, `Immutable` + `AppendOnly` (markers), `ColumnSerializer` (internal), `ColumnCaster`, `JsonCastable`, `BinaryParam`, `LockSet`, `Transaction`, `SaveResult`, `UpsertSql`, `NamedPlaceholderSql` (internal) |
 | `Nandan108\Attrecord\Attribute` | `Table`, `Column`, `ForeignKey`, `Index`, `UniqueKey`, `Relation`, `LockTier`, `MysqlTableOptions`, `Cast` (abstract base) |
 | `Nandan108\Attrecord\Caster` | `DateTimeCaster`, `EpochCaster`, `JsonCaster`, `EnumCaster`, `BitmaskCaster`, `SetCaster` |
 | `Nandan108\Attrecord\Dialect` | `MysqlDialect`, `PgsqlDialect`, `SqliteDialect`, `UpsertJoinBuilder` (trait) |
@@ -620,26 +620,40 @@ Batch persistence (a bounded number of statements per operation — never a per-
 `SaveResult` (readonly): `int $inserted`, `int $updated`, `list<int|string> $insertedIds`,
 `total(): int`. `UpsertSql` (readonly): `string $create`, `string $lock`, `?string $update`.
 
-### `AppendOnly` — write-once Records
+### `Immutable` / `AppendOnly` — Records that never change
 
-`implements Nandan108\Attrecord\AppendOnly` marks a Record whose rows are **write-once** (ledger,
-event log, outbox, audit trail). **Reads are unrestricted** (every finder works normally); the
-**only permitted write is an INSERT**. attrecord enforces this at runtime on every mutation entry
-point — each throws `Exception\AppendOnlyViolationException`:
+Two markers, one strictly stronger than the other (`interface AppendOnly extends Immutable`). Both
+leave **reads unrestricted** — every finder works normally — and both are enforced at runtime on the
+write entry points, each throwing `Exception\AppendOnlyViolationException`.
 
-| Path | AppendOnly |
-|---|---|
-| `insertAll()` | ✅ allowed (the sanctioned bulk-append path) |
-| `save()` on a **new** record (`isNew()`) | ✅ allowed (single-row append) |
-| all finders (`find`, `getOne`, `where…`, aggregates) | ✅ allowed |
-| `save()` on an **existing** record (UPDATE) | ❌ throws |
-| `delete()`, `deleteAll()`, `deleteWhere()` | ❌ throws |
-| `updateWhere()`, `updateByWhere()` | ❌ throws |
-| `upsertAll()` (and its deprecated `saveAll()` alias), `upsertAllByUniqueKey()` | ❌ throws — insert-vs-upsert is decided per-record at runtime, so neither is a reliable append; use `insertAll()` |
+| Path | `Immutable` | `AppendOnly` |
+|---|---|---|
+| `insertAll()` | ✅ allowed (the sanctioned bulk-append path) | ✅ allowed |
+| `save()` on a **new** record (`isNew()`) | ✅ allowed (single-row append) | ✅ allowed |
+| all finders (`find`, `getOne`, `where…`, aggregates) | ✅ allowed | ✅ allowed |
+| `save()` on an **existing** record (UPDATE) | ❌ throws | ❌ throws |
+| `updateWhere()`, `updateByWhere()` | ❌ throws | ❌ throws |
+| `upsertAll()` (and its deprecated `saveAll()` alias), `upsertAllByUniqueKey()` | ❌ throws — insert-vs-update is decided per-record at runtime, so neither is a reliable insert; use `insertAll()` | ❌ throws |
+| **`delete()`, `deleteAll()`, `deleteWhere()`** | ✅ **allowed** | ❌ throws |
 
-The guard is a class-level check (`is_a(static::class, AppendOnly::class, true)`) plus, for `save()`,
-an `isNew()` check — so the insert path is never blocked. Enforcement lives at the write methods (not
-a static lint), so bulk paths (`upsertAll`/`deleteAll`) and instance mutations are covered too.
+**Choosing between them is a question about what the row claims**, not about how much protection you
+want:
+
+- **`Immutable`** — the *content* is fixed, the *existence* is not. Written for the
+  **content-addressed** row: one keyed by a digest of its own fields, interned and shared by
+  everything stating the same facts. Editing it is incoherent (it breaks the key that identifies it,
+  for every other holder), but reaping one nothing references loses nothing — re-interning the same
+  facts recomputes the *same* key, so it is a rebuildable cache entry rather than a record of
+  anything.
+- **`AppendOnly`** — a ledger, event log, outbox, audit trail, where the *existence* of a row is
+  itself the assertion ("this happened"), so deleting one rewrites history exactly as editing one
+  would.
+
+The guard is a class-level check (`is_a(static::class, Immutable::class, true)` for updates,
+`AppendOnly::class` for deletes) plus, for `save()`, an `isNew()` check — so the insert path is never
+blocked. Enforcement lives at the write methods (not a static lint), so bulk paths
+(`upsertAll`/`deleteAll`) and instance mutations are covered too. The exception message names
+whichever marker the class carries, and tells an `Immutable` author that deleting is available.
 
 ---
 
@@ -969,7 +983,7 @@ All under `Nandan108\Attrecord\Exception`, extending `AttrecordException` (which
 | `RecordValidationException` | `validate()` rejects the record. |
 | `RecordSaveException` | INSERT/UPDATE fails (wraps the driver error). |
 | `RecordDeleteException` | DELETE fails / no PK. |
-| `AppendOnlyViolationException` | an update/delete is attempted on an `AppendOnly` Record (write-once). |
+| `AppendOnlyViolationException` | a forbidden write is attempted on an `Immutable` Record (any update) or an `AppendOnly` one (any update or delete). |
 | `OptimisticLockException` | a `#[Version]`-guarded UPDATE matched no row — the record was changed or deleted by another writer since it was loaded. Carries `recordClass`, `id`, `expectedVersion`. |
 | `SchemaException` | invalid attribute metadata at schema build / DDL (missing length, decimal scale, enum values, PG `Set`/`Virtual`, …). |
 | `MissingLockTierException` | `LockSet::acquire()` target lacks `#[LockTier]`. |

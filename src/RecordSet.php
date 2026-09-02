@@ -314,7 +314,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $first = $this->records[0];
         // upsertAll() decides insert-vs-upsert per record at runtime, so it cannot be a reliable
         // append; append-only rows must go through insertAll(), which is insert-only.
-        if ($first instanceof AppendOnly) {
+        if ($first instanceof Immutable) {
             throw AppendOnlyViolationException::forOperation($first::class, 'upsertAll()');
         }
         $schema = $first::schema();
@@ -960,7 +960,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         }
 
         $first = $this->records[0];
-        if ($first instanceof AppendOnly) {
+        if ($first instanceof Immutable) {
             throw AppendOnlyViolationException::forOperation($first::class, 'upsertAllByUniqueKey()');
         }
         $schema = $first::schema();

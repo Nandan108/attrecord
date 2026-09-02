@@ -6,6 +6,60 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-09-02
+
+**`Immutable`: content that never changes, existence that may.** `AppendOnly` conflated two promises
+— that a row's content is fixed, and that the row itself is permanent — and a consumer turned up
+that needs only the first.
+
+### Added
+
+- **`Nandan108\Attrecord\Immutable`**, a marker for Records whose rows never change once written.
+  Every *update* path throws (`save()` on an existing row, `updateWhere()`, `updateByWhere()`,
+  `upsertAll()`, `upsertAllByUniqueKey()`); **`delete()`, `deleteWhere()` and `deleteAll()` are
+  permitted**, which is the whole of the difference.
+
+  The case it was built for is the **content-addressed** row — one whose key is a digest of its own
+  fields, interned and shared by everything stating the same facts. Editing it is incoherent: it
+  breaks the key that identifies it, silently, for every other holder. But reaping one that nothing
+  references loses nothing, because re-interning the same facts recomputes the *same* key — so an
+  orphan is a rebuildable cache entry, not a record of anything. `AppendOnly` forbade that reaping,
+  which left the operation expressible only by dropping out of the Record layer into raw SQL.
+
+  Choose between the two by asking **what the row claims**, not how much protection you want: a
+  ledger row asserts that an event occurred, so deleting it rewrites history exactly as editing it
+  would; a content-addressed row asserts only that these facts go by this key, which stays true
+  whether or not the row is stored anywhere.
+
+### Changed
+
+- **`AppendOnly` now extends `Immutable`** and is otherwise unchanged — same guards, same
+  exception, same behaviour for every existing implementer. Extending rather than duplicating is
+  what keeps the split honest: the update guards test `Immutable` alone, so an append-only Record
+  reaches them without restating anything, and the two markers cannot drift apart.
+
+- **`AppendOnlyViolationException` names the marker the class actually carries.** It previously said
+  "is append-only (implements AppendOnly) … never update or delete" for every violation, which would
+  now be wrong twice over on an `Immutable` Record: wrong about the interface, and actively
+  misleading about `delete()`, which is available and is very likely what the reader wants. The
+  marker is read off the class rather than passed in by each guard, so a guard cannot produce a
+  confidently wrong message by forgetting an argument.
+
+### Documentation
+
+- **`UpsertStrategy::Locked` now names the one deadlock shape it does not cover** (landed after
+  v0.19.0 was tagged, so it ships here). `Locked` is deadlock-safe against lock-order *inversion*,
+  which is what its ordered `FOR UPDATE` was built for; it says nothing about a **lock-conversion**
+  deadlock, where two writers upsert the same *existing* key and each holds the shared lock that
+  InnoDB's `INSERT IGNORE` leaves behind while asking to upgrade it to exclusive. Ordering cannot
+  help — an inversion needs two or more resources to have an order at all — so with a single key the
+  protection has no grip.
+
+### Notes
+
+Additive: no existing implementer changes, `instanceof AppendOnly` keeps its meaning, and a Record
+that wants the weaker promise opts in by naming `Immutable` instead.
+
 ## [0.19.0] - 2026-08-23
 
 **Three markers for what a table's shape does *not* say.** A `TableSchema` describes what exists,
@@ -1071,7 +1125,8 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/Nandan108/attrecord/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/Nandan108/attrecord/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/Nandan108/attrecord/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/Nandan108/attrecord/compare/v0.17.0...v0.17.1

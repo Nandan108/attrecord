@@ -702,8 +702,22 @@ abstract class Record
     }
 
     /**
-     * Throw if this Record class is {@see AppendOnly} — its rows are write-once, so the named
-     * update/delete operation is forbidden. Insert paths (insertAll / new-record save) do not call this.
+     * Throw if this Record class is {@see Immutable} — its rows never change once written, so the
+     * named *update* operation is forbidden. Insert paths (insertAll / new-record save) do not call
+     * this, and neither do delete paths: deletion is {@see assertNotAppendOnly()}'s question, and
+     * the two are separate because a content-addressed row may be reaped but never edited.
+     */
+    private static function assertNotImmutable(string $operation): void
+    {
+        if (is_a(static::class, Immutable::class, true)) {
+            throw AppendOnlyViolationException::forOperation(static::class, $operation);
+        }
+    }
+
+    /**
+     * Throw if this Record class is {@see AppendOnly} — the stronger promise, under which a row's
+     * *existence* is itself an assertion, so the named delete operation is forbidden too. An
+     * `Immutable` Record that is not `AppendOnly` passes here: see {@see Immutable} for why.
      */
     private static function assertNotAppendOnly(string $operation): void
     {
@@ -729,7 +743,7 @@ abstract class Record
      */
     public static function updateWhere(array $set, string | WhereClause $where = '', array $params = []): int
     {
-        self::assertNotAppendOnly('updateWhere()');
+        self::assertNotImmutable('updateWhere()');
         $schema = static::schema();
         $conn = static::connection();
         $dialect = $conn->dialect;
@@ -1008,7 +1022,7 @@ abstract class Record
 
         // Append-only rows are write-once: a new-record save (INSERT) is a legitimate append,
         // but saving an existing record (UPDATE) is forbidden.
-        if (!$this->_isNew && $this instanceof AppendOnly) {
+        if (!$this->_isNew && $this instanceof Immutable) {
             throw AppendOnlyViolationException::forOperation(static::class, 'save() on an existing row (UPDATE)');
         }
 
@@ -1842,7 +1856,7 @@ abstract class Record
      */
     public function updateByWhere(string | WhereClause $where = '', array $params = [], array $fields = []): int
     {
-        self::assertNotAppendOnly('updateByWhere()');
+        self::assertNotImmutable('updateByWhere()');
         $schema = static::schema();
         $conn = static::connection();
         $dialect = $conn->dialect;
