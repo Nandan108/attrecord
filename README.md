@@ -2009,6 +2009,35 @@ chain (`$post->load('postTags.tag')`) for fully-typed pivot columns.
 
 ---
 
+## Exceptions
+
+Everything attrecord throws lives under `Nandan108\Attrecord\Exception` and extends
+`AttrecordException`, which extends `\RuntimeException` — so a consumer that wants to catch
+"anything attrecord" has one type to name, and one that wants a specific failure has a specific one.
+
+| Exception | Thrown when |
+|---|---|
+| `AttrecordException` | the base; generic library errors (a bad named parameter, for instance). |
+| `RecordNotFoundException` | `getOneOrFail()` found nothing. |
+| `RecordValidationException` | `validate()` rejected the record. |
+| `RecordSaveException` | an INSERT or UPDATE failed — wraps the driver error. |
+| `RecordDeleteException` | a DELETE failed, or was attempted on a record with no PK. |
+| `AppendOnlyViolationException` | a forbidden write on an `Immutable` Record (any update) or an `AppendOnly` one (any update or delete). |
+| `OptimisticLockException` | a `#[Version]`-guarded UPDATE matched no row — someone else changed or deleted it since you loaded it. Carries `recordClass`, `id`, `expectedVersion`. |
+| `SchemaException` | attribute metadata is invalid at schema-build or DDL time (a missing length, a decimal without a scale, an enum without values, a `Set`/`Virtual` column on PostgreSQL …). |
+| `MissingLockTierException` | a `LockSet::acquire()` target has no `#[LockTier]`. |
+| `LockTierConflictException` | two `LockSet` targets share a tier, so their order is undefined. |
+| `LockAssertionException` | `Transaction::assertLocked()` failed. |
+| `TransactionException` | transaction state was misused (committing without a transaction open, and similar). |
+
+Most are programmer errors rather than conditions to recover from — `SchemaException`,
+`MissingLockTierException`, `LockTierConflictException` and `AppendOnlyViolationException` all mean
+the code is wrong and should be fixed rather than caught. The ones worth catching in ordinary flow
+are `RecordNotFoundException`, `RecordValidationException` and `OptimisticLockException`, the last of
+which usually means *reload and retry*.
+
+---
+
 ## Running tests
 
 ```bash
