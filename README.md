@@ -15,6 +15,7 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
 - Dirty-tracking — `save()` only writes changed columns
 - Column casting — map columns to value objects / JSON / custom types via `#[Cast]` attributes ([docs](docs/column-casting.md))
 - Bulk upsert via `RecordSet::upsertAll()` with a single SQL statement — optionally chunked (`upsertAll(chunkSize:)`) for very large, resumable batches; plus `insertAll()` — a plain insert-only writer for append-only tables (ledgers/outboxes), no upsert semantics
+- Write-once tables enforced at runtime — `AppendOnly` (no updates, no deletes) and `Immutable` (no updates; deletes allowed, for content-addressed rows that can be reaped and re-interned)
 - Optional automatic retry of transient transaction conflicts (deadlock / lock-wait / serialization / `SQLITE_BUSY`) via the `RetryingDbSession` decorator
 - Relation loading with no N+1 queries — `load()` / `loadMissing()` (variadic, shared-prefix); nine
   relation types incl. **many-to-many** (pivot) and **has-many-through**
@@ -1334,6 +1335,48 @@ bulk `INSERT` (one id each, none wasted). Returns the same `?SaveResult` as `ups
 (`null` for an empty set). Records that already carry a PK are left untouched. Same
 non-atomic caveat as the single-record burn-free path. Throws `AttrecordException` if
 `$conflictKey` isn't a declared `#[UniqueKey]`.
+
+---
+
+## Write-once tables — `Immutable` and `AppendOnly`
+
+`insertAll()` above is the *right shape* for a table whose rows are written once; these two markers
+make it the *only* shape. Implement one on the Record and attrecord enforces it at runtime on every
+write entry point, throwing `Exception\AppendOnlyViolationException`:
+
+```php
+use Nandan108\Attrecord\AppendOnly;
+
+#[Table(name: 'inventory_ledger')]
+final class LedgerEntry extends Record implements AppendOnly { /* … */ }
+```
+
+| Path | `Immutable` | `AppendOnly` |
+|---|---|---|
+| `insertAll()`, `save()` on a **new** record | ✅ allowed | ✅ allowed |
+| every finder (`find`, `getOne`, aggregates …) | ✅ allowed | ✅ allowed |
+| `save()` on an **existing** record, `updateWhere()`, `updateByWhere()` | ❌ throws | ❌ throws |
+| `upsertAll()`, `upsertAllByUniqueKey()` | ❌ throws | ❌ throws |
+| **`delete()`, `deleteWhere()`, `deleteAll()`** | ✅ **allowed** | ❌ throws |
+
+`upsertAll()` is refused outright rather than only when it would actually update: whether it inserts
+or updates is decided **per record at runtime**, so it can never be relied on to insert. Use
+`insertAll()`.
+
+**Which one you want is a question about what the row claims** — not about how much protection you
+would like:
+
+- **`AppendOnly`** — a ledger, event log, outbox, audit trail. The *existence* of a row is itself the
+  assertion ("this happened"), so deleting one rewrites history exactly as editing one would.
+- **`Immutable`** — the content is fixed, the existence is not. This is the **content-addressed** row:
+  one keyed by a digest of its own fields, interned and shared by everything that states the same
+  facts. Editing it is incoherent — it breaks the key that identifies it, silently, for every other
+  holder. But reaping one that nothing references loses nothing, because re-interning the same facts
+  recomputes the *same* key. An orphan there is a rebuildable cache entry, not a record of anything.
+
+`AppendOnly` **extends** `Immutable`, so the stronger marker gives you the weaker one's guarantees
+too, and a Record needs to name only the one it means. The thrown exception names whichever marker
+the class carries — it will not tell the author of an `Immutable` Record to stop deleting.
 
 ---
 
