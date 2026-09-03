@@ -649,6 +649,15 @@ want:
   itself the assertion ("this happened"), so deleting one rewrites history exactly as editing one
   would.
 
+**`#[Mutable]` (property-level) — exempt one column from an `Immutable` row's promise.** An update
+is permitted exactly when every column it would write carries it; the exception names the offending
+column otherwise. Sources of the column set: dirty tracking (`save()`), the given `$set`
+(`updateWhere()`), the resolved set (`updateByWhere()` — empty `$fields` = every non-null column).
+Collected as `TableSchema::$mutableColumns` (`array<string, true>`; empty on a non-`Immutable`
+Record). Does **not** reopen `upsertAll()` / `upsertAllByUniqueKey()` (insert-vs-update is per-record
+at runtime, so neither can be relied on to touch only exempted columns), and does not affect deletes.
+Throws at schema build on a Record that is neither marker, on the PK, or on a generated column.
+
 **Reaping — `Record::deleteUnreferenced(array $keys, ?string $column = null): int`.** Deletes those
 of `$keys` that **nothing points at**, returning the count actually removed. One statement: a
 correlated `NOT EXISTS` per referring column, so there is no window between asking which are free and

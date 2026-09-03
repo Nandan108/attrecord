@@ -15,7 +15,7 @@ Lightweight PHP 8.1+ attribute-driven active-record layer.
 - Dirty-tracking — `save()` only writes changed columns
 - Column casting — map columns to value objects / JSON / custom types via `#[Cast]` attributes ([docs](docs/column-casting.md))
 - Bulk upsert via `RecordSet::upsertAll()` with a single SQL statement — optionally chunked (`upsertAll(chunkSize:)`) for very large, resumable batches; plus `insertAll()` — a plain insert-only writer for append-only tables (ledgers/outboxes), no upsert semantics
-- Write-once tables enforced at runtime — `AppendOnly` (no updates, no deletes) and `Immutable` (no updates; deletes allowed, for content-addressed rows that can be reaped and re-interned)
+- Write-once tables enforced at runtime — `AppendOnly` (no updates, no deletes) and `Immutable` (no updates; deletes allowed, for content-addressed rows that can be reaped and re-interned), with `#[Mutable]` to exempt a column that is metadata rather than content
 - Optional automatic retry of transient transaction conflicts (deadlock / lock-wait / serialization / `SQLITE_BUSY`) via the `RetryingDbSession` decorator
 - Relation loading with no N+1 queries — `load()` / `loadMissing()` (variadic, shared-prefix); nine
   relation types incl. **many-to-many** (pivot) and **has-many-through**
@@ -1391,6 +1391,39 @@ here.
 
 It decides what to *attempt*; the `ON DELETE` action your schema declares remains the authority on
 what is allowed.
+
+### `#[Mutable]` — the columns an immutable row still lets move
+
+Sometimes a row's *content* is fixed but something laid over it is not: whether a set of contact
+details is still valid, whether an outbox entry has been dispatched. Exempt that column at the field:
+
+```php
+#[Column(ColumnType::VarChar, length: 100, nullable: true)]
+#[Mutable]
+public ?string $invalid_reason = null;
+```
+
+An update is then permitted exactly when **every** column it would write is exempted — decided from
+dirty tracking for `save()`, from the given set for `updateWhere()`, and from the resolved set for
+`updateByWhere()` (where an empty `$fields` means "every non-null column"). Anything else is refused,
+and the exception names the offending column, since with some columns moving that is the only useful
+thing it can tell you.
+
+The test for whether a column belongs here is whether it is part of **what the row is** or metadata
+**about** it. On a content-addressed table the answer is already written down: the primary key is a
+digest of the identity-bearing columns, so those cannot change without breaking the row's own
+identity, while a column outside the digest was never part of it.
+
+Declared at the field on purpose — a class-level list of exceptions sits far from the columns it
+exempts and rots as they change, whereas here a reader of `invalid_reason` sees that it moves and a
+reader of any other column sees no marker and can still trust the promise.
+
+It relaxes nothing else. `upsertAll()` and `upsertAllByUniqueKey()` stay refused however many columns
+are exempted, because whether either inserts or updates is decided per record at runtime — so
+neither can be relied on to touch only the exempted ones. Deletes remain `AppendOnly`'s question. And
+`#[Mutable]` on a Record that is neither marker, on a primary key, or on a generated column throws
+where it is written, since in each case it would exempt the column from nothing while telling a
+reader it moves.
 
 `AppendOnly` **extends** `Immutable`, so the stronger marker gives you the weaker one's guarantees
 too, and a Record needs to name only the one it means. The thrown exception names whichever marker

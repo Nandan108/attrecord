@@ -10,6 +10,7 @@ use Nandan108\Attrecord\Immutable;
 use Nandan108\Attrecord\RecordSet;
 use Nandan108\Attrecord\Tests\Fixtures\ImmutableDocRecord;
 use Nandan108\Attrecord\Tests\Fixtures\ImmutableDocRefRecord;
+use Nandan108\Attrecord\Tests\Fixtures\ImmutableFlaggableRecord;
 use Nandan108\Attrecord\Tests\Fixtures\ImmutableTreeRecord;
 use Nandan108\Attrecord\WhereClause;
 
@@ -27,7 +28,7 @@ trait ImmutableCases
     /** @return list<class-string<\Nandan108\Attrecord\Record>> */
     protected static function recordClasses(): array
     {
-        return [ImmutableDocRecord::class, ImmutableDocRefRecord::class, ImmutableTreeRecord::class];
+        return [ImmutableDocRecord::class, ImmutableDocRefRecord::class, ImmutableTreeRecord::class, ImmutableFlaggableRecord::class];
     }
 
     private function intern(int $id, string $name): ImmutableDocRecord
@@ -221,6 +222,93 @@ trait ImmutableCases
         self::assertNull(ImmutableTreeRecord::getOne(3));
     }
 
+    // --- #[Mutable]: the columns an immutable row does let move --------
+
+    private function flag(int $id, string $name): ImmutableFlaggableRecord
+    {
+        $r = new ImmutableFlaggableRecord();
+        $r->id = $id;
+        $r->name = $name;
+        (new RecordSet([$r]))->insertAll();
+
+        return $r;
+    }
+
+    public function testAnExemptedColumnCanBeUpdated(): void
+    {
+        // The case the attribute exists for: the facts are fixed, but whether they are still valid
+        // is metadata laid over them.
+        $this->flag(1, 'jane at 5 rue verte');
+
+        $affected = ImmutableFlaggableRecord::updateWhere(
+            ['invalid_at' => new \DateTimeImmutable('2026-09-03 10:00:00'), 'invalid_reason' => 'moved away'],
+            WhereClause::match(['id' => 1]),
+        );
+
+        self::assertSame(1, $affected);
+        $reloaded = ImmutableFlaggableRecord::getOne(1);
+        self::assertNotNull($reloaded);
+        self::assertSame('moved away', $reloaded->invalid_reason);
+        self::assertSame('jane at 5 rue verte', $reloaded->name, 'and the facts themselves did not move');
+    }
+
+    public function testSaveMayWriteOnlyTheExemptedColumns(): void
+    {
+        // save() states no column list, so the exemption is decided from dirty tracking.
+        $r = $this->flag(2, 'fixed facts');
+        $r->invalid_reason = 'contact bounced';
+        $r->save();
+
+        $reloaded = ImmutableFlaggableRecord::getOne(2);
+        self::assertNotNull($reloaded);
+        self::assertSame('contact bounced', $reloaded->invalid_reason);
+    }
+
+    public function testSaveStillRefusesWhenANonExemptedColumnIsDirty(): void
+    {
+        $r = $this->flag(3, 'original');
+        $r->invalid_reason = 'fine on its own';
+        $r->name = 'but this is not';
+
+        try {
+            $r->save();
+            self::fail('save() must refuse a dirty non-exempted column');
+        } catch (AppendOnlyViolationException $e) {
+            self::assertStringContainsString('"name"', $e->getMessage(), 'and it says which one');
+        }
+
+        $reloaded = ImmutableFlaggableRecord::getOne(3);
+        self::assertNotNull($reloaded);
+        self::assertSame('original', $reloaded->name);
+        self::assertNull($reloaded->invalid_reason, 'the whole update was refused, not the offending half');
+    }
+
+    public function testUpdateWhereNamesTheFirstNonExemptedColumn(): void
+    {
+        $this->flag(4, 'x');
+        $this->expectException(AppendOnlyViolationException::class);
+        $this->expectExceptionMessage('"name"');
+        ImmutableFlaggableRecord::updateWhere(['name' => 'y'], WhereClause::match(['id' => 4]));
+    }
+
+    public function testExemptingColumnsDoesNotReopenTheUpserts(): void
+    {
+        // Whether an upsert inserts or updates is decided per record at runtime, so it can never be
+        // relied on to touch only the exempted columns — it stays refused however many there are.
+        $r = new ImmutableFlaggableRecord();
+        $r->id = 5;
+        $r->name = 'ua';
+        $this->expectException(AppendOnlyViolationException::class);
+        (new RecordSet([$r]))->upsertAll();
+    }
+
+    public function testDeletingIsStillAllowed(): void
+    {
+        $r = $this->flag(6, 'reapable');
+        $r->delete();
+        self::assertNull(ImmutableFlaggableRecord::getOne(6));
+    }
+
     // --- what the reader is told ----------------------------------------
 
     public function testTheMessageNamesTheRightMarkerAndDoesNotForbidDeleting(): void
@@ -233,9 +321,22 @@ trait ImmutableCases
             ImmutableDocRecord::updateWhere(['name' => 'nope'], WhereClause::match(['id' => 80]));
             self::fail('updateWhere() must throw');
         } catch (AppendOnlyViolationException $e) {
+            self::assertStringContainsString('is immutable', $e->getMessage());
+            self::assertStringContainsString('"name"', $e->getMessage(), 'the refused column is named');
+            self::assertStringNotContainsString('append-only', $e->getMessage());
+        }
+
+        // The blanket refusal keeps its own wording, which is where the "you may still delete"
+        // half belongs — there is no column to point at.
+        try {
+            $dup = new ImmutableDocRecord();
+            $dup->id = 81;
+            $dup->name = 'msg2';
+            (new RecordSet([$dup]))->upsertAll();
+            self::fail('upsertAll() must throw');
+        } catch (AppendOnlyViolationException $e) {
             self::assertStringContainsString('is immutable (implements Immutable)', $e->getMessage());
             self::assertStringContainsString('Deleting IS permitted', $e->getMessage());
-            self::assertStringNotContainsString('append-only', $e->getMessage());
         }
     }
 }

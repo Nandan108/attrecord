@@ -7,6 +7,7 @@ namespace Nandan108\Attrecord\Tests\Unit;
 use Nandan108\Attrecord\Attribute\Absent;
 use Nandan108\Attrecord\Attribute\Column;
 use Nandan108\Attrecord\Attribute\Index;
+use Nandan108\Attrecord\Attribute\Mutable;
 use Nandan108\Attrecord\Attribute\Table;
 use Nandan108\Attrecord\Attribute\UniqueKey;
 use Nandan108\Attrecord\Attribute\Unmanaged;
@@ -14,19 +15,22 @@ use Nandan108\Attrecord\Dialect\MysqlDialect;
 use Nandan108\Attrecord\Enum\ColumnType;
 use Nandan108\Attrecord\Enum\SchemaObjectKind;
 use Nandan108\Attrecord\Exception\SchemaException;
+use Nandan108\Attrecord\Immutable;
 use Nandan108\Attrecord\Record;
 use Nandan108\Attrecord\Schema\TableSchema;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 
 /**
- * The markers that describe a table's shape by what is *not* in it: `renamedFrom` on an index or
- * unique key, `#[Absent]` for a retired object, and `#[Unmanaged]` for one belonging to another
- * authority.
+ * The declarations that describe a table by something other than its present shape: `renamedFrom`
+ * on an index or unique key, `#[Absent]` for a retired object, `#[Unmanaged]` for one belonging to
+ * another authority, and `#[Mutable]` for the columns an immutable row still lets move.
  *
- * All three are **inert here**: this suite pins that they are collected, that the ways of writing
- * them wrong are refused where they are written, and — the load-bearing one — that none of them
- * changes a byte of emitted DDL. Acting on them is `attrecord-migrations`' job.
+ * All are **inert here** in the sense that matters: this suite pins that they are collected, that
+ * the ways of writing them wrong are refused where they are written, and — the load-bearing one —
+ * that none of them changes a byte of emitted DDL. Acting on the first three is
+ * `attrecord-migrations`' job; `#[Mutable]` is read by the write guards, covered by the integration
+ * cases that can actually attempt a write.
  *
  * @psalm-suppress PropertyNotSetInConstructor
  */
@@ -123,6 +127,41 @@ final class SchemaEvolutionMarkerTest extends TestCase
         $this->expectException(SchemaException::class);
         $this->expectExceptionMessage('named by more than one #[Absent]/#[Unmanaged] declaration');
         TableSchema::fromClass(BothMarkersRecord::class);
+    }
+
+    #[Test]
+    public function mutableColumnsAreCollectedOnAnImmutableRecord(): void
+    {
+        $schema = TableSchema::fromClass(FlaggableRecord::class);
+
+        self::assertSame(['invalid_at'], array_keys($schema->mutableColumns));
+        self::assertArrayNotHasKey('name', $schema->mutableColumns, 'the facts themselves do not move');
+    }
+
+    #[Test]
+    public function aRecordThatIsNotImmutableHasNoMutableColumns(): void
+    {
+        // Not "none declared" but "the question does not arise": every column of an ordinary
+        // Record is writable, so the map is empty rather than absent.
+        self::assertSame([], TableSchema::fromClass(EvolvedRecord::class)->mutableColumns);
+    }
+
+    #[Test]
+    public function mutableOnARecordThatPromisesNothingIsRefused(): void
+    {
+        // The marker would exempt the column from nothing, while telling a reader it moves — worse
+        // than not writing it.
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessage('the Record is not Immutable');
+        TableSchema::fromClass(PointlesslyMutableRecord::class);
+    }
+
+    #[Test]
+    public function mutableOnThePrimaryKeyIsRefused(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessage('#[Mutable] on the primary key');
+        TableSchema::fromClass(MutablePkRecord::class);
     }
 
     #[Test]
@@ -299,4 +338,37 @@ final class DisagreeingCompositeRecord extends Record
     #[Column(ColumnType::VarChar, length: 32)]
     #[UniqueKey('uk_pair', renamedFrom: 'uk_other')]
     public string $right = '';
+}
+
+#[Table(name: 'flaggable')]
+final class FlaggableRecord extends Record implements Immutable
+{
+    #[Column(ColumnType::BigIntUnsigned)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::VarChar, length: 32)]
+    public string $name = '';
+
+    #[Column(ColumnType::DateTime, nullable: true)]
+    #[Mutable]
+    public ?\DateTimeImmutable $invalid_at = null;
+}
+
+#[Table(name: 'pointlessly_mutable')]
+final class PointlesslyMutableRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::VarChar, length: 32)]
+    #[Mutable]
+    public string $whatever = '';
+}
+
+#[Table(name: 'mutable_pk')]
+final class MutablePkRecord extends Record implements Immutable
+{
+    #[Column(ColumnType::BigIntUnsigned)]
+    #[Mutable]
+    public ?int $id = null;
 }

@@ -45,4 +45,25 @@ final class AppendOnlyViolationException extends AttrecordException
                     .'Record::save() on a new record. Deleting IS permitted; only updates are not.',
         ));
     }
+
+    /**
+     * A write refused because it touched a column the Record has **not** exempted with
+     * `#[Mutable]` — the case where some columns do move, so naming the offender is the whole
+     * message. Told without it, the author of a Record with three exempted columns learns only
+     * that "an update" was refused and has to diff the two lists by hand.
+     *
+     * @param class-string|string $class
+     */
+    public static function forColumn(string $class, string $operation, string $column): self
+    {
+        return new self(sprintf(
+            '%s is %s: %s would write "%s", which is not marked #[Mutable]. Row content is fixed '
+            .'except for the columns that carry that attribute; if this one should move, declare it '
+            .'there — and if it is part of what identifies the row, it should not.',
+            $class,
+            is_a($class, AppendOnly::class, true) ? 'append-only' : 'immutable',
+            $operation,
+            $column,
+        ));
+    }
 }

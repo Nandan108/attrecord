@@ -29,6 +29,36 @@ All notable changes to this project are documented here. The format is based on
   Goes through the delete guard, so an `AppendOnly` Record refuses and an `Immutable` one passes.
   A composite primary key throws, as elsewhere; so does a `$column` the Record does not declare.
 
+- **`#[Mutable]`** (property-level) — exempts one column from an {@see Immutable} Record's promise,
+  so a row whose *content* is fixed can still carry metadata laid over it.
+
+  The motivating case is the content-addressed row, where the boundary is already written down: the
+  primary key is a digest of the identity-bearing columns, so those cannot change without breaking
+  the row's own identity — but a column outside the digest was never part of it. A validity flag
+  ("these contact details are dead") is a fact *about* the interned facts, true for every document
+  that ever stated them. The other canonical case is an append-only outbox with a `dispatched_at`:
+  the row records that an event happened and that never changes; whether it has been sent is
+  bookkeeping.
+
+  An update is permitted exactly when **every** column it would write is exempted, decided from the
+  columns actually being written rather than the ones the caller asked for — dirty tracking for
+  `save()`, the given set for `updateWhere()`, the resolved set for `updateByWhere()` (where an empty
+  `$fields` means "every non-null column"). The exception names the offending column, which with some
+  columns moving is the only useful thing it can say.
+
+  **Declared at the field**, not as a class-level list: a list sits far from the columns it exempts
+  and rots as they change, whereas at the property a reader of that column sees it moves and a reader
+  of any other sees no marker and can still trust the promise. That placement is what keeps the
+  row-level marker worth having — the guarantee is narrowed in one visible place rather than hollowed
+  out from a distance.
+
+  It relaxes nothing else. `upsertAll()` and `upsertAllByUniqueKey()` stay refused however many
+  columns are exempted, since whether either inserts or updates is decided per record at runtime, so
+  neither can be relied on to touch only the exempted ones; deletes remain `AppendOnly`'s question.
+  And it throws at schema-build time on a Record that is neither marker, on a primary key, or on a
+  generated column — in each case it would exempt the column from nothing while telling a reader it
+  moves, which is worse than not writing it.
+
 ### Documentation
 
 - **The README documents the write-once markers and the exception list.** `AppendOnly` had never

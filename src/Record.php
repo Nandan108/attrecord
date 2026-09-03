@@ -712,15 +712,24 @@ abstract class Record
     }
 
     /**
-     * Throw if this Record class is {@see Immutable} — its rows never change once written, so the
-     * named *update* operation is forbidden. Insert paths (insertAll / new-record save) do not call
-     * this, and neither do delete paths: deletion is {@see assertNotAppendOnly()}'s question, and
-     * the two are separate because a content-addressed row may be reaped but never edited.
+     * Throw if this write would touch a column an {@see Immutable} Record has not exempted.
+     *
+     * Checked against the columns actually being written rather than the ones the caller asked
+     * for — an implicit "all fields" update resolves to a concrete set first, and it is that set
+     * the row's promise is about.
+     *
+     * @param list<string> $columns
      */
-    private static function assertNotImmutable(string $operation): void
+    private static function assertColumnsWritable(array $columns, string $operation): void
     {
-        if (is_a(static::class, Immutable::class, true)) {
-            throw AppendOnlyViolationException::forOperation(static::class, $operation);
+        if (!is_a(static::class, Immutable::class, true)) {
+            return;
+        }
+        $mutable = static::schema()->mutableColumns;
+        foreach ($columns as $colName) {
+            if (!isset($mutable[$colName])) {
+                throw AppendOnlyViolationException::forColumn(static::class, $operation, $colName);
+            }
         }
     }
 
@@ -753,7 +762,7 @@ abstract class Record
      */
     public static function updateWhere(array $set, string | WhereClause $where = '', array $params = []): int
     {
-        self::assertNotImmutable('updateWhere()');
+        self::assertColumnsWritable(array_map(strval(...), array_keys($set)), 'updateWhere()');
         $schema = static::schema();
         $conn = static::connection();
         $dialect = $conn->dialect;
@@ -1131,9 +1140,11 @@ abstract class Record
     {
         static::schema()->assertSingleColumnPk('save()');
 
-        // Append-only rows are write-once: a new-record save (INSERT) is a legitimate append,
-        // but saving an existing record (UPDATE) is forbidden.
-        if (!$this->_isNew && $this instanceof Immutable) {
+        // Immutable rows are write-once: a new-record save (INSERT) is a legitimate append, but
+        // saving an existing one is an UPDATE. Refused here without further ado when the Record
+        // exempts no column at all — the common case, and no reason to build a write set first.
+        // Otherwise the decision needs the dirty columns, so it waits until they are known below.
+        if (!$this->_isNew && $this instanceof Immutable && [] === static::schema()->mutableColumns) {
             throw AppendOnlyViolationException::forOperation(static::class, 'save() on an existing row (UPDATE)');
         }
 
@@ -1260,6 +1271,13 @@ abstract class Record
             $this->_saved = false;
 
             return $this;
+        }
+
+        // An UPDATE on a Record that exempts some columns: legitimate exactly when every column
+        // this save would actually write is one of them. Dirty tracking is what makes that
+        // answerable — the caller never states a column list, so the set is whatever changed.
+        if (!$wasInsert) {
+            self::assertColumnsWritable(array_keys($writtenCols), 'save() on an existing row (UPDATE)');
         }
 
         $qt = $dialect->quoteIdentifier($schema->tableName);
@@ -1967,7 +1985,6 @@ abstract class Record
      */
     public function updateByWhere(string | WhereClause $where = '', array $params = [], array $fields = []): int
     {
-        self::assertNotImmutable('updateByWhere()');
         $schema = static::schema();
         $conn = static::connection();
         $dialect = $conn->dialect;
@@ -2011,6 +2028,10 @@ abstract class Record
                 $setCols[$colName] = true;
             }
         }
+
+        // Checked once the set is resolved rather than up front: an empty $fields means "every
+        // non-null column", and it is that concrete list the row's promise is about.
+        self::assertColumnsWritable(array_keys($setCols), 'updateByWhere()');
 
         if (empty($setParts)) {
             return 0;

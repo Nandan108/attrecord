@@ -12,6 +12,7 @@ use Nandan108\Attrecord\Attribute\CreatedAt;
 use Nandan108\Attrecord\Attribute\ForeignKey;
 use Nandan108\Attrecord\Attribute\Index;
 use Nandan108\Attrecord\Attribute\LockTier;
+use Nandan108\Attrecord\Attribute\Mutable as MutableAttr;
 use Nandan108\Attrecord\Attribute\MysqlTableOptions;
 use Nandan108\Attrecord\Attribute\PrimaryKey as PrimaryKeyAttr;
 use Nandan108\Attrecord\Attribute\Relation;
@@ -29,6 +30,7 @@ use Nandan108\Attrecord\Enum\GeneratedColumnMode;
 use Nandan108\Attrecord\Enum\RelationType;
 use Nandan108\Attrecord\Enum\SchemaObjectKind;
 use Nandan108\Attrecord\Exception\SchemaException;
+use Nandan108\Attrecord\Immutable;
 use Nandan108\Attrecord\JsonCastable;
 
 /**
@@ -125,6 +127,15 @@ final class TableSchema
     public readonly array $unmanaged;
 
     /**
+     * Columns of an {@see Immutable} Record exempted from its promise by
+     * {@see MutableAttr} — column name → true. Empty on a Record that
+     * is not immutable, where every column is writable anyway.
+     *
+     * @var array<string, true>
+     */
+    public readonly array $mutableColumns;
+
+    /**
      * @param array<string, ColumnDefinition>                                    $columns
      * @param array<string, RelationDefinition>                                  $relations
      * @param array<string, \ReflectionProperty>                                 $reflProperties
@@ -135,6 +146,7 @@ final class TableSchema
      * @param array<string, RenameDefinition>                                    $indexRenames
      * @param array<value-of<SchemaObjectKind>, array<string, AbsentDefinition>> $absent
      * @param array<value-of<SchemaObjectKind>, array<string, true>>             $unmanaged
+     * @param array<string, true>                                                $mutableColumns
      */
     private function __construct(
         public readonly string $tableName,
@@ -159,6 +171,7 @@ final class TableSchema
         array $indexRenames,
         array $absent,
         array $unmanaged,
+        array $mutableColumns,
         public readonly ?string $comment,
         public readonly ?MysqlTableOptions $mysqlOptions,
         /** Column name auto-set to now on INSERT ({@see CreatedAt}), or null. */
@@ -178,6 +191,7 @@ final class TableSchema
         $this->indexRenames = $indexRenames;
         $this->absent = $absent;
         $this->unmanaged = $unmanaged;
+        $this->mutableColumns = $mutableColumns;
         $this->dataColumnNames = array_values(
             array_filter(array_keys($columns), fn (string $n): bool => $n !== $pk),
         );
@@ -405,6 +419,8 @@ final class TableSchema
         $indexesFromProperty = [];
         /** @var array<string, RenameDefinition> $indexRenames  current name → what it was called before */
         $indexRenames = [];
+        /** @var array<string, true> $mutableColumns  columns exempted from an Immutable row's promise */
+        $mutableColumns = [];
 
         foreach ($reflClass->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
             if ($prop->isStatic()) {
@@ -443,6 +459,10 @@ final class TableSchema
                     $uniqueKeys[$ukAttr->name][] = $colName;
                     $uniqueKeysFromProperty[$ukAttr->name] = true;
                     self::recordRename($class, $indexRenames, $ukAttr->name, $ukAttr->renamedFrom, $ukAttr->renamedSince);
+                }
+
+                if ([] !== $prop->getAttributes(MutableAttr::class)) {
+                    $mutableColumns[$colName] = true;
                 }
 
                 $ixNames = [];
@@ -723,6 +743,8 @@ final class TableSchema
         // --- Class-level #[Check] ---
         $checks = self::collectChecks($class, $reflClass, $tableName, \Nandan108\Attrecord\Record::tablePrefix(), $columns);
 
+        self::assertMutableColumnsAreMeaningful($class, $mutableColumns, $columns, $pk);
+
         // --- Foreign keys from owning-side relations ---
         $foreignKeys = self::collectForeignKeys($class, $tableName, \Nandan108\Attrecord\Record::tablePrefix(), $relations, $columns);
 
@@ -748,6 +770,7 @@ final class TableSchema
             indexRenames: $indexRenames,
             absent: $absent,
             unmanaged: $unmanaged,
+            mutableColumns: $mutableColumns,
             comment: $tableAttr->comment,
             mysqlOptions: $mysqlOptions,
             createdAtColumn: $createdAtColumn,
@@ -937,6 +960,53 @@ final class TableSchema
         $room = self::MAX_IDENTIFIER_LENGTH - \strlen($head) - \strlen($tail);
 
         return $head.substr($declaredName, 0, max(0, $room)).$tail;
+    }
+
+    /**
+     * Refuse a `#[Mutable]` that cannot mean anything: on a Record that promises nothing, or on a
+     * column no update path could write anyway.
+     *
+     * All three are silent no-ops otherwise, and a marker that reads as a deliberate exemption while
+     * exempting nothing is worse than no marker — it tells a reader the column moves when it does not.
+     *
+     * @param array<string, true>             $mutableColumns
+     * @param array<string, ColumnDefinition> $columns
+     */
+    private static function assertMutableColumnsAreMeaningful(
+        string $class,
+        array $mutableColumns,
+        array $columns,
+        string $pk,
+    ): void {
+        if ([] === $mutableColumns) {
+            return;
+        }
+        if (!is_a($class, Immutable::class, true)) {
+            throw new SchemaException(sprintf(
+                '%s: #[Mutable] on "%s" but the Record is not Immutable — every column is already '
+                .'writable, so the marker exempts it from nothing.',
+                $class,
+                array_key_first($mutableColumns),
+            ));
+        }
+        foreach (array_keys($mutableColumns) as $colName) {
+            if ($colName === $pk) {
+                throw new SchemaException(sprintf(
+                    '%s: #[Mutable] on the primary key "%s". attrecord never updates a primary key, '
+                    .'and on a content-addressed table the key *is* the identity the row is promising '
+                    .'not to change.',
+                    $class,
+                    $colName,
+                ));
+            }
+            if (isset($columns[$colName]) && $columns[$colName]->isGenerated) {
+                throw new SchemaException(sprintf(
+                    '%s: #[Mutable] on generated column "%s", which no engine lets anyone write.',
+                    $class,
+                    $colName,
+                ));
+            }
+        }
     }
 
     /**
@@ -1473,6 +1543,7 @@ final class TableSchema
             indexRenames: $this->indexRenames,
             absent: $this->absent,
             unmanaged: $this->unmanaged,
+            mutableColumns: $this->mutableColumns,
             comment: $this->comment,
             mysqlOptions: $this->mysqlOptions,
             createdAtColumn: $this->createdAtColumn,
