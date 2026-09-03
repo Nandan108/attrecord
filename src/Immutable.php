@@ -37,6 +37,21 @@ namespace Nandan108\Attrecord;
  * ledger row asserts that an event occurred, while a content-addressed row asserts only that these
  * facts go by this key — which stays true whether or not the row is stored anywhere.
  *
+ * ## A content-addressed row has no identity to lose
+ *
+ * That last sentence is worth stating on its own, because it is the property several operations
+ * quietly depend on rather than a fact about deletion. When the key is derived from the content, the
+ * identity is **recomputable from the facts** — so nothing that removes or re-creates the row can
+ * destroy the identity, only the storage of it. `deleteUnreferenced()` is one consequence; so is
+ * re-interning a row after a merge, and so is re-deriving a key after a restore. Each of those is a
+ * union or a rebuild rather than a rewrite.
+ *
+ * Which sets the boundary on where the same operations are merely *available* rather than
+ * well-behaved. With a sequential key, a deleted row is gone: the number meant nothing beyond
+ * pointing at that row, so it cannot be recomputed, and re-inserting the same facts produces a
+ * different identity that every stale reference now disagrees with. Both tables may be `Immutable`
+ * and both may reap orphans, but only one of them can lose the row and keep the identity.
+ *
  * @api
  */
 interface Immutable

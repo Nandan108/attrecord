@@ -846,6 +846,14 @@ abstract class Record
      * Rows are still protected by whatever `ON DELETE` action the schema declares — this decides
      * what to *attempt*, and the constraint remains the authority on what is allowed.
      *
+     * **Where this is well-behaved rather than merely available.** On a table whose key is derived
+     * from its content, reaping loses a row but not an identity: the same facts re-stated recompute
+     * the same key, so a reference that outlives the row agrees with it again on the next insert.
+     * With a sequential key the number meant nothing beyond pointing at that row, so a deleted one
+     * cannot be recomputed and re-inserting the same facts yields an identity every stale reference
+     * now disagrees with. The method works either way; only the first makes it cheap to be wrong.
+     * See {@see Immutable} for the longer form.
+     *
      * @api
      *
      * @param list<scalar> $keys   candidate key values; an empty list is a no-op
