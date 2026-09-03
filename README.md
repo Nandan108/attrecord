@@ -1392,6 +1392,16 @@ here.
 It decides what to *attempt*; the `ON DELETE` action your schema declares remains the authority on
 what is allowed.
 
+**Where it is well-behaved rather than merely available.** The method works on any table, but the
+question it answers is only cheap to get wrong on one kind. Where the key is **derived from the
+content**, reaping loses a row and not an identity: the same facts re-stated recompute the same key,
+so a reference that outlived the row agrees with it again on the next insert, and nothing has to
+decide whether a reference might reappear. With a sequential key the number meant nothing beyond
+pointing at that row — a deleted one cannot be recomputed, and re-inserting the same facts yields an
+identity every stale reference now disagrees with. Reaping there is a decision about whether anything
+will ever want the row again; reaping a content-addressed orphan is dropping a rebuildable cache
+entry.
+
 ### `#[Mutable]` — the columns an immutable row still lets move
 
 Sometimes a row's *content* is fixed but something laid over it is not: whether a set of contact
