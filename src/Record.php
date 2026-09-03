@@ -13,6 +13,7 @@ use Nandan108\Attrecord\Exception\RecordNotFoundException;
 use Nandan108\Attrecord\Exception\RecordSaveException;
 use Nandan108\Attrecord\Exception\RecordValidationException;
 use Nandan108\Attrecord\Exception\SchemaException;
+use Nandan108\Attrecord\Schema\Reference\ReferenceReaders;
 use Nandan108\Attrecord\Schema\TableSchema;
 
 /**
@@ -38,6 +39,15 @@ use Nandan108\Attrecord\Schema\TableSchema;
  */
 abstract class Record
 {
+    /**
+     * Key-list ceiling for {@see deleteUnreferenced()}, which binds one placeholder per key.
+     *
+     * Comfortably under every engine's parameter limit — MySQL and PostgreSQL speak a 16-bit count,
+     * and SQLite's `SQLITE_MAX_VARIABLE_NUMBER` defaults lower still. Past the cap a statement does
+     * not run slowly, it fails, so a caller reaping a large set should not have to know the number.
+     */
+    private const MAX_KEYS_PER_DELETE = 20000;
+
     /**
      * Raw DB values at the time of the last load/save (string|null per column).
      * Used for dirty detection.
@@ -798,6 +808,107 @@ abstract class Record
         } catch (\Throwable $e) {
             throw new RecordSaveException($e->getMessage(), $e);
         }
+    }
+
+    /**
+     * Delete the given keys, but only those **nothing points at** — one statement, no race.
+     *
+     * The reaper's primitive. A row that other tables may reference cannot simply be deleted, and
+     * the obvious two-step — ask {@see Schema\ReferenceReader::referencedKeys()}
+     * which are free, then delete those — has a window between the asking and the deleting. This
+     * closes it by making the question part of the statement: a correlated `NOT EXISTS` per
+     * referring column, evaluated per candidate row as the delete scans.
+     *
+     * Referrers are read from the **live catalogue**, so a table that starts pointing at this one
+     * later is covered without anyone remembering to update a list.
+     *
+     * ```php
+     * $reaped = DocumentParty::deleteUnreferenced($retiredKeys);   // rows actually deleted
+     * ```
+     *
+     * **The inner tables are aliased, and that is load-bearing rather than a style choice.** On a
+     * self-referencing table an unaliased `NOT EXISTS (SELECT 1 FROM t WHERE t.parent_id = t.id)`
+     * has its inner `t` shadow the outer one, so the correlation asks whether a row is *its own*
+     * parent — true of nobody. The predicate then matches every candidate and the check silently
+     * checks nothing. That is safe only where every referring key is `ON DELETE RESTRICT`, since
+     * the engine refuses what the predicate let through; against a `CASCADE` the same wrong
+     * predicate deletes the referring rows too.
+     *
+     * Rows are still protected by whatever `ON DELETE` action the schema declares — this decides
+     * what to *attempt*, and the constraint remains the authority on what is allowed.
+     *
+     * @api
+     *
+     * @param list<scalar> $keys   candidate key values; an empty list is a no-op
+     * @param string|null  $column the column `$keys` are values of, defaulting to the primary key
+     *
+     * @return int rows actually deleted — fewer than `count($keys)` when some are still referenced
+     *
+     * @throws SchemaException on a composite primary key, or an unknown `$column`
+     */
+    public static function deleteUnreferenced(array $keys, ?string $column = null): int
+    {
+        self::assertNotAppendOnly('deleteUnreferenced()');
+        $schema = static::schema();
+        if (null === $column) {
+            $schema->assertSingleColumnPk('deleteUnreferenced()');
+        }
+        $column ??= $schema->pk;
+        if (!isset($schema->columns[$column])) {
+            throw new SchemaException(sprintf(
+                '%s::deleteUnreferenced(): "%s" is not a declared column of %s.',
+                static::class,
+                $column,
+                $schema->tableName,
+            ));
+        }
+        if ([] === $keys) {
+            return 0;
+        }
+
+        $conn = static::connection();
+        $dialect = $conn->dialect;
+        $qTable = $dialect->quoteIdentifier($schema->tableName);
+        $qColumn = $dialect->quoteIdentifier($column);
+
+        $referrers = ReferenceReaders::forConnection($conn)
+            ->inboundForeignKeys($conn->session, $schema->tableName, $column);
+
+        // One alias per referrer, and never the table's own name: see the docblock. Numbered rather
+        // than derived from the child table, because the same table may reference this one twice
+        // through different columns and two branches must not collide.
+        $guards = '';
+        foreach ($referrers as $i => $ref) {
+            $alias = $dialect->quoteIdentifier('__ar_ref'.$i);
+            $guards .= ' AND NOT EXISTS (SELECT 1 FROM '.$dialect->quoteIdentifier($ref->childTable)
+                .' AS '.$alias
+                .' WHERE '.$alias.'.'.$dialect->quoteIdentifier($ref->childColumn).' = '.$qTable.'.'.$qColumn.')';
+        }
+
+        // Only the key list is bound — the guards are correlated and carry no parameters — so the
+        // statement costs one placeholder per key however many tables point here. That is the whole
+        // reason this scales where a UNION of `IN` lists has to chunk at referrers x keys.
+        $col = $schema->columns[$column];
+        $binary = $dialect->bindsBinaryAsLob();
+        $deleted = 0;
+        foreach (array_chunk($keys, self::MAX_KEYS_PER_DELETE) as $chunk) {
+            $params = array_map(
+                static fn (mixed $key): mixed => ColumnSerializer::toParam($key, $col, $binary),
+                $chunk,
+            );
+            $sql = 'DELETE FROM '.$qTable
+                .' WHERE '.$qTable.'.'.$qColumn.' IN ('.implode(', ', array_fill(0, \count($chunk), '?')).')'
+                .$guards;
+
+            try {
+                /** @psalm-suppress MixedArgumentTypeCoercion */
+                $deleted += $conn->session->exec($sql, $params);
+            } catch (\Throwable $e) {
+                throw new RecordDeleteException($e->getMessage(), $e);
+            }
+        }
+
+        return $deleted;
     }
 
     /**

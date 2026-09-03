@@ -1374,6 +1374,24 @@ would like:
   holder. But reaping one that nothing references loses nothing, because re-interning the same facts
   recomputes the *same* key. An orphan there is a rebuildable cache entry, not a record of anything.
 
+### Reaping — `deleteUnreferenced()`
+
+An `Immutable` row that nothing points at any more can be removed, but "nothing points at it" has to
+be true *at the moment of the delete*, not a moment earlier:
+
+```php
+$reaped = DocumentParty::deleteUnreferenced($retiredKeys);   // rows actually deleted
+```
+
+One statement — a correlated `NOT EXISTS` per referring column, so the question is part of the
+delete rather than a separate query with a window after it. Referring tables are discovered from the
+live catalogue, so one that starts pointing at yours later is covered without anyone updating a list,
+and only the key list is bound, so the cost is one placeholder per key however many tables point
+here.
+
+It decides what to *attempt*; the `ON DELETE` action your schema declares remains the authority on
+what is allowed.
+
 `AppendOnly` **extends** `Immutable`, so the stronger marker gives you the weaker one's guarantees
 too, and a Record needs to name only the one it means. The thrown exception names whichever marker
 the class carries — it will not tell the author of an `Immutable` Record to stop deleting.

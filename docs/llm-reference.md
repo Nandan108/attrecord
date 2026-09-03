@@ -649,6 +649,17 @@ want:
   itself the assertion ("this happened"), so deleting one rewrites history exactly as editing one
   would.
 
+**Reaping — `Record::deleteUnreferenced(array $keys, ?string $column = null): int`.** Deletes those
+of `$keys` that **nothing points at**, returning the count actually removed. One statement: a
+correlated `NOT EXISTS` per referring column, so there is no window between asking which are free and
+deleting them. Referrers come from the live catalogue (`ReferenceReader::inboundForeignKeys()`), so a
+new referring table is covered without updating a list; the inner tables are **aliased**, which is
+required for correctness on a self-referencing table (unaliased, the inner name shadows the outer and
+the correlation asks whether a row is its own parent — true of nobody — so the predicate matches
+everything and checks nothing). Binds one placeholder per key regardless of referrer count. Composite
+PK throws; an unknown `$column` throws; it goes through the delete guard, so `AppendOnly` refuses and
+`Immutable` passes.
+
 The guard is a class-level check (`is_a(static::class, Immutable::class, true)` for updates,
 `AppendOnly::class` for deletes) plus, for `save()`, an `isNew()` check — so the insert path is never
 blocked. Enforcement lives at the write methods (not a static lint), so bulk paths

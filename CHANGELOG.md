@@ -6,6 +6,36 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **`Record::deleteUnreferenced(array $keys, ?string $column = null): int`** — deletes those of
+  `$keys` that nothing points at, returning how many were actually removed. The reaper's primitive,
+  for a table whose rows may be retired once no document references them.
+
+  **One statement**, a correlated `NOT EXISTS` per referring column, so the question is part of the
+  delete rather than a query with a window after it. Referrers are read from the live catalogue, so a
+  table that starts pointing at yours later is covered without anyone remembering a list. Only the
+  key list is bound — the guards carry no parameters — so a call costs one placeholder per key
+  however many tables reference the target, where the two-step alternative binds referrers x keys.
+
+  **The inner tables are aliased, and that is correctness rather than style.** On a self-referencing
+  table an unaliased `NOT EXISTS (SELECT 1 FROM t WHERE t.parent_id = t.id)` has its inner `t` shadow
+  the outer one, so the correlation asks whether a row is its *own* parent — true of nobody. The
+  predicate then matches every candidate and the check silently checks nothing. That is survivable
+  only where every referring key is `ON DELETE RESTRICT`, since the engine refuses what the predicate
+  let through; against a `CASCADE` the same wrong predicate would delete the referring rows too.
+  There is a regression test on a self-referencing fixture for exactly this.
+
+  Goes through the delete guard, so an `AppendOnly` Record refuses and an `Immutable` one passes.
+  A composite primary key throws, as elsewhere; so does a `$column` the Record does not declare.
+
+### Documentation
+
+- **The README documents the write-once markers and the exception list.** `AppendOnly` had never
+  appeared there — it was described only as a *use case* for `insertAll()` — and an audit of the LLM
+  reference against the human docs also turned up `RecordDeleteException`, `LockAssertionException`
+  and `TransactionException` with no human documentation at all.
+
 ## [0.20.0] - 2026-09-02
 
 **`Immutable`: content that never changes, existence that may.** `AppendOnly` conflated two promises

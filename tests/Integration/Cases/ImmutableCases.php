@@ -9,6 +9,8 @@ use Nandan108\Attrecord\Exception\AppendOnlyViolationException;
 use Nandan108\Attrecord\Immutable;
 use Nandan108\Attrecord\RecordSet;
 use Nandan108\Attrecord\Tests\Fixtures\ImmutableDocRecord;
+use Nandan108\Attrecord\Tests\Fixtures\ImmutableDocRefRecord;
+use Nandan108\Attrecord\Tests\Fixtures\ImmutableTreeRecord;
 use Nandan108\Attrecord\WhereClause;
 
 /**
@@ -25,7 +27,7 @@ trait ImmutableCases
     /** @return list<class-string<\Nandan108\Attrecord\Record>> */
     protected static function recordClasses(): array
     {
-        return [ImmutableDocRecord::class];
+        return [ImmutableDocRecord::class, ImmutableDocRefRecord::class, ImmutableTreeRecord::class];
     }
 
     private function intern(int $id, string $name): ImmutableDocRecord
@@ -36,6 +38,14 @@ trait ImmutableCases
         (new RecordSet([$r]))->insertAll();
 
         return $r;
+    }
+
+    /** Make a doc row referenced, so it is no longer reapable. */
+    private function pointAt(int $docId): void
+    {
+        $ref = new ImmutableDocRefRecord();
+        $ref->doc_id = $docId;
+        $ref->save();
     }
 
     // --- the marker itself ---------------------------------------------
@@ -156,6 +166,59 @@ trait ImmutableCases
         $a->name = 'uk';
         $this->expectException(AppendOnlyViolationException::class);
         (new RecordSet([$a]))->upsertAllByUniqueKey('uk_doc_name');
+    }
+
+    // --- reaping: delete only what nothing points at ---------------------
+
+    public function testDeleteUnreferencedSkipsHeldKeysAndReapsTheRest(): void
+    {
+        // The reaper's whole job in one statement: hand it candidates, get back the ones it could
+        // actually remove.
+        $this->intern(90, 'free');
+        $this->intern(91, 'held');
+        $this->pointAt(91);
+
+        $reaped = ImmutableDocRecord::deleteUnreferenced([90, 91]);
+
+        self::assertSame(1, $reaped, 'only the unreferenced one');
+        self::assertNull(ImmutableDocRecord::getOne(90));
+        self::assertNotNull(ImmutableDocRecord::getOne(91), 'a referenced row survives untouched');
+    }
+
+    public function testDeleteUnreferencedIsANoOpForAnEmptyOrAlreadyGoneSet(): void
+    {
+        self::assertSame(0, ImmutableDocRecord::deleteUnreferenced([]), 'no keys, no statement');
+        self::assertSame(0, ImmutableDocRecord::deleteUnreferenced([424242]), 'a key that is not there');
+    }
+
+    public function testDeleteUnreferencedRefusesAnUndeclaredColumn(): void
+    {
+        $this->expectException(\Nandan108\Attrecord\Exception\SchemaException::class);
+        $this->expectExceptionMessage('is not a declared column');
+        ImmutableDocRecord::deleteUnreferenced([1], 'no_such_column');
+    }
+
+    public function testDeleteUnreferencedAliasesTheInnerTableOnASelfReference(): void
+    {
+        // The regression this exists for. Unaliased, the inner table shadows the outer one and the
+        // correlation asks whether a row is its OWN parent — true of nobody — so the predicate
+        // matches everything and the check silently checks nothing. That is only survivable where
+        // every referring key is RESTRICT; against a CASCADE the same wrong predicate would take
+        // the children with it.
+        $root = new ImmutableTreeRecord();
+        $root->id = 1;
+        $child = new ImmutableTreeRecord();
+        $child->id = 2;
+        $child->parent_id = 1;
+        $leaf = new ImmutableTreeRecord();
+        $leaf->id = 3;
+        (new RecordSet([$root, $child, $leaf]))->insertAll();
+
+        $reaped = ImmutableTreeRecord::deleteUnreferenced([1, 3]);
+
+        self::assertSame(1, $reaped, 'only the leaf — the root is still its child\'s parent');
+        self::assertNotNull(ImmutableTreeRecord::getOne(1), 'the referenced root survives');
+        self::assertNull(ImmutableTreeRecord::getOne(3));
     }
 
     // --- what the reader is told ----------------------------------------
