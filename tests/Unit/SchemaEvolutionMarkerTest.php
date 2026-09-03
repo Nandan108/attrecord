@@ -6,12 +6,15 @@ namespace Nandan108\Attrecord\Tests\Unit;
 
 use Nandan108\Attrecord\Attribute\Absent;
 use Nandan108\Attrecord\Attribute\Column;
+use Nandan108\Attrecord\Attribute\CreatedAt;
 use Nandan108\Attrecord\Attribute\Index;
 use Nandan108\Attrecord\Attribute\Mutable;
 use Nandan108\Attrecord\Attribute\Table;
 use Nandan108\Attrecord\Attribute\UniqueKey;
 use Nandan108\Attrecord\Attribute\Unmanaged;
+use Nandan108\Attrecord\Attribute\Version;
 use Nandan108\Attrecord\Dialect\MysqlDialect;
+use Nandan108\Attrecord\Enum\ColumnRole;
 use Nandan108\Attrecord\Enum\ColumnType;
 use Nandan108\Attrecord\Enum\SchemaObjectKind;
 use Nandan108\Attrecord\Exception\SchemaException;
@@ -162,6 +165,68 @@ final class SchemaEvolutionMarkerTest extends TestCase
         $this->expectException(SchemaException::class);
         $this->expectExceptionMessage('#[Mutable] on the primary key');
         TableSchema::fromClass(MutablePkRecord::class);
+    }
+
+    #[Test]
+    public function everyColumnHasExactlyOneRole(): void
+    {
+        $schema = TableSchema::fromClass(RoleSpreadRecord::class);
+
+        self::assertSame(ColumnRole::PrimaryKey, $schema->columnRole('id'));
+        self::assertSame(ColumnRole::Managed, $schema->columnRole('created_at'));
+        self::assertSame(ColumnRole::Managed, $schema->columnRole('row_version'), '#[Version] is written by attrecord, not stated');
+        self::assertSame(ColumnRole::Exempted, $schema->columnRole('invalid_at'));
+        self::assertSame(ColumnRole::Content, $schema->columnRole('name'));
+    }
+
+    #[Test]
+    public function contentIsTheDigestSetWithNothingHandExcluded(): void
+    {
+        // The whole point: one call, and no list of exclusions to keep in step with the columns.
+        $schema = TableSchema::fromClass(RoleSpreadRecord::class);
+
+        self::assertSame(['name', 'city'], array_keys($schema->columnsByRole(ColumnRole::Content)));
+        self::assertSame(
+            ['id', 'name', 'city'],
+            array_keys($schema->columnsByRole(ColumnRole::PrimaryKey, ColumnRole::Content)),
+            'variadic, and in declaration order',
+        );
+    }
+
+    #[Test]
+    public function anOrdinaryRecordHasNoExemptedColumnsAndTheRestIsContent(): void
+    {
+        // The role says who supplies the value; whether it is then frozen belongs to the class.
+        $schema = TableSchema::fromClass(EvolvedRecord::class);
+
+        self::assertSame([], $schema->columnsByRole(ColumnRole::Exempted));
+        self::assertContains('status', array_keys($schema->columnsByRole(ColumnRole::Content)));
+    }
+
+    #[Test]
+    public function askingForNoRoleIsRefused(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessage('name at least one role');
+        TableSchema::fromClass(EvolvedRecord::class)->columnsByRole();
+    }
+
+    #[Test]
+    public function anUndeclaredColumnHasNoRole(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessage('is not a declared column');
+        TableSchema::fromClass(EvolvedRecord::class)->columnRole('nope');
+    }
+
+    #[Test]
+    public function mutableOnAnAttrecordManagedColumnIsRefused(): void
+    {
+        // It would be ignored — Managed outranks Exempted — and silently, which is the failure
+        // mode every other refusal here exists to prevent.
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessage('which attrecord writes itself');
+        TableSchema::fromClass(MutableTimestampRecord::class);
     }
 
     #[Test]
@@ -371,4 +436,41 @@ final class MutablePkRecord extends Record implements Immutable
     #[Column(ColumnType::BigIntUnsigned)]
     #[Mutable]
     public ?int $id = null;
+}
+
+#[Table(name: 'role_spread')]
+final class RoleSpreadRecord extends Record implements Immutable
+{
+    #[Column(ColumnType::BigIntUnsigned)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::VarChar, length: 32)]
+    public string $name = '';
+
+    #[Column(ColumnType::VarChar, length: 32)]
+    public string $city = '';
+
+    #[Column(ColumnType::DateTime, nullable: true)]
+    #[Mutable]
+    public ?\DateTimeImmutable $invalid_at = null;
+
+    #[Column(ColumnType::DateTime, nullable: true)]
+    #[CreatedAt]
+    public ?\DateTimeImmutable $created_at = null;
+
+    #[Column(ColumnType::Int)]
+    #[Version]
+    public int $row_version = 0;
+}
+
+#[Table(name: 'mutable_timestamp')]
+final class MutableTimestampRecord extends Record implements Immutable
+{
+    #[Column(ColumnType::BigIntUnsigned)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::DateTime, nullable: true)]
+    #[CreatedAt]
+    #[Mutable]
+    public ?\DateTimeImmutable $created_at = null;
 }

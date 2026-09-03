@@ -649,6 +649,27 @@ want:
   itself the assertion ("this happened"), so deleting one rewrites history exactly as editing one
   would.
 
+**`ColumnRole` — who writes a column, and when.** `TableSchema::columnRole(string): ColumnRole` and
+`columnsByRole(ColumnRole ...$roles): array<string, ColumnDefinition>` (variadic; declaration order;
+throws on an undeclared column or on naming no role). **Computed on call, not stored** — a handful of
+comparisons over metadata already held, so precomputing it for every schema would cost the many to
+serve the few. Roles, in precedence order, since a column can answer to more than one test:
+
+| Role | Is | Decided by |
+|---|---|---|
+| `PrimaryKey` | the row's identity | `$pk`, or a `$compositePk` member |
+| `Generated` | engine-computed, writable by nobody | `ColumnDefinition::$isGenerated` |
+| `Managed` | written by attrecord | `#[CreatedAt]`, `#[UpdatedAt]`, `#[Version]` |
+| `Exempted` | yours, still writable after insert | `#[Mutable]` |
+| `Content` | yours, stated at insert | everything else |
+
+`columnsByRole(ColumnRole::Content)` is exactly what a **content-addressed** table should hash, which
+is what the accessor is for: it replaces a hand-written list of column names that a later column can
+quietly fall out of. `#[Version]` is the one such a list usually keeps by mistake — it reads like a
+fact about the row until you ask who increments it. On an ordinary Record `Exempted` is empty and the
+rest is `Content`: the role says who supplies the value, while whether it is then frozen is a property
+of the class.
+
 **`#[Mutable]` (property-level) — exempt one column from an `Immutable` row's promise.** An update
 is permitted exactly when every column it would write carries it; the exception names the offending
 column otherwise. Sources of the column set: dirty tracking (`save()`), the given `$set`

@@ -25,6 +25,7 @@ use Nandan108\Attrecord\Caster\EnumCaster;
 use Nandan108\Attrecord\Caster\JsonCaster;
 use Nandan108\Attrecord\Caster\SetCaster;
 use Nandan108\Attrecord\ColumnCaster;
+use Nandan108\Attrecord\Enum\ColumnRole;
 use Nandan108\Attrecord\Enum\ColumnType;
 use Nandan108\Attrecord\Enum\GeneratedColumnMode;
 use Nandan108\Attrecord\Enum\RelationType;
@@ -220,6 +221,59 @@ final class TableSchema
      *
      * @throws SchemaException when the schema declares a composite primary key
      */
+    /**
+     * Who writes `$column`, and when — see {@see ColumnRole}.
+     *
+     * Computed rather than stored: the answer is a handful of comparisons over metadata already
+     * held, and precomputing it for every Record would cost every schema in the process to serve
+     * the few that ask.
+     *
+     * @throws SchemaException when the table declares no such column
+     */
+    public function columnRole(string $column): ColumnRole
+    {
+        $col = $this->columns[$column]
+            ?? throw new SchemaException(sprintf('columnRole(): "%s" is not a declared column of %s.', $column, $this->tableName));
+
+        // Order matters: a column can answer to more than one test, and the earlier ones are the
+        // stronger claim. An auto-increment primary key is written by the engine too, but what it
+        // *is* is the key.
+        return match (true) {
+            $column === $this->pk, \in_array($column, $this->compositePk ?? [], true)                                      => ColumnRole::PrimaryKey,
+            $col->isGenerated                                                                                              => ColumnRole::Generated,
+            \in_array($column, array_filter([$this->createdAtColumn, $this->updatedAtColumn, $this->versionColumn]), true) => ColumnRole::Managed,
+            isset($this->mutableColumns[$column])                                                                          => ColumnRole::Exempted,
+            default                                                                                                        => ColumnRole::Content,
+        };
+    }
+
+    /**
+     * The columns filling any of `$roles`, in declaration order, keyed by column name.
+     *
+     * `columnsByRole(ColumnRole::Content)` is the whole of what a content digest should hash.
+     *
+     * @return array<string, ColumnDefinition>
+     *
+     * @throws SchemaException when no role is named — asking for nothing is a mistake, not a query
+     */
+    public function columnsByRole(ColumnRole ...$roles): array
+    {
+        if ([] === $roles) {
+            throw new SchemaException('columnsByRole(): name at least one role.');
+        }
+
+        $wanted = array_fill_keys(array_map(static fn (ColumnRole $r): string => $r->value, $roles), true);
+
+        $out = [];
+        foreach ($this->columns as $name => $col) {
+            if (isset($wanted[$this->columnRole($name)->value])) {
+                $out[$name] = $col;
+            }
+        }
+
+        return $out;
+    }
+
     public function assertSingleColumnPk(string $operation): void
     {
         if (null === $this->compositePk) {
@@ -743,7 +797,7 @@ final class TableSchema
         // --- Class-level #[Check] ---
         $checks = self::collectChecks($class, $reflClass, $tableName, \Nandan108\Attrecord\Record::tablePrefix(), $columns);
 
-        self::assertMutableColumnsAreMeaningful($class, $mutableColumns, $columns, $pk);
+        self::assertMutableColumnsAreMeaningful($class, $mutableColumns, $columns, $pk, [$createdAtColumn, $updatedAtColumn, $versionColumn]);
 
         // --- Foreign keys from owning-side relations ---
         $foreignKeys = self::collectForeignKeys($class, $tableName, \Nandan108\Attrecord\Record::tablePrefix(), $relations, $columns);
@@ -971,12 +1025,14 @@ final class TableSchema
      *
      * @param array<string, true>             $mutableColumns
      * @param array<string, ColumnDefinition> $columns
+     * @param list<string|null>               $managed        the auto-managed column names, if any
      */
     private static function assertMutableColumnsAreMeaningful(
         string $class,
         array $mutableColumns,
         array $columns,
         string $pk,
+        array $managed,
     ): void {
         if ([] === $mutableColumns) {
             return;
@@ -1002,6 +1058,15 @@ final class TableSchema
             if (isset($columns[$colName]) && $columns[$colName]->isGenerated) {
                 throw new SchemaException(sprintf(
                     '%s: #[Mutable] on generated column "%s", which no engine lets anyone write.',
+                    $class,
+                    $colName,
+                ));
+            }
+            if (\in_array($colName, $managed, true)) {
+                throw new SchemaException(sprintf(
+                    '%s: #[Mutable] on "%s", which attrecord writes itself (#[CreatedAt] / #[UpdatedAt] / '
+                    .'#[Version]). The attribute exempts a column *you* write; here it would be ignored, '
+                    .'and silently — see Enum\\ColumnRole::Managed.',
                     $class,
                     $colName,
                 ));

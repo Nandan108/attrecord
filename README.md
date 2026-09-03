@@ -1425,6 +1425,26 @@ neither can be relied on to touch only the exempted ones. Deletes remain `Append
 where it is written, since in each case it would exempt the column from nothing while telling a
 reader it moves.
 
+### Which columns are yours — `ColumnRole`
+
+A table's columns are written by different people, and the schema already knows which: the primary
+key is the row's identity, `GENERATED ALWAYS` columns belong to the engine, `#[CreatedAt]` /
+`#[UpdatedAt]` / `#[Version]` are attrecord's, `#[Mutable]` ones are yours and still move, and the
+rest are yours and stated once.
+
+```php
+foreach ($schema->columnsByRole(ColumnRole::Content) as $name => $col) { … }
+$schema->columnRole('row_version');   // ColumnRole::Managed — attrecord writes it, you don't
+```
+
+The reason it exists is the **content-addressed** table, whose primary key is a digest of its own
+facts. `Content` is exactly the set to hash, so the digest stops being a hand-written list of column
+names that a later column can quietly fall out of — and `#[Version]` is the one such a list usually
+keeps by mistake, because it reads like a fact about the row until you ask who increments it.
+
+Computed on call rather than stored: it is a few comparisons over metadata already held, and
+precomputing it for every Record would cost every schema in the process to serve the ones that ask.
+
 `AppendOnly` **extends** `Immutable`, so the stronger marker gives you the weaker one's guarantees
 too, and a Record needs to name only the one it means. The thrown exception names whichever marker
 the class carries — it will not tell the author of an `Immutable` Record to stop deleting.

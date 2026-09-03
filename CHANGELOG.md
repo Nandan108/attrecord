@@ -29,6 +29,26 @@ All notable changes to this project are documented here. The format is based on
   Goes through the delete guard, so an `AppendOnly` Record refuses and an `Immutable` one passes.
   A composite primary key throws, as elsewhere; so does a `$column` the Record does not declare.
 
+- **`ColumnRole` + `TableSchema::columnRole()` / `columnsByRole()`** — who writes a column, and when,
+  answered from metadata the schema already holds: `PrimaryKey`, `Generated`, `Managed`
+  (`#[CreatedAt]` / `#[UpdatedAt]` / `#[Version]`), `Exempted` (`#[Mutable]`), `Content` (yours,
+  stated at insert). Evaluated in that order, since a column can answer to more than one test — an
+  auto-increment primary key is engine-written too, but what it *is* is the key.
+
+  It exists for the **content-addressed** table, whose primary key is a digest of its own facts:
+  `columnsByRole(ColumnRole::Content)` is exactly the set to hash, so the digest stops being a
+  hand-written list of column names a later column can quietly fall out of. Assembling the same
+  answer at a call site means consulting four unrelated properties and remembering all of them, and
+  the one such a list usually keeps by mistake is `#[Version]` — it reads like a fact about the row
+  until you ask who increments it, which is the shape of thing that survives review unchallenged.
+
+  **Computed on call, not stored.** It is a handful of comparisons over metadata already held, so
+  precomputing it into every `TableSchema` would cost every schema in the process to serve the few
+  that ask; a caller that finds it hot can memoise where it knows its own access pattern.
+
+  On an ordinary Record `Exempted` is empty and the rest is `Content` — the role says who supplies
+  the value, while whether it is then frozen is a property of the class rather than of the column.
+
 - **`#[Mutable]`** (property-level) — exempts one column from an {@see Immutable} Record's promise,
   so a row whose *content* is fixed can still carry metadata laid over it.
 
