@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-09-04
+
+**Retiring a row from a content-addressed table**, which turned out to need three answers rather than
+one: which of its columns may still move, which of them *are* its content, and how to remove a row
+that nothing points at any more. Each is useful on its own; together they are what a table keyed by a
+digest of its own facts needs in order to let go of a row.
+
 ### Added
 
 - **`Record::deleteUnreferenced(array $keys, ?string $column = null): int`** — deletes those of
@@ -29,27 +36,7 @@ All notable changes to this project are documented here. The format is based on
   Goes through the delete guard, so an `AppendOnly` Record refuses and an `Immutable` one passes.
   A composite primary key throws, as elsewhere; so does a `$column` the Record does not declare.
 
-- **`ColumnRole` + `TableSchema::columnRole()` / `columnsByRole()`** — who writes a column, and when,
-  answered from metadata the schema already holds: `PrimaryKey`, `Generated`, `Managed`
-  (`#[CreatedAt]` / `#[UpdatedAt]` / `#[Version]`), `Exempted` (`#[Mutable]`), `Content` (yours,
-  stated at insert). Evaluated in that order, since a column can answer to more than one test — an
-  auto-increment primary key is engine-written too, but what it *is* is the key.
-
-  It exists for the **content-addressed** table, whose primary key is a digest of its own facts:
-  `columnsByRole(ColumnRole::Content)` is exactly the set to hash, so the digest stops being a
-  hand-written list of column names a later column can quietly fall out of. Assembling the same
-  answer at a call site means consulting four unrelated properties and remembering all of them, and
-  the one such a list usually keeps by mistake is `#[Version]` — it reads like a fact about the row
-  until you ask who increments it, which is the shape of thing that survives review unchallenged.
-
-  **Computed on call, not stored.** It is a handful of comparisons over metadata already held, so
-  precomputing it into every `TableSchema` would cost every schema in the process to serve the few
-  that ask; a caller that finds it hot can memoise where it knows its own access pattern.
-
-  On an ordinary Record `Exempted` is empty and the rest is `Content` — the role says who supplies
-  the value, while whether it is then frozen is a property of the class rather than of the column.
-
-- **`#[Mutable]`** (property-level) — exempts one column from an {@see Immutable} Record's promise,
+- **`#[Mutable]`** (property-level) — exempts one column from an `Immutable` Record's promise,
   so a row whose *content* is fixed can still carry metadata laid over it.
 
   The motivating case is the content-addressed row, where the boundary is already written down: the
@@ -75,11 +62,47 @@ All notable changes to this project are documented here. The format is based on
   It relaxes nothing else. `upsertAll()` and `upsertAllByUniqueKey()` stay refused however many
   columns are exempted, since whether either inserts or updates is decided per record at runtime, so
   neither can be relied on to touch only the exempted ones; deletes remain `AppendOnly`'s question.
-  And it throws at schema-build time on a Record that is neither marker, on a primary key, or on a
-  generated column — in each case it would exempt the column from nothing while telling a reader it
-  moves, which is worse than not writing it.
+  And it throws at schema-build time on a Record that is neither marker, on a primary key, on a
+  generated column, or on a column attrecord writes itself (`#[CreatedAt]` / `#[UpdatedAt]` /
+  `#[Version]`) — in each case it would exempt the column from nothing while telling a reader it
+  moves, which is worse than not writing it. That last one is the sharpest: `Managed` outranks
+  `Exempted`, so the attribute would be *ignored*, and silently.
+
+- **`ColumnRole` + `TableSchema::columnRole()` / `columnsByRole()`** — who writes a column, and when,
+  answered from metadata the schema already holds: `PrimaryKey`, `Generated`, `Managed`
+  (`#[CreatedAt]` / `#[UpdatedAt]` / `#[Version]`), `Exempted` (`#[Mutable]`), `Content` (yours,
+  stated at insert). Evaluated in that order, since a column can answer to more than one test — an
+  auto-increment primary key is engine-written too, but what it *is* is the key.
+
+  It exists for the **content-addressed** table, whose primary key is a digest of its own facts:
+  `columnsByRole(ColumnRole::Content)` is exactly the set to hash, so the digest stops being a
+  hand-written list of column names a later column can quietly fall out of. Assembling the same
+  answer at a call site means consulting four unrelated properties and remembering all of them, and
+  the one such a list usually keeps by mistake is `#[Version]` — it reads like a fact about the row
+  until you ask who increments it, which is the shape of thing that survives review unchallenged.
+
+  **Computed on call, not stored.** It is a handful of comparisons over metadata already held, so
+  precomputing it into every `TableSchema` would cost every schema in the process to serve the few
+  that ask; a caller that finds it hot can memoise where it knows its own access pattern.
+
+  On an ordinary Record `Exempted` is empty and the rest is `Content` — the role says who supplies
+  the value, while whether it is then frozen is a property of the class rather than of the column.
 
 ### Documentation
+
+- **A content-addressed row has no identity to lose**, and `Immutable`'s docblock now says so
+  directly. It previously explained why reaping such an orphan is safe, which undersells the reason:
+  when the key is derived from the content, the identity is recomputable from the facts, so nothing
+  that removes or re-creates the row can destroy the identity — only the storage of it.
+  `deleteUnreferenced()` is one consequence; re-interning after a merge and re-deriving a key after a
+  restore are others, and each is a union or a rebuild rather than a rewrite.
+
+  Stating it that way also draws the boundary the narrower version left implicit. With a sequential
+  key a deleted row is gone: the number meant nothing beyond pointing at that row, so it cannot be
+  recomputed, and re-inserting the same facts produces an identity every stale reference now
+  disagrees with. Both tables may be `Immutable` and both may reap orphans; only one can lose the row
+  and keep the identity. The README carries the short form on the axis a reader actually needs at the
+  moment of deciding — not when the method is *safe*, but what you are gambling when it is not.
 
 - **The README documents the write-once markers and the exception list.** `AppendOnly` had never
   appeared there — it was described only as a *use case* for `insertAll()` — and an audit of the LLM
@@ -1205,7 +1228,8 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/Nandan108/attrecord/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/Nandan108/attrecord/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/Nandan108/attrecord/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/Nandan108/attrecord/compare/v0.17.1...v0.18.0
