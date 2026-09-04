@@ -180,6 +180,18 @@ final class SchemaEvolutionMarkerTest extends TestCase
     }
 
     #[Test]
+    public function everyRoleCanDescribeItself(): void
+    {
+        // `describe()` matches on $this with no default, deliberately: adding a role should *force*
+        // a decision about how it reads. But an exhaustive match only fails when the new case is
+        // reached, which in a diagnostic path may be long after the release. Walking cases() turns
+        // that runtime UnhandledMatchError into a red suite at the moment the case is added.
+        foreach (ColumnRole::cases() as $role) {
+            self::assertNotSame('', $role->describe(), $role->name.' has no description');
+        }
+    }
+
+    #[Test]
     public function contentIsTheDigestSetWithNothingHandExcluded(): void
     {
         // The whole point: one call, and no list of exclusions to keep in step with the columns.
