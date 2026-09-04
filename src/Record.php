@@ -897,9 +897,26 @@ abstract class Record
         $guards = '';
         foreach ($referrers as $i => $ref) {
             $alias = $dialect->quoteIdentifier('__ar_ref'.$i);
-            $guards .= ' AND NOT EXISTS (SELECT 1 FROM '.$dialect->quoteIdentifier($ref->childTable)
-                .' AS '.$alias
-                .' WHERE '.$alias.'.'.$dialect->quoteIdentifier($ref->childColumn).' = '.$qTable.'.'.$qColumn.')';
+            $qChildCol = $dialect->quoteIdentifier($ref->childColumn);
+
+            // A table that references *itself* cannot be read directly here: MySQL refuses to touch
+            // the delete's target table anywhere in the statement's FROM (error 1093), aliased or
+            // not. Reading it through a derived table sidesteps that, because the derived table is
+            // materialised first and is no longer the target. MariaDB lifted the restriction and
+            // takes the direct form, which is exactly why this needs writing down — the direct form
+            // passes there and fails on MySQL.
+            //
+            // Only the self-referencing branch pays for it: every other referrer keeps the plain
+            // correlated form, which the engine can satisfy without materialising anything.
+            $source = $ref->childTable === $schema->tableName
+                ? '(SELECT '.$qChildCol.' AS '.$dialect->quoteIdentifier('k')
+                    .' FROM '.$dialect->quoteIdentifier($ref->childTable)
+                    .' WHERE '.$qChildCol.' IS NOT NULL) AS '.$alias
+                : $dialect->quoteIdentifier($ref->childTable).' AS '.$alias;
+            $matchCol = $ref->childTable === $schema->tableName ? $dialect->quoteIdentifier('k') : $qChildCol;
+
+            $guards .= ' AND NOT EXISTS (SELECT 1 FROM '.$source
+                .' WHERE '.$alias.'.'.$matchCol.' = '.$qTable.'.'.$qColumn.')';
         }
 
         // Only the key list is bound — the guards are correlated and carry no parameters — so the
