@@ -846,6 +846,14 @@ abstract class Record
      * Rows are still protected by whatever `ON DELETE` action the schema declares — this decides
      * what to *attempt*, and the constraint remains the authority on what is allowed.
      *
+     * **A large key set is split across statements, and the split is visible on failure.** Nothing
+     * wraps the chunks in a transaction — that is the point of chunking, since a set big enough to
+     * need it is a set too big to hold open — so if a later chunk throws, the rows an earlier one
+     * removed stay removed and the exception carries no count. That is safe rather than merely
+     * tolerable, because reaping is idempotent: the keys that survived are still unreferenced, and
+     * running again removes them. What a caller cannot do is read the exception as "nothing
+     * happened"; the honest reading is "some prefix of this may have happened".
+     *
      * **Where this is well-behaved rather than merely available.** On a table whose key is derived
      * from its content, reaping loses a row but not an identity: the same facts re-stated recompute
      * the same key, so a reference that outlives the row agrees with it again on the next insert.
