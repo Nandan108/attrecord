@@ -13,6 +13,23 @@ use Nandan108\Attrecord\Enum\GeneratedColumnMode;
  * Do NOT declare column properties as `readonly` — the active-record lifecycle (hydration
  * on load, PK assignment after INSERT, reload) requires re-assignment.
  *
+ * ## `renamedFrom` is disposable, until it is not
+ *
+ * The declaration is a migration instruction rather than a permanent record, so deleting it once
+ * the rename has been applied everywhere is legitimate — and before a first release, with one
+ * install you converged yourself, "everywhere" is something you can actually know. After a release
+ * it is not, and the marker becomes the only thing telling the converger that two column names are
+ * the same column.
+ *
+ * **Delete one too early and the failure is quiet rather than loud.** The differ then sees a desired
+ * column that is missing and a live column that is undeclared, so it plans `ADD COLUMN` (safe)
+ * alongside `DROP COLUMN` (destructive) — and at the default ceiling it applies only the first. The
+ * result is a brand-new empty column beside the populated old one, and an application reading zeros.
+ * Raise the ceiling instead and the old column's data is destroyed rather than stranded.
+ *
+ * So: disposable while every database that could hold the old name has demonstrably converged;
+ * load-bearing from the first install you do not control.
+ *
  * @api
  */
 #[\Attribute(\Attribute::TARGET_PROPERTY)]
@@ -34,7 +51,7 @@ final class Column
      * @param list<string>|null                      $enumValues    enum/Set allowed values; required for ColumnType::Enum and ColumnType::Set
      * @param string|null                            $generatedAs   Raw SQL expression for a generated column (e.g. 'IFNULL(scope_actor_id, 0)'). Mutually exclusive with $default, $defaultExpr, $onUpdate, $autoIncrement. The corresponding PHP property is read-only at the application layer — the database computes the value.
      * @param GeneratedColumnMode|null               $generatedMode Storage mode for the generated column. Defaults to `Stored` when $generatedAs is set and $generatedMode is omitted.
-     * @param string|null                            $renamedFrom   Previous column name, for schema-evolution tooling (the `attrecord-migrations` companion): a declared rename is emitted as data-preserving `RENAME COLUMN` instead of a destructive drop+add. **Inert in core** — stored on the ColumnDefinition, never read by CRUD or the DDL producer. Cheap documentation of the column's history, and the only thing standing between an upgrade and a drop+add that would take the data with it — which is why deleting one is a decision, not tidying. See https://github.com/Nandan108/attrecord/blob/main/docs/arch-migrations.md §4.3.
+     * @param string|null                            $renamedFrom   Previous column name, for schema-evolution tooling (the `attrecord-migrations` companion): a declared rename is emitted as data-preserving `RENAME COLUMN` instead of a destructive drop+add. **Inert in core** — stored on the ColumnDefinition, never read by CRUD or the DDL producer. See https://github.com/Nandan108/attrecord/blob/main/docs/arch-migrations.md §4.3.
      * @param string|null                            $renamedSince  Release the rename shipped in, for example '1.4.0'. **Opaque** — stored and never compared; see {@see Absent::$since}. Its purpose is to make "which of these markers still has a live install behind it?" a question a tool can answer, rather than one answered by memory.
      */
     public function __construct(
