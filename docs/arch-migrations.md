@@ -217,6 +217,24 @@ Column-level, per table: match by name; then
   permanent, cheap documentation of the column's history; a live DB matching neither name is
   simply missing the column (`ADD`), and one matching the *current* name ignores the marker.
 
+  **A generated column depending on the renamed one travels with the rename.** MySQL refuses the
+  rename outright while another column's `GENERATED ALWAYS` expression names the target (error
+  3108); MariaDB accepts it and rewrites the expression itself, and PostgreSQL and SQLite store the
+  expression parsed so the rename updates every reference. So the differ collects the dependents —
+  by their **live** expression, the desired one already naming the new column — and the emitter
+  decides: MySQL re-points each in the same `ALTER` as the rename, everyone else ignores them.
+
+  Re-specifying, never dropping and re-adding: dropping a generated column takes its indexes with
+  it, and adding the column back restores none of them — silently, since the column still exists
+  and every query still returns the right rows. That is the same class of failure as 3108 being
+  invisible on MariaDB, and the reason the seam is a `MODIFY`.
+
+  The one case that changes class is a **`STORED`** dependent on the MySQL family, where re-pointing
+  the expression recomputes the column for every row: `Assisted`, per §3.1 — known SQL, too
+  consequential to run unattended. The identical rename stays Safe where nothing is re-specified,
+  which is why the emitter is asked (`renameRespecifiesDependents()`) rather than the question being
+  answered globally.
+
 Index / unique-key / FK level: compared by **name + column list** (+ FK target/actions). Additions
 are Safe (with the §3.1 marker). A same-name-different-definition entry plans as **one** change —
 `replace_index` / `replace_foreign_key` — carrying both the drop and the add: emitted separately
