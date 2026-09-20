@@ -161,19 +161,99 @@ final class CompositePrimaryKeyTest extends TestCase
     }
 
     /**
-     * The most dangerous one to get wrong. LockSet orders ascending by `pk`, which on a composite
-     * key is only the first member — an ordering that is neither total nor the one the table's
-     * other access paths use. Two orderings of one table is the deadlock LockSet exists to stop.
+     * The ordering that carries the deadlock guarantee. Ascending by `pk` alone would order on the
+     * first member only — a *partial* order, under which two rows sharing an owner could be taken
+     * in either sequence. Two orderings of one table is the deadlock LockSet exists to stop, so
+     * the whole tuple has to appear in the ORDER BY.
      */
-    public function testLockSetRefuses(): void
+    public function testLockSetOrdersByTheWholeKey(): void
+    {
+        $session = new CapturingDbSession();
+        LockSet::acquire(
+            new Connection($session, new MysqlDialect()),
+            [CompositeKeyRecord::class => [
+                ['owner_id' => 1, 'item_id' => 'a'],
+                ['owner_id' => 1, 'item_id' => 'b'],
+            ]],
+        );
+
+        $sql = (string) $session->lastSql();
+        self::assertStringContainsString('ORDER BY `owner_id` ASC, `item_id` ASC', $sql);
+        self::assertStringContainsString('(`owner_id`, `item_id`) IN ((?, ?), (?, ?))', $sql, 'one row-value tuple per target row');
+        self::assertCount(4, (array) $session->lastParams(), 'every member of every key is bound');
+    }
+
+    /**
+     * A partial key is refused rather than matched. This is the wrong-row bug the DDL-only
+     * refusal originally existed to prevent, and it stays prevented — what changed is that the
+     * whole key is now accepted, not that less of it is.
+     */
+    public function testLockSetRefusesAScalarKey(): void
     {
         $this->expectException(SchemaException::class);
-        $this->expectExceptionMessage('LockSet::acquire()');
+        $this->expectExceptionMessage('needs the whole key');
 
         LockSet::acquire(
             new Connection(new CapturingDbSession(), new MysqlDialect()),
             [CompositeKeyRecord::class => [1]],
         );
+    }
+
+    /** An ordinary table's lock read is untouched — same predicate, same ordering, same params. */
+    public function testASingleColumnKeyStillLocksExactlyAsBefore(): void
+    {
+        $session = new CapturingDbSession();
+        LockSet::acquire(
+            new Connection($session, new MysqlDialect()),
+            [SingleKeyLockRecord::class => [7, 3]],
+        );
+
+        self::assertSame(
+            'SELECT * FROM `attrecord_single_probe` WHERE `id` IN (?, ?) ORDER BY `id` ASC FOR UPDATE',
+            (string) $session->lastSql(),
+        );
+    }
+
+    /**
+     * The key is ordered by the *schema*, never by the caller's array. Otherwise the emitted
+     * predicate and the bound parameters could disagree about which value belongs to which
+     * column — a wrong-row read that no assertion on either half alone would catch.
+     */
+    public function testKeyOrderComesFromTheSchemaNotTheCaller(): void
+    {
+        $schema = TableSchema::fromClass(CompositeKeyRecord::class);
+
+        self::assertSame(
+            ['owner_id' => 1, 'item_id' => 'z'],
+            $schema->normalizeKey(['item_id' => 'z', 'owner_id' => 1], 'test()'),
+            'reordered to key order regardless of how it was written',
+        );
+    }
+
+    public function testAKeyMissingAMemberIsRefused(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessage('missing its "item_id" member');
+
+        TableSchema::fromClass(CompositeKeyRecord::class)->normalizeKey(['owner_id' => 1], 'test()');
+    }
+
+    public function testAKeyCarryingANonMemberIsRefused(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessage('not part of the primary key');
+
+        TableSchema::fromClass(CompositeKeyRecord::class)
+            ->normalizeKey(['owner_id' => 1, 'item_id' => 'z', 'label' => 'x'], 'test()');
+    }
+
+    /** Identity is not data: an UPDATE must never SET a key member. */
+    public function testNoKeyMemberIsADataColumn(): void
+    {
+        $schema = TableSchema::fromClass(CompositeKeyRecord::class);
+
+        self::assertNotContains('owner_id', $schema->dataColumnNames);
+        self::assertNotContains('item_id', $schema->dataColumnNames, 'the non-leading member too');
     }
 
     /** The message has to say what to do instead, not merely that the door is shut. */
@@ -217,6 +297,15 @@ final class CompositeKeyRecord extends Record
 
     #[Column(ColumnType::IntUnsigned)]
     public int $quantity = 0;
+}
+
+/** @internal the control: an ordinary key, so "unchanged" is asserted rather than assumed */
+#[Table(name: 'attrecord_single_probe')]
+#[LockTier(2)]
+final class SingleKeyLockRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
 }
 
 /** @internal */

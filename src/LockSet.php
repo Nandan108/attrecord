@@ -19,8 +19,9 @@ use Nandan108\Attrecord\Schema\TableSchema;
  *   ], $tx);
  *
  * Acquisition order is determined by #[LockTier(n)] on each class (lowest tier first).
- * Within each table, rows are locked in ascending PK order. This eliminates the class of
- * deadlock caused by inconsistent lock acquisition order across concurrent transactions.
+ * Within each table, rows are locked in ascending PK order — lexicographic over the whole key
+ * where that key has several columns. This eliminates the class of deadlock caused by
+ * inconsistent lock acquisition order across concurrent transactions.
  *
  * Takes a {@see Connection} rather than a bare {@see DbSession} because it does not merely
  * execute SQL, it *generates* it: quoting the table and PK, and asking whether the backend has a
@@ -35,8 +36,15 @@ final class LockSet
     /**
      * Acquire SELECT … FOR UPDATE locks in tier order.
      *
-     * @param Connection                                    $connection session to read on + dialect to build with
-     * @param array<class-string<Record>, list<int|string>> $targets    class → list of PKs to lock
+     * @param Connection                                                              $connection session to read on + dialect to build with
+     * @param array<class-string<Record>, list<int|string|array<string, int|string>>> $targets    class → the rows to lock, each named by
+     *                                                                                            its key: a scalar on an ordinary table, a
+     *                                                                                            `['col' => value, …]` map on a composite-key one
+     *
+     * A composite key makes resolving the whole key a **caller obligation discharged before the
+     * lock phase**: the rows to lock must be named in full up front, so no part of the key may be
+     * derived from anything that happens after locking begins. On an ordinary table this is
+     * invisible, because a bare id was always the whole key.
      *
      * @return array<class-string<Record>, RecordSet> class → loaded+locked RecordSet
      *
@@ -52,10 +60,6 @@ final class LockSet
         $tiered = [];
         foreach ($targets as $class => $ids) {
             $schema = TableSchema::fromClass($class);
-            // Ascending-PK ordering is the deadlock guarantee; on a composite key `pk` is only
-            // the first member, so the ordering would be neither total nor the one other paths
-            // use — two orderings of one table is precisely the deadlock this class prevents.
-            $schema->assertSingleColumnPk('LockSet::acquire()');
             if (null === $schema->lockTier) {
                 throw new MissingLockTierException($class);
             }
@@ -82,21 +86,42 @@ final class LockSet
 
             // Quote identifiers so the FOR UPDATE read is portable (backticks on MySQL/MariaDB,
             // double quotes on PostgreSQL).
-            $pk = $schema->pk;
             $qt = $dialect->quoteIdentifier($schema->tableName);
-            $qpk = $dialect->quoteIdentifier($pk);
-            $placeholders = implode(', ', array_fill(0, count($ids), '?'));
-            $forUpdateClause = $dialect->forUpdateClause();
-            $sql = trim("SELECT * FROM {$qt} WHERE {$qpk} IN ({$placeholders}) ORDER BY {$qpk} ASC {$forUpdateClause}");
-
-            // Bind the ids through the serializer so a binary PK is wrapped for the dialects
-            // that need it (PostgreSQL bytea); int/string PKs and MySQL pass through unchanged.
-            $pkColumn = $schema->columns[$pk];
+            $pkColumns = $schema->pkColumns();
+            $quoted = array_map($dialect->quoteIdentifier(...), $pkColumns);
             $bindBinaryAsLob = $dialect->bindsBinaryAsLob();
-            $boundIds = array_map(
-                static fn (int | string $id): mixed => ColumnSerializer::toParam($id, $pkColumn, $bindBinaryAsLob),
-                $ids,
-            );
+
+            // **Ascending key order is the deadlock guarantee**, and on a composite key that means
+            // lexicographic over the *whole* tuple. Ordering by the first member alone would be a
+            // partial order — rows sharing it could be taken in either sequence, which is two
+            // orderings of one table, precisely what this class exists to prevent.
+            $orderBy = implode(', ', array_map(static fn (string $q): string => "{$q} ASC", $quoted));
+            $forUpdateClause = $dialect->forUpdateClause();
+
+            // Bind every key member through the serializer so a binary member is wrapped for the
+            // dialects that need it (PostgreSQL bytea); int/string members and MySQL pass through.
+            $boundIds = [];
+            if ($schema->isCompositePk()) {
+                // Row-value constructor: `(a, b) IN ((?, ?), …)`. One tuple per target row.
+                $tuple = '('.implode(', ', array_fill(0, count($pkColumns), '?')).')';
+                $predicate = '('.implode(', ', $quoted).') IN ('
+                    .implode(', ', array_fill(0, count($ids), $tuple)).')';
+                foreach ($ids as $id) {
+                    $key = $schema->normalizeKey($id, 'LockSet::acquire()');
+                    foreach ($pkColumns as $col) {
+                        $boundIds[] = ColumnSerializer::toParam($key[$col], $schema->columns[$col], $bindBinaryAsLob);
+                    }
+                }
+            } else {
+                $predicate = $quoted[0].' IN ('.implode(', ', array_fill(0, count($ids), '?')).')';
+                $pkColumn = $schema->columns[$schema->pk];
+                foreach ($ids as $id) {
+                    /** @var int|string $id */
+                    $boundIds[] = ColumnSerializer::toParam($id, $pkColumn, $bindBinaryAsLob);
+                }
+            }
+
+            $sql = trim("SELECT * FROM {$qt} WHERE {$predicate} ORDER BY {$orderBy} {$forUpdateClause}");
 
             $rows = $session->fetchAll($sql, $boundIds);
 

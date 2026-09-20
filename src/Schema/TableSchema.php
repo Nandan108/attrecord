@@ -33,6 +33,7 @@ use Nandan108\Attrecord\Enum\SchemaObjectKind;
 use Nandan108\Attrecord\Exception\SchemaException;
 use Nandan108\Attrecord\Immutable;
 use Nandan108\Attrecord\JsonCastable;
+use Nandan108\Attrecord\SqlDialect;
 
 /**
  * Compiled, cached schema for one Record subclass.
@@ -58,7 +59,7 @@ final class TableSchema
     /** @var array<string, \ReflectionProperty>  column name → cached \ReflectionProperty */
     public readonly array $reflProperties;
 
-    /** @var list<string> column names excluding the PK */
+    /** @var list<string> column names excluding every primary-key member */
     public readonly array $dataColumnNames;
 
     /** PHP property name corresponding to the PK column. Equals `$pk` when no `name:` override is used on the PK column. */
@@ -154,9 +155,13 @@ final class TableSchema
         public readonly string $pk,
         /**
          * Ordered PK member columns when the table declares a **composite** primary key
-         * ({@see PrimaryKeyAttr}), else null. Non-null makes the schema **DDL-only**: `$pk` holds
-         * the first member purely to keep internal invariants intact and is not a row identifier,
-         * so every CRUD path calls {@see assertSingleColumnPk()} and refuses.
+         * ({@see PrimaryKeyAttr}), else null.
+         *
+         * `$pk` holds the first member purely to keep internal invariants intact (`$pkProp`) and
+         * **is not a row identifier** here — one member of a composite key addresses a set of
+         * rows, not a row. Paths that identify a row take the whole key via {@see pkColumns()},
+         * {@see normalizeKey()} and {@see pkWhere()}; those that cannot yet call
+         * {@see assertSingleColumnPk()} and refuse, naming the operation.
          *
          * @var list<string>|null
          */
@@ -193,8 +198,12 @@ final class TableSchema
         $this->absent = $absent;
         $this->unmanaged = $unmanaged;
         $this->mutableColumns = $mutableColumns;
+        // Every key member is excluded, not just `$pk`: on a composite key the other members are
+        // identity too, and an UPDATE that SET them would be rewriting the row's identity rather
+        // than the row.
+        $pkMembers = array_fill_keys($compositePk ?? [$pk], true);
         $this->dataColumnNames = array_values(
-            array_filter(array_keys($columns), fn (string $n): bool => $n !== $pk),
+            array_filter(array_keys($columns), static fn (string $n): bool => !isset($pkMembers[$n])),
         );
         $this->pkProp = $columns[$pk]->propertyName;
     }
@@ -209,6 +218,99 @@ final class TableSchema
     public function pkColumns(): array
     {
         return $this->compositePk ?? [$this->pk];
+    }
+
+    /** Whether the row is identified by more than one column. */
+    public function isCompositePk(): bool
+    {
+        return null !== $this->compositePk;
+    }
+
+    /**
+     * PHP property names of the key's member columns, in key order — the property counterpart of
+     * {@see pkColumns()}, as `$pkProp` is of `$pk`.
+     *
+     * @return list<string>
+     */
+    public function pkProps(): array
+    {
+        return array_map(fn (string $col): string => $this->columns[$col]->propertyName, $this->pkColumns());
+    }
+
+    /**
+     * Resolve a caller-supplied key into `column name => value`, in key order.
+     *
+     * A scalar is the whole key of a single-column table. A composite key is given as a **map
+     * keyed by column name** — never a positional list, which is the same trap `find($id)`
+     * silently matching the first member would be: both read as valid and address the wrong row.
+     * Declaration order is a property of the schema, not something a call site should restate.
+     *
+     * @param int|string|array<string, int|string> $key
+     *
+     * @return array<string, int|string>
+     *
+     * @throws SchemaException when the shape does not match the key this table actually has
+     */
+    public function normalizeKey(int | string | array $key, string $operation): array
+    {
+        $columns = $this->pkColumns();
+
+        if (!\is_array($key)) {
+            if ($this->isCompositePk()) {
+                throw new SchemaException(sprintf(
+                    '%s: %s needs the whole key of a composite-key table — pass ["%s" => …], not a single value.',
+                    $this->tableName,
+                    $operation,
+                    implode('" => …, "', $columns),
+                ));
+            }
+
+            return [$this->pk => $key];
+        }
+
+        // Ordered by the schema rather than by the caller's array, so the bound parameters and the
+        // emitted predicate cannot disagree about which value belongs to which column.
+        $resolved = [];
+        foreach ($columns as $column) {
+            if (!\array_key_exists($column, $key)) {
+                throw new SchemaException(sprintf(
+                    '%s: %s was given a key missing its "%s" member (whole key: %s).',
+                    $this->tableName,
+                    $operation,
+                    $column,
+                    implode(', ', $columns),
+                ));
+            }
+            $resolved[$column] = $key[$column];
+        }
+
+        $extra = array_diff(array_keys($key), $columns);
+        if ([] !== $extra) {
+            throw new SchemaException(sprintf(
+                '%s: %s was given "%s", which is not part of the primary key (%s).',
+                $this->tableName,
+                $operation,
+                implode('", "', $extra),
+                implode(', ', $columns),
+            ));
+        }
+
+        return $resolved;
+    }
+
+    /**
+     * `"a" = ? AND "b" = ?` — the predicate selecting one row by its whole key, with parameters
+     * bound in {@see pkColumns()} order.
+     *
+     * On a single-column key this is the `"id" = ?` every CRUD path has always emitted, character
+     * for character, so nothing about the ordinary table's SQL changes.
+     */
+    public function pkWhere(SqlDialect $dialect): string
+    {
+        return implode(' AND ', array_map(
+            static fn (string $col): string => $dialect->quoteIdentifier($col).' = ?',
+            $this->pkColumns(),
+        ));
     }
 
     /**

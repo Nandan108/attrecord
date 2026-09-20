@@ -330,20 +330,20 @@ abstract class Record
      *
      * @api
      *
-     * @param bool $forUpdate issue SELECT … FOR UPDATE (must be inside transactional())
+     * @param int|string|array<string, int|string> $id        scalar on an ordinary table; the whole key,
+     *                                                        column-keyed, on a composite-key one
+     * @param bool                                 $forUpdate issue SELECT … FOR UPDATE (must be inside transactional())
      */
     public static function getOne(
-        int | string $id,
+        int | string | array $id,
         bool $forUpdate = false,
         ?Transaction $tx = null,
     ): ?static {
         $schema = static::schema();
         $conn = static::connection();
-        $sql = self::buildSelectSql($schema->tableName, $schema->pk, $forUpdate);
-        // Route the id through the column serializer so a binary PK is wrapped for binding on a
-        // dialect that needs it (PostgreSQL); int/string PKs and MySQL pass through unchanged.
-        $idParam = ColumnSerializer::toParam($id, $schema->columns[$schema->pk], $conn->dialect->bindsBinaryAsLob());
-        $row = $conn->session->fetchOne($sql, [$idParam]);
+        $key = $schema->normalizeKey($id, 'getOne()');
+        $sql = self::buildSelectSql($schema->tableName, $schema, $forUpdate);
+        $row = $conn->session->fetchOne($sql, self::pkParams($key, $schema));
 
         if (null === $row) {
             return null;
@@ -364,28 +364,42 @@ abstract class Record
      * Load one record by PK, throw RecordNotFoundException if not found.
      *
      * @api
+     *
+     * @param int|string|array<string, int|string> $id scalar on an ordinary table; the whole key,
+     *                                                 column-keyed, on a composite-key one
      */
-    public static function getOneOrFail(int | string $id): static
+    public static function getOneOrFail(int | string | array $id): static
     {
         return static::getOne($id)
-            ?? throw new RecordNotFoundException(static::class, $id);
+            ?? throw new RecordNotFoundException(
+                static::class,
+                \is_array($id) ? self::describeKey(static::schema()->normalizeKey($id, 'getOneOrFail()')) : $id,
+            );
     }
 
     /**
      * Load one record by PK, or return a new (unsaved) instance pre-populated with that PK.
      *
      * @api
+     *
+     * @param int|string|array<string, int|string> $id scalar on an ordinary table; the whole key,
+     *                                                 column-keyed, on a composite-key one
      */
-    public static function getOneOrNew(int | string $id): static
+    public static function getOneOrNew(int | string | array $id): static
     {
-        $record = static::getOne($id);
+        $schema = static::schema();
+        $key = $schema->normalizeKey($id, 'getOneOrNew()');
+
+        $record = static::getOne($key);
         if (null !== $record) {
             return $record;
         }
 
         /** @psalm-suppress UnsafeInstantiation */
         $record = new static();
-        $record->{static::schema()->pkProp} = $id;
+        foreach ($key as $col => $value) {
+            $record->{$schema->columns[$col]->propertyName} = $value;
+        }
 
         return $record;
     }
@@ -1436,9 +1450,11 @@ abstract class Record
             $row = $returnedRow;
             if (null === $row && !$canReturn) {
                 /** @psalm-suppress MixedArgumentTypeCoercion */
+                /** @var array<string, int|string> $ownKey */
+                $ownKey = $this->pkValues();
                 $row = $session->fetchOne(
-                    self::buildSelectSql($schema->tableName, $pk, false),
-                    [ColumnSerializer::toParam($this->{$pkProp} ?? null, $schema->columns[$pk], $bindBinaryAsLob)],
+                    self::buildSelectSql($schema->tableName, $schema, false),
+                    self::pkParams($ownKey, $schema),
                 );
             }
             if (null !== $row) {
@@ -2103,17 +2119,14 @@ abstract class Record
     public function reload(): void
     {
         $schema = static::schema();
-        $pk = $schema->pk;
-        /** @psalm-suppress MixedAssignment */
-        $pkVal = $this->{$schema->pkProp};
+        /** @var array<string, int|string> $key */
+        $key = $this->pkValues();
 
-        $sql = self::buildSelectSql($schema->tableName, $pk, false);
-        /** @psalm-suppress MixedArgumentTypeCoercion */
-        $row = static::connection()->session->fetchOne($sql, [$pkVal]);
+        $sql = self::buildSelectSql($schema->tableName, $schema, false);
+        $row = static::connection()->session->fetchOne($sql, self::pkParams($key, $schema));
 
         if (null === $row) {
-            /** @psalm-suppress MixedArgument */
-            throw new RecordNotFoundException(static::class, $pkVal);
+            throw new RecordNotFoundException(static::class, self::describeKey($key));
         }
 
         $this->hydrateFromRow($row);
@@ -2375,16 +2388,85 @@ abstract class Record
 
     private static function buildSelectSql(
         string $table,
-        string $pk,
+        TableSchema $schema,
         bool $forUpdate,
     ): string {
         $dialect = static::connection()->dialect;
         $qt = $dialect->quoteIdentifier($table);
-        $qpk = $dialect->quoteIdentifier($pk);
-        $orderPart = $forUpdate ? "ORDER BY {$qpk} ASC " : '';
+        $where = $schema->pkWhere($dialect);
+        // Ascending key order, lexicographic over the whole key on a composite one. A single row
+        // cannot deadlock against itself, but this is the same ordering LockSet acquires in, and
+        // one ordering per table is the guarantee — two would be the deadlock it prevents.
+        $orderPart = $forUpdate ? 'ORDER BY '.implode(', ', array_map(
+            static fn (string $col): string => $dialect->quoteIdentifier($col).' ASC',
+            $schema->pkColumns(),
+        )).' ' : '';
         $forUpdatePart = $forUpdate ? $dialect->forUpdateClause() : '';
 
-        return rtrim("SELECT * FROM {$qt} WHERE {$qpk} = ? {$orderPart}{$forUpdatePart}");
+        return rtrim("SELECT * FROM {$qt} WHERE {$where} {$orderPart}{$forUpdatePart}");
+    }
+
+    /**
+     * This row's primary-key values — column name => value, in key order.
+     *
+     * The shape {@see getOne()} and friends accept, so a loaded row can be re-addressed without
+     * the caller restating which columns the key has. On a composite key it is also what a
+     * caller should key a lookup array by: keying on one member collapses the rows that share it,
+     * silently keeping the last.
+     *
+     * @return array<string, mixed>
+     *
+     * @api
+     */
+    public function pkValues(): array
+    {
+        $schema = static::schema();
+
+        $values = [];
+        foreach ($schema->pkColumns() as $col) {
+            /** @psalm-suppress MixedAssignment */
+            $values[$col] = $this->{$schema->columns[$col]->propertyName};
+        }
+
+        return $values;
+    }
+
+    /**
+     * Bind values for {@see TableSchema::pkWhere()}, in the same key order it emits.
+     *
+     * Each goes through the column serializer, so a binary key member is wrapped for the dialects
+     * that need it (PostgreSQL bytea) while int/string members and MySQL pass through unchanged.
+     *
+     * @param array<string, int|string> $key from {@see TableSchema::normalizeKey()}
+     *
+     * @return list<int|float|string|BinaryParam|null>
+     */
+    private static function pkParams(array $key, TableSchema $schema): array
+    {
+        $bindBinaryAsLob = static::connection()->dialect->bindsBinaryAsLob();
+
+        $params = [];
+        foreach ($schema->pkColumns() as $col) {
+            $params[] = ColumnSerializer::toParam($key[$col], $schema->columns[$col], $bindBinaryAsLob);
+        }
+
+        return $params;
+    }
+
+    /**
+     * A key rendered for a human — `subject_id=7, cost_area_id=2` — for messages that have to say
+     * *which* row, where a bare scalar used to be self-explanatory.
+     *
+     * @param array<string, int|string> $key
+     */
+    private static function describeKey(array $key): string
+    {
+        $parts = [];
+        foreach ($key as $col => $value) {
+            $parts[] = "{$col}={$value}";
+        }
+
+        return implode(', ', $parts);
     }
 
     private function refreshSnapshot(TableSchema $schema): void
