@@ -246,17 +246,29 @@ abstract class Record
     /**
      * Create a new (unsaved) instance with the given attributes pre-populated.
      *
-     * Equivalent to `new static()` followed by `set($attrs)`.
+     * Equivalent to `new static()` followed by `set($attrs, $validate)`.
+     *
+     * **If `validate()` rejects what you passed, the first resort is to pass the missing columns,
+     * not to defer.** A record that is valid from birth is better than one that is briefly
+     * invalid, and the rejection is firing at the line where the record is genuinely incomplete —
+     * which is the error doing its job. `$validate: false` is for the case that cannot be written
+     * that way: staged construction whose invariant spans several assignments, with no single call
+     * able to satisfy it. Deferring moves enforcement to `save()`, which still validates at the
+     * boundary; making it the reflex for any inconvenient `validate()` moves it nowhere else.
      *
      * @api
      *
      * @param array<string, mixed> $attrs
+     * @param bool                 $validate run {@see validate()} once the attributes are assigned
+     *
+     * @throws SchemaException           when a key is not a declared column property
+     * @throws RecordValidationException when `$validate` is true and `validate()` rejects the resulting state
      *
      * @psalm-suppress UnsafeInstantiation
      */
-    public static function newWith(array $attrs): static
+    public static function newWith(array $attrs, bool $validate = true): static
     {
-        return (new static())->set($attrs);
+        return (new static())->set($attrs, $validate);
     }
 
     /**

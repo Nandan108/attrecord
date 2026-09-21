@@ -59,6 +59,27 @@ final class RecordValidateTest extends TestCase
         $this->assertSame('', $record->name);
     }
 
+    /**
+     * `newWith()` documents itself as `new static()` + `set()`, so it has to reach the same
+     * escape hatch. Without the forwarded flag the deferral is unreachable through the
+     * constructor most callers actually use — and the workaround, assigning the missing property
+     * after the call, cannot work: `newWith()` has already validated and thrown by then.
+     */
+    public function testNewWithForwardsValidateToSet(): void
+    {
+        $record = ValidatingFixture::newWith(['name' => ''], validate: false);
+
+        $this->assertSame('', $record->name, 'staged construction is reachable from the factory');
+    }
+
+    public function testNewWithValidatesByDefault(): void
+    {
+        $this->expectException(RecordValidationException::class);
+        $this->expectExceptionMessage('name must be non-empty');
+
+        ValidatingFixture::newWith(['name' => '']);
+    }
+
     public function testValidateThrownExceptionCarriesContext(): void
     {
         $record = new ValidatingFixture();
