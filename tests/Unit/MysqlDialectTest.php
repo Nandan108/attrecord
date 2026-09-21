@@ -147,7 +147,7 @@ final class MysqlDialectTest extends TestCase
     {
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'products',
-            pkColumn: 'id',
+            pkColumns: ['id'],
             columnNames: ['id', 'name', 'stock'],
             rows: [['42', "'Widget'", '10']],
             updateColumns: ['name', 'stock'],
@@ -162,7 +162,7 @@ final class MysqlDialectTest extends TestCase
     {
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'products',
-            pkColumn: 'id',
+            pkColumns: ['id'],
             columnNames: ['id', 'name'],
             rows: [['1', "'A'"], ['2', "'B'"]],
             updateColumns: ['name'],
@@ -180,7 +180,7 @@ final class MysqlDialectTest extends TestCase
     {
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'products',
-            pkColumn: 'id',
+            pkColumns: ['id'],
             columnNames: ['id', 'name'],
             rows: [['42', "'Widget'"], ['7', "'Gadget'"]],
             updateColumns: ['name'],
@@ -200,7 +200,7 @@ final class MysqlDialectTest extends TestCase
         // No dirty info → every column is uniform → written directly from the derived table, no mask.
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'products',
-            pkColumn: 'id',
+            pkColumns: ['id'],
             columnNames: ['id', 'name', 'stock'],
             rows: [
                 ['42', "'Widget'", '10'],
@@ -227,7 +227,7 @@ final class MysqlDialectTest extends TestCase
         // live value instead of being clobbered.
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'products',
-            pkColumn: 'id',
+            pkColumns: ['id'],
             columnNames: ['id', 'name', 'stock'],
             rows: [
                 ['42', "'Widget'", '10'],
@@ -253,7 +253,7 @@ final class MysqlDialectTest extends TestCase
         // No dirty info → the single column is uniform → direct assignment, no mask, no IF.
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'products',
-            pkColumn: 'id',
+            pkColumns: ['id'],
             columnNames: ['id', 'stock'],
             rows: [['42', '10'], ['7', '5']],
             updateColumns: ['stock'],
@@ -284,7 +284,7 @@ final class MysqlDialectTest extends TestCase
 
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 't',
-            pkColumn: 'id',
+            pkColumns: ['id'],
             columnNames: $columns,
             rows: [$row0, $row1],
             updateColumns: $updateColumns,
@@ -303,7 +303,7 @@ final class MysqlDialectTest extends TestCase
     {
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'lookup',
-            pkColumn: 'id',
+            pkColumns: ['id'],
             columnNames: ['id'],
             rows: [['99']],
             updateColumns: [],

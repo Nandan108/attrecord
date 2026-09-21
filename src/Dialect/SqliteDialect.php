@@ -231,19 +231,23 @@ final class SqliteDialect implements SqlDialect
     #[\Override]
     public function buildUpsertSql(
         string $tableName,
-        string $pkColumn,
+        array $pkColumns,
         array $columnNames,
         array $rows,
         array $updateColumns,
         array $rowDirtyColumns = [],
     ): UpsertSql {
         $quotedTable = $this->quoteIdentifier($tableName);
-        $quotedPk = $this->quoteIdentifier($pkColumn);
+        $quotedPkCols = \array_values(\array_map($this->quoteIdentifier(...), $pkColumns));
         $quotedCols = \implode(', ', \array_map($this->quoteIdentifier(...), $columnNames));
 
-        $pkIndex = (int) \array_search($pkColumn, $columnNames, true);
-        $pkLiterals = \array_map(fn (array $row) => $row[$pkIndex], $rows);
-        $inList = \implode(', ', $pkLiterals);
+        $pkIndexes = \array_values(\array_map(
+            static fn (string $c): int => (int) \array_search($c, $columnNames, true),
+            $pkColumns,
+        ));
+        $keyPredicate = $this->renderKeyInList($quotedPkCols, $rows, $pkIndexes);
+        $keyOrderBy = $this->renderKeyOrderBy($quotedPkCols);
+        $keySelect = \implode(', ', $quotedPkCols);
 
         $valueSets = \array_map(
             fn (array $row) => '('.\implode(', ', $row).')',
@@ -253,9 +257,9 @@ final class SqliteDialect implements SqlDialect
             .\implode(",\n    ", $valueSets);
 
         // No FOR UPDATE — SQLite serializes writers; this SELECT is just for parity of shape.
-        $lock = "SELECT {$quotedPk} FROM {$quotedTable}"
-            ." WHERE {$quotedPk} IN ({$inList})"
-            ." ORDER BY {$quotedPk} ASC";
+        $lock = "SELECT {$keySelect} FROM {$quotedTable}"
+            ." WHERE {$keyPredicate}"
+            ." ORDER BY {$keyOrderBy}";
 
         // Join-based UPDATE with a per-row multi-mask (see UpsertJoinBuilder). A column changed by
         // every row is written directly (u.col); a column changed by only some rows is gated by its
@@ -263,7 +267,7 @@ final class SqliteDialect implements SqlDialect
         $update = null;
         if (!empty($updateColumns)) {
             $plan = $this->computeUpsertMaskPlan($updateColumns, $rowDirtyColumns, \count($rows));
-            $derived = $this->buildUpsertDerivedColumns($quotedPk, $columnNames, $rows, $updateColumns, $pkIndex, $plan['maskCount'], $plan['perRowMasks']);
+            $derived = $this->buildUpsertDerivedColumns($quotedPkCols, $columnNames, $rows, $updateColumns, $pkIndexes, $plan['maskCount'], $plan['perRowMasks']);
             $subquery = $this->renderUpsertDerivedTable($derived['columns'], $derived['valueRows']);
 
             $setParts = [];
@@ -281,7 +285,8 @@ final class SqliteDialect implements SqlDialect
                 }
             }
             $setClause = \implode(",\n    ", $setParts);
-            $update = "UPDATE {$quotedTable} SET\n    {$setClause}\nFROM (\n    {$subquery}\n    ) u\nWHERE {$quotedTable}.{$quotedPk} = u.{$quotedPk}";
+            $joinOn = $this->renderKeyJoin($quotedTable, 'u', $quotedPkCols);
+            $update = "UPDATE {$quotedTable} SET\n    {$setClause}\nFROM (\n    {$subquery}\n    ) u\nWHERE {$joinOn}";
         }
 
         return new UpsertSql($create, $lock, $update);

@@ -305,7 +305,6 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     public function upsertAll(bool $force = false, ?int $chunkSize = null, bool $allowInTransactionChunking = false, ?array $ignoreColumns = null, bool | array | null $readBack = null, UpsertStrategy $strategy = UpsertStrategy::Locked): ?SaveResult
     {
         if ([] !== $this->records) {
-            $this->records[0]::schema()->assertSingleColumnPk('upsertAll()');
         }
         if (empty($this->records)) {
             return null;
@@ -328,7 +327,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $pkProp = $schema->pkProp;
         $pkColumn = $schema->columns[$pk];
         $pkAutoIncrement = $pkColumn->autoIncrement;
-        $returningSuffix = $dialect->insertReturningSuffix($dialect->quoteIdentifier($pk));
+        $returningSuffix = $schema->isCompositePk()
+            ? ''
+            : $dialect->insertReturningSuffix($dialect->quoteIdentifier($pk));
 
         $dirtyRecords = $force
             ? $this->records
@@ -867,9 +868,9 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                 $keyedRecords[] = $r;
             }
         }
-        // Ascending-PK order so chunk boundaries are contiguous ranges and locks are taken low→high.
-        /** @psalm-suppress MixedArgument */
-        usort($keyedRecords, static fn (Record $a, Record $b): int => $a->{$pkProp} <=> $b->{$pkProp});
+        // Ascending-key order so chunk boundaries are contiguous ranges and locks are taken low→high.
+        $pkProps = $schema->pkProps();
+        usort($keyedRecords, static fn (Record $a, Record $b): int => self::compareByKey($a, $b, $pkProps));
 
         // New-record chunks (INSERT) first, then keyed chunks (upsert); each homogeneous so id
         // back-fill maps 1:1 to a chunk's records and insert-before-upsert ordering is preserved.
@@ -1205,27 +1206,35 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      */
     private function readBackAll(array $records, DbSession $session, TableSchema $schema, SqlDialect $dialect, string $pk, string $pkProp, string | array $rbCols): void
     {
-        $pkCol = $schema->columns[$pk];
-        $withPk = array_values(array_filter($records, static fn (Record $r): bool => null !== $r->{$pkProp}));
+        $withPk = array_values(array_filter(
+            $records,
+            static fn (Record $r): bool => !\in_array(null, $r->pkValues(), true),
+        ));
         if (empty($withPk)) {
             return;
         }
-        // Ascending-PK order to zip 1:1 with the `ORDER BY pk ASC` rows below (mirrors
-        // upsertAllChunked()'s ordering assumption: PHP PK sort == the database's).
-        /** @psalm-suppress MixedArgument */
-        usort($withPk, static fn (Record $a, Record $b): int => $a->{$pkProp} <=> $b->{$pkProp});
+        // Ascending-key order to zip 1:1 with the `ORDER BY … ASC` rows below (mirrors
+        // upsertAllChunked()'s ordering assumption: the PHP sort == the database's).
+        $pkProps = $schema->pkProps();
+        usort($withPk, static fn (Record $a, Record $b): int => self::compareByKey($a, $b, $pkProps));
 
         $bindBinaryAsLob = $dialect->bindsBinaryAsLob();
-        $params = array_map(
-            static fn (Record $r): mixed => ColumnSerializer::toParam($r->{$pkProp}, $pkCol, $bindBinaryAsLob),
-            $withPk,
-        );
+        // Key-major, matching the tuple order pkIn() emits.
+        $params = [];
+        foreach ($withPk as $r) {
+            foreach ($schema->pkColumns() as $keyCol) {
+                $params[] = ColumnSerializer::toParam(
+                    $r->{$schema->columns[$keyCol]->propertyName},
+                    $schema->columns[$keyCol],
+                    $bindBinaryAsLob,
+                );
+            }
+        }
         $qt = $dialect->quoteIdentifier($schema->tableName);
-        $qpk = $dialect->quoteIdentifier($pk);
-        $placeholders = implode(', ', array_fill(0, count($params), '?'));
+        $predicate = $schema->pkIn($dialect, count($withPk));
+        $orderBy = $schema->pkOrderBy($dialect);
 
-        /** @psalm-suppress MixedArgumentTypeCoercion */
-        $rows = $session->fetchAll("SELECT * FROM {$qt} WHERE {$qpk} IN ({$placeholders}) ORDER BY {$qpk} ASC", $params);
+        $rows = $session->fetchAll("SELECT * FROM {$qt} WHERE {$predicate} ORDER BY {$orderBy}", $params);
 
         foreach ($rows as $i => $row) {
             if (isset($withPk[$i])) {
@@ -1327,7 +1336,6 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      */
     private function buildPlan(array $dirty, TableSchema $schema, SqlDialect $dialect, array $ignore = [], array $ignoreOnUpdate = []): array
     {
-        $pk = $schema->pk;
         $noKeyRecords = array_values(array_filter($dirty, fn (Record $r) => !self::isExistingRow($r, $schema)));
         $keyedRecords = array_values(array_filter($dirty, fn (Record $r) => self::isExistingRow($r, $schema)));
 
@@ -1343,14 +1351,15 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             // NOT NULL columns in the INSERT step, the dirty clause lets an UPDATE clear a column
             // back to NULL. Generated columns are DB-computed — including one makes MySQL reject
             // the statement (error 1906) — so skip them, as save() and the plain-INSERT branch do.
-            $presentCols = [$pk => true];
+            $presentCols = array_fill_keys($schema->pkColumns(), true);
             $dirtyUnion = [];   // colName => true when dirty on at least one record
             $recordDirty = [];  // per keyed record (same iteration key): its dirtyFields() map
             foreach ($keyedRecords as $ri => $record) {
                 $recordDirty[$ri] = $dirty = $record->dirtyFields();
                 foreach ($schema->columns as $colName => $col) {
-                    // Generated columns are DB-computed; ignored columns are caller-dropped. The PK
-                    // is never dropped here (it seeds $presentCols above) so the upsert stays keyed.
+                    // Generated columns are DB-computed; ignored columns are caller-dropped. No key
+                    // member is ever dropped here (they seed $presentCols above) so the upsert stays
+                    // keyed on the whole identity.
                     if ($col->isGenerated || isset($ignore[$colName])) {
                         continue;
                     }
@@ -1391,11 +1400,12 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                 // then writes each column's WHEN only for the rows that changed it (ELSE keeps the
                 // live value), so a heterogeneous batch of partial records updates each row's own
                 // fields without clobbering a column a given row never supplied.
+                $pkMembers = array_fill_keys($schema->pkColumns(), true);
                 $updateCols = array_values(array_filter(
                     $colNames,
-                    fn ($n) => $n !== $pk && isset($dirtyUnion[$n]),
+                    fn ($n) => !isset($pkMembers[$n]) && isset($dirtyUnion[$n]),
                 ));
-                $upsert = $dialect->buildUpsertSql($schema->tableName, $pk, $colNames, $rows, $updateCols, $rowDirty);
+                $upsert = $dialect->buildUpsertSql($schema->tableName, $schema->pkColumns(), $colNames, $rows, $updateCols, $rowDirty);
             }
         }
 
@@ -1403,10 +1413,30 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     }
 
     /**
-     * Delete all records in this set via a single DELETE … WHERE pk IN (…).
+     * Ascending key order over the whole key, lexicographically — the PHP-side counterpart of
+     * `ORDER BY a ASC, b ASC`, so a batch is locked and read back in the same sequence the
+     * database returns. Ordering by the first member alone is a partial order, and two orderings
+     * of one table is the deadlock that ordered locking exists to prevent.
      *
-     * @return int number of deleted rows
+     * @param list<string> $pkProps
      */
+    private static function compareByKey(Record $a, Record $b, array $pkProps): int
+    {
+        foreach ($pkProps as $prop) {
+            /** @psalm-suppress MixedAssignment */
+            $left = $a->{$prop};
+            /** @psalm-suppress MixedAssignment */
+            $right = $b->{$prop};
+            /** @psalm-suppress MixedArgument */
+            $cmp = $left <=> $right;
+            if (0 !== $cmp) {
+                return $cmp;
+            }
+        }
+
+        return 0;
+    }
+
     /**
      * Whether a record should be written as an **existing** row rather than a new one.
      *
@@ -1431,6 +1461,11 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         return null !== $record->{$schema->pkProp};
     }
 
+    /**
+     * Delete all records in this set via a single DELETE … WHERE pk IN (…).
+     *
+     * @return int number of deleted rows
+     */
     public function deleteAll(): int
     {
         if (empty($this->records)) {

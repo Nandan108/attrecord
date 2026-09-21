@@ -181,7 +181,7 @@ final class PgsqlDialectTest extends TestCase
     {
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'products',
-            pkColumn: 'id',
+            pkColumns: ['id'],
             columnNames: ['id', 'name', 'stock'],
             rows: [['42', "'Widget'", '10']],
             updateColumns: ['name', 'stock'],
@@ -198,7 +198,7 @@ final class PgsqlDialectTest extends TestCase
     {
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'products',
-            pkColumn: 'id',
+            pkColumns: ['id'],
             columnNames: ['id', 'name'],
             rows: [['1', "'A'"], ['2', "'B'"]],
             updateColumns: ['name'],
@@ -216,7 +216,7 @@ final class PgsqlDialectTest extends TestCase
     {
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'products',
-            pkColumn: 'id',
+            pkColumns: ['id'],
             columnNames: ['id', 'name'],
             rows: [['42', "'Widget'"], ['7', "'Gadget'"]],
             updateColumns: ['name'],
@@ -236,7 +236,7 @@ final class PgsqlDialectTest extends TestCase
         // No dirty info → every column uniform → written directly from the derived table, no mask.
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'products',
-            pkColumn: 'id',
+            pkColumns: ['id'],
             columnNames: ['id', 'name', 'stock'],
             rows: [
                 ['42', "'Widget'", '10'],
@@ -261,7 +261,7 @@ final class PgsqlDialectTest extends TestCase
         // → gated by mask bit 1 via CASE WHEN, so row 7 (mask 0) keeps its live value.
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'products',
-            pkColumn: 'id',
+            pkColumns: ['id'],
             columnNames: ['id', 'name', 'stock'],
             rows: [
                 ['42', "'Widget'", '10'],
@@ -285,7 +285,7 @@ final class PgsqlDialectTest extends TestCase
     {
         $upsert = $this->dialect->buildUpsertSql(
             tableName: 'lookup',
-            pkColumn: 'id',
+            pkColumns: ['id'],
             columnNames: ['id'],
             rows: [['99']],
             updateColumns: [],

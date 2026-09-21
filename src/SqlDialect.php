@@ -190,7 +190,7 @@ interface SqlDialect
      * All three statements must run inside the same transaction.
      *
      * @param string                    $tableName       Unquoted table name
-     * @param string                    $pkColumn        PK column name (unquoted)
+     * @param list<string>              $pkColumns       primary-key member columns, in key order (unquoted)
      * @param list<string>              $columnNames     All columns to write, including PK (unquoted)
      * @param list<list<string>>        $rows            SQL literals per row, in $columnNames order
      * @param list<string>              $updateColumns   Non-PK columns to overwrite on conflict
@@ -200,7 +200,7 @@ interface SqlDialect
      */
     public function buildUpsertSql(
         string $tableName,
-        string $pkColumn,
+        array $pkColumns,
         array $columnNames,
         array $rows,
         array $updateColumns,

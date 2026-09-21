@@ -155,6 +155,54 @@ trait CompositeKeyCases
     }
 
     /**
+     * The shape the feature exists for: a WAC recompute locks the rows it knows about, mutates
+     * them, mints rows for subjects it has not costed before, and writes the lot in one
+     * `upsertAll()`. Inserts and updates in a single batch, on a caller-minted key.
+     *
+     * This is also where the insert/update partition earns its keep. The locked rows are hydrated
+     * and the minted ones are not, which is the *only* difference between them — both carry a
+     * complete key. A partition keyed on "is the key present" would call every row an update and
+     * never insert; one keyed on the record's own state gets both right.
+     */
+    public function testUpsertAllMixesMintedAndLockedRowsOnACallerMintedKey(): void
+    {
+        $this->seedCosts();
+
+        $connection = Record::connection();
+        $connection->session->transactional(function () use ($connection): void {
+            $locked = LockSet::acquire($connection, [CompositeKeyCostRecord::class => [
+                ['subject_id' => 1, 'area_id' => 10],
+            ]]);
+
+            $rows = [];
+            foreach ($locked[CompositeKeyCostRecord::class] as $row) {
+                /** @var CompositeKeyCostRecord $row */
+                $row->unit_cost = '11.0000';   // an existing row, updated
+                $rows[] = $row;
+            }
+            $rows[] = CompositeKeyCostRecord::newWith([   // a brand-new area for a known subject
+                'subject_id' => 1,
+                'area_id'    => 30,
+                'unit_cost'  => '12.0000',
+            ]);
+
+            (new RecordSet($rows))->upsertAll();
+        });
+
+        $updated = CompositeKeyCostRecord::getOne(['subject_id' => 1, 'area_id' => 10]);
+        $inserted = CompositeKeyCostRecord::getOne(['subject_id' => 1, 'area_id' => 30]);
+        $untouched = CompositeKeyCostRecord::getOne(['subject_id' => 1, 'area_id' => 20]);
+
+        $this->assertNotNull($updated);
+        $this->assertNotNull($inserted, 'the minted row was inserted, not swallowed as an update');
+        $this->assertNotNull($untouched);
+        $this->assertSame(11.0, (float) $updated->unit_cost);
+        $this->assertSame(12.0, (float) $inserted->unit_cost);
+        // Shares a subject with both of the above and was in neither batch entry.
+        $this->assertSame(7.5, (float) $untouched->unit_cost, 'the sibling area is untouched');
+    }
+
+    /**
      * The row-value `IN` plus tuple ordering, executed rather than merely built. This is the case
      * whose syntax support genuinely varies — and SQLite's own docs carried a "not supported" note
      * that has been stale since 3.15, which is reason to run it rather than read about it.

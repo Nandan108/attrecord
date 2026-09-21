@@ -6,6 +6,82 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-09-21
+
+**A composite primary key now identifies a row, not just a table.** `#[PrimaryKey(columns: …)]`
+shipped in 0.13 as a declaration only: the shape was described so the differ could see the table,
+and every CRUD path refused, because half-supporting a composite key means `getOne($id)` quietly
+matching the first member. That was the right answer for what it protected and the wrong one
+permanently — a consumer's per-subject cost sidecar needs a cost area in its key (one subject,
+several plants, different costs), and the alternative puts a meaningless surrogate at the centre of
+the row's identity.
+
+**Contains a breaking change** for anyone implementing `SqlDialect`: `buildUpsertSql()` takes
+`list<string> $pkColumns` where it took `string $pkColumn`. The three in-package dialects are the
+only implementations known to exist.
+
+### Added
+
+- **Composite keys on the paths that identify a row**: `getOne()` / `getOneOrFail()` /
+  `getOneOrNew()`, `reload()`, `save()` (INSERT and UPDATE), `delete()`, `LockSet::acquire()`, and
+  `RecordSet::upsertAll()` / `insertAll()` / `deleteAll()`.
+
+  A key is passed as a **map keyed by column name** — `getOne(['subject_id' => 7, 'area_id' => 2])`
+  — never a positional list. Order comes from the schema, not the call site: a tuple written in the
+  wrong order reads as valid and addresses the wrong row, which is the failure the original refusal
+  existed to prevent. `TableSchema::normalizeKey()` refuses a key that is partial, over-complete or
+  a bare scalar.
+
+- **`Record::pkValues()`** — a row's key as `column => value`, the same shape `getOne()` accepts.
+  Also what to key a lookup array by: keying on one member collapses the rows that share it,
+  silently keeping the last. Added because a consumer hit exactly that.
+
+- **`TableSchema::pkColumns()` / `pkProps()` / `isCompositePk()` / `normalizeKey()` / `pkWhere()` /
+  `pkIn()` / `pkOrderBy()`** — the key vocabulary the CRUD paths share, so no two of them can
+  disagree about what a key is or how it orders.
+
+- **`Record::newWith(array $attrs, bool $validate = true)`** — forwards to `set($attrs, $validate)`,
+  which its own docblock already claimed it did. The deferral `set()` documents was unreachable
+  through the constructor most callers use, and the workaround does not work: assigning the missing
+  property *after* `newWith()` never runs, because `newWith()` has already validated and thrown.
+  The docblock says deferral is the second resort — passing the missing columns is better, and a
+  rejection there is the error doing its job.
+
+### Fixed
+
+- **Ordered locking is lexicographic over the whole key.** `LockSet` ordered by the first member,
+  which is a *partial* order: rows sharing it could be taken in either sequence, and two orderings
+  of one table is the deadlock ordered locking exists to prevent. The same ordering now governs the
+  three-step upsert's locking read, so the two cannot drift.
+
+- **No key member is ever `SET`.** `dataColumnNames` excluded only `$pk`, so on a composite key an
+  UPDATE could rewrite which row it was rather than what the row held.
+
+### Changed
+
+- **`SqlDialect::buildUpsertSql()` takes `list<string> $pkColumns`.** The three-step upsert's
+  locking read, derived table and join are keyed on the whole key; joining on one member would
+  attach a derived row to every row sharing it and write the wrong values into each.
+
+- **Insert-versus-update detection reads the evidence each key shape offers.** A non-null
+  *surrogate* PK can only have come from the database — a caller cannot invent a meaningful
+  auto-increment id — so PK-presence still means "this row exists", and the sparse-upsert idiom
+  depends on it. A *composite* key is caller-minted either way, so `isNew()` is the only evidence
+  there is. One question, two mechanics.
+
+  This was nearly got wrong: unifying both on `isNew()` looks tidier and broke 18 of this
+  package's own tests, `UpsertStrategy::Lockless` most clearly, since it refuses a null PK because
+  "a null PK has nothing to coalesce on".
+
+### Still refused, by name
+
+`upsertByUniqueKey()` and `upsertAllByUniqueKey()` (their `$preserveAutoIncrement` machinery is
+about a surrogate key a composite-keyed table does not have), and `RecordSet::load()` plus
+`deleteUnreferenced()`, which both need something attrecord cannot yet declare: a **multi-column
+foreign key**. `#[Relation(foreignKey:)]` and `ForeignKeyDefinition::$localColumn` are single
+columns, so nothing can point at a composite-keyed table. That is the next feature, and its own
+release.
+
 ## [0.21.0] - 2026-09-04
 
 **Retiring a row from a content-addressed table**, which turned out to need three answers rather than
@@ -1237,7 +1313,8 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/Nandan108/attrecord/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/Nandan108/attrecord/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/Nandan108/attrecord/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/Nandan108/attrecord/compare/v0.18.0...v0.19.0

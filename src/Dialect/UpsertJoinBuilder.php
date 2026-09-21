@@ -101,20 +101,21 @@ trait UpsertJoinBuilder
 
     /**
      * Assemble the derived-table column names (quoted) and each row's aligned value list for the join:
-     * pk, then mask columns `_m0…`, then the update columns.
+     * every key member, then mask columns `_m0…`, then the update columns.
      *
      * @param list<string>          $columnNames   all columns in $rows order (unquoted)
      * @param list<list<string>>    $rows          SQL literals per row, in $columnNames order
-     * @param list<string>          $updateColumns non-PK columns to write
-     * @param int                   $pkIndex       index of the PK in $columnNames
+     * @param list<string>          $updateColumns non-key columns to write
+     * @param list<string>          $quotedPkCols  every key member, quoted, in key order
+     * @param list<int>             $pkIndexes     each key member's index in $columnNames
      * @param int                   $maskCount     number of mask columns
      * @param list<array<int, int>> $perRowMasks   per row, its mask integer(s)
      *
      * @return array{columns: list<string>, valueRows: list<list<string>>}
      */
-    private function buildUpsertDerivedColumns(string $quotedPk, array $columnNames, array $rows, array $updateColumns, int $pkIndex, int $maskCount, array $perRowMasks): array
+    private function buildUpsertDerivedColumns(array $quotedPkCols, array $columnNames, array $rows, array $updateColumns, array $pkIndexes, int $maskCount, array $perRowMasks): array
     {
-        $columns = [$quotedPk];
+        $columns = $quotedPkCols;
         for ($m = 0; $m < $maskCount; ++$m) {
             $columns[] = $this->quoteIdentifier('_m'.$m);
         }
@@ -129,7 +130,10 @@ trait UpsertJoinBuilder
 
         $valueRows = [];
         foreach ($rows as $i => $row) {
-            $values = [$row[$pkIndex]];
+            $values = [];
+            foreach ($pkIndexes as $ki) {
+                $values[] = $row[$ki];
+            }
             for ($m = 0; $m < $maskCount; ++$m) {
                 $values[] = (string) $perRowMasks[$i][$m];
             }
@@ -140,6 +144,54 @@ trait UpsertJoinBuilder
         }
 
         return ['columns' => $columns, 'valueRows' => $valueRows];
+    }
+
+    /**
+     * The `IN` list naming the rows to lock: a flat list of key literals on a single-column key,
+     * row-value tuples on a composite one.
+     *
+     * @param list<string>       $quotedPkCols every key member, quoted, in key order
+     * @param list<list<string>> $rows         SQL literals per row, in $columnNames order
+     * @param list<int>          $pkIndexes    each key member's index in $columnNames
+     */
+    private function renderKeyInList(array $quotedPkCols, array $rows, array $pkIndexes): string
+    {
+        if (1 === \count($quotedPkCols)) {
+            return $quotedPkCols[0].' IN ('
+                .\implode(', ', \array_map(static fn (array $row): string => $row[$pkIndexes[0]], $rows)).')';
+        }
+
+        $tuples = \array_map(
+            static fn (array $row): string => '('.\implode(', ', \array_map(static fn (int $ki): string => $row[$ki], $pkIndexes)).')',
+            $rows,
+        );
+
+        return '('.\implode(', ', $quotedPkCols).') IN ('.\implode(', ', $tuples).')';
+    }
+
+    /**
+     * Ascending key order for the locking read — lexicographic over the whole key, since that
+     * ordering is what makes concurrent upserts of overlapping batches deadlock-free.
+     *
+     * @param list<string> $quotedPkCols
+     */
+    private function renderKeyOrderBy(array $quotedPkCols): string
+    {
+        return \implode(', ', \array_map(static fn (string $c): string => $c.' ASC', $quotedPkCols));
+    }
+
+    /**
+     * `t.a = u.a AND t.b = u.b` — the derived table is joined on the whole key, so a row is
+     * matched by its identity rather than by one member of it.
+     *
+     * @param list<string> $quotedPkCols
+     */
+    private function renderKeyJoin(string $leftPrefix, string $rightPrefix, array $quotedPkCols): string
+    {
+        return \implode(' AND ', \array_map(
+            static fn (string $c): string => "{$leftPrefix}.{$c} = {$rightPrefix}.{$c}",
+            $quotedPkCols,
+        ));
     }
 
     abstract public function quoteIdentifier(string $name): string;

@@ -57,10 +57,13 @@ Declaring the shape is worth it on its own: a hand-written table is invisible to
 drifts unobserved, so `#[PrimaryKey]` is what makes it visible to `attrecord-migrations`.
 
 **Row identity follows the whole key.** `getOne()` / `getOneOrFail()` / `getOneOrNew()`,
-`reload()`, `save()`, `delete()` and `LockSet::acquire()` address such a row by every member;
-anything that cannot yet — `upsertByUniqueKey()`, `deleteUnreferenced()`, and the `RecordSet` bulk
-writers — throws, naming itself and the key. A refusal is not a gap to route around: the paths
-that refuse are the ones where a partial key would silently address the wrong rows.
+`reload()`, `save()`, `delete()`, `LockSet::acquire()` and the `RecordSet` bulk writers
+(`upsertAll()`, `insertAll()`, `deleteAll()`) address such a row by every member. What still
+throws, naming itself and the key, is what needs a multi-column **foreign key** to work:
+`RecordSet::load()` matches children by a single FK column, and `deleteUnreferenced()` asks
+whether any FK still references a key. `upsertByUniqueKey()` / `upsertAllByUniqueKey()` throw for
+a different reason — their `$preserveAutoIncrement` machinery is about a surrogate key that a
+composite-keyed table does not have.
 
 A key is passed as a **map keyed by column name**, never a positional list:
 

@@ -209,12 +209,39 @@ final class CompositePrimaryKeyTest extends TestCase
         NullableMemberPkRecord::newWith(['owner_id' => 4])->delete();
     }
 
-    public function testBulkWritesRefuse(): void
+    /**
+     * The three-step upsert keys its locking read, its derived table and its join on the whole
+     * key. Joining on the first member alone would attach one derived row to every row sharing
+     * that member and write the wrong values into each — a set-based version of the wrong-row bug.
+     */
+    public function testUpsertAllKeysEveryStepOnTheWholeKey(): void
+    {
+        $session = new CapturingDbSession();
+        Record::setConnection(new Connection($session, new MysqlDialect()));
+
+        $existing = new CompositeKeyRecord();
+        $existing->hydrateFromRow(['owner_id' => 4, 'item_id' => 'aa', 'quantity' => 1]);
+        $existing->quantity = 7;
+
+        (new RecordSet([$existing]))->upsertAll();
+
+        $sql = implode("\n", array_map(
+            static fn (array $call): string => \is_string($call['sql'] ?? null) ? $call['sql'] : '',
+            $session->allCalls(),
+        ));
+        self::assertStringContainsString('(`owner_id`, `item_id`) IN ((4, ', $sql, 'the locking read uses a row-value tuple');
+        self::assertStringContainsString('ORDER BY `owner_id` ASC, `item_id` ASC', $sql);
+        self::assertStringContainsString('`attrecord_composite_probe`.`owner_id` = u.`owner_id` AND `attrecord_composite_probe`.`item_id` = u.`item_id`', $sql, 'joined on the whole key');
+        self::assertStringNotContainsString('SET\n    `owner_id`', $sql, 'no key member is ever SET');
+    }
+
+    /** The paths that still refuse do so by name. */
+    public function testTheRemainingBulkRefusalsNameThemselves(): void
     {
         $this->expectException(SchemaException::class);
-        $this->expectExceptionMessage('upsertAll()');
+        $this->expectExceptionMessage('upsertAllByUniqueKey()');
 
-        (new RecordSet([new CompositeKeyRecord()]))->upsertAll();
+        (new RecordSet([new CompositeKeyRecord()]))->upsertAllByUniqueKey('whatever');
     }
 
     /**
@@ -317,11 +344,11 @@ final class CompositePrimaryKeyTest extends TestCase
     public function testTheRemainingRefusalsNameTheKeyAndThePointOfTheFeature(): void
     {
         try {
-            (new RecordSet([new CompositeKeyRecord()]))->upsertAll();
+            (new RecordSet([new CompositeKeyRecord()]))->load('whatever');
             self::fail('expected a SchemaException');
         } catch (SchemaException $e) {
             self::assertStringContainsString('owner_id, item_id', $e->getMessage(), 'names the actual key');
-            self::assertStringContainsString('upsertAll()', $e->getMessage(), 'names the operation');
+            self::assertStringContainsString('load()', $e->getMessage(), 'names the operation');
         }
     }
 

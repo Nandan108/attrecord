@@ -203,19 +203,23 @@ final class PgsqlDialect implements SqlDialect
     #[\Override]
     public function buildUpsertSql(
         string $tableName,
-        string $pkColumn,
+        array $pkColumns,
         array $columnNames,
         array $rows,
         array $updateColumns,
         array $rowDirtyColumns = [],
     ): UpsertSql {
         $quotedTable = $this->quoteIdentifier($tableName);
-        $quotedPk = $this->quoteIdentifier($pkColumn);
+        $quotedPkCols = \array_values(\array_map($this->quoteIdentifier(...), $pkColumns));
         $quotedCols = \implode(', ', \array_map($this->quoteIdentifier(...), $columnNames));
 
-        $pkIndex = (int) \array_search($pkColumn, $columnNames, true);
-        $pkLiterals = \array_map(fn (array $row) => $row[$pkIndex], $rows);
-        $inList = \implode(', ', $pkLiterals);
+        $pkIndexes = \array_values(\array_map(
+            static fn (string $c): int => (int) \array_search($c, $columnNames, true),
+            $pkColumns,
+        ));
+        $keyPredicate = $this->renderKeyInList($quotedPkCols, $rows, $pkIndexes);
+        $keyOrderBy = $this->renderKeyOrderBy($quotedPkCols);
+        $keySelect = \implode(', ', $quotedPkCols);
 
         // Step 1: INSERT … ON CONFLICT DO NOTHING (PG equivalent of INSERT IGNORE)
         $valueSets = \array_map(
@@ -227,9 +231,9 @@ final class PgsqlDialect implements SqlDialect
             ."\nON CONFLICT DO NOTHING";
 
         // Step 2: SELECT pk FOR UPDATE in ascending order — deterministic lock acquisition
-        $lock = "SELECT {$quotedPk} FROM {$quotedTable}"
-            ." WHERE {$quotedPk} IN ({$inList})"
-            ." ORDER BY {$quotedPk} ASC FOR UPDATE";
+        $lock = "SELECT {$keySelect} FROM {$quotedTable}"
+            ." WHERE {$keyPredicate}"
+            ." ORDER BY {$keyOrderBy} FOR UPDATE";
 
         // Step 3: join-based UPDATE with a per-row multi-mask (see UpsertJoinBuilder). A column
         // changed by every row is written directly (u.col); a column changed by only some rows is
@@ -237,7 +241,7 @@ final class PgsqlDialect implements SqlDialect
         $update = null;
         if (!empty($updateColumns)) {
             $plan = $this->computeUpsertMaskPlan($updateColumns, $rowDirtyColumns, \count($rows));
-            $derived = $this->buildUpsertDerivedColumns($quotedPk, $columnNames, $rows, $updateColumns, $pkIndex, $plan['maskCount'], $plan['perRowMasks']);
+            $derived = $this->buildUpsertDerivedColumns($quotedPkCols, $columnNames, $rows, $updateColumns, $pkIndexes, $plan['maskCount'], $plan['perRowMasks']);
             $subquery = $this->renderUpsertDerivedTable($derived['columns'], $derived['valueRows']);
 
             $setParts = [];
@@ -255,7 +259,8 @@ final class PgsqlDialect implements SqlDialect
                 }
             }
             $setClause = \implode(",\n    ", $setParts);
-            $update = "UPDATE {$quotedTable} SET\n    {$setClause}\nFROM (\n    {$subquery}\n    ) u\nWHERE {$quotedTable}.{$quotedPk} = u.{$quotedPk}";
+            $joinOn = $this->renderKeyJoin($quotedTable, 'u', $quotedPkCols);
+            $update = "UPDATE {$quotedTable} SET\n    {$setClause}\nFROM (\n    {$subquery}\n    ) u\nWHERE {$joinOn}";
         }
 
         return new UpsertSql($create, $lock, $update);

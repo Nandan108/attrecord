@@ -122,10 +122,11 @@ Rules:
   Mutually exclusive with `#[Table(primaryKey:)]`; needs >= 2 columns; members must be declared
   columns and **not auto-increment**, so the whole key is always caller-minted.
   - **Works on the whole key**: `getOne()` / `getOneOrFail()` / `getOneOrNew()`, `reload()`,
-    `save()` (INSERT and UPDATE), `delete()`, `LockSet::acquire()`, and any `where()` read.
-  - **Still throws, naming itself**: `upsertByUniqueKey()`, `deleteUnreferenced()`, and the
-    `RecordSet` bulk writers (`upsertAll()`, `insertAll()`, `upsertAllByUniqueKey()`,
-    `deleteAll()`, `load()`).
+    `save()` (INSERT and UPDATE), `delete()`, `LockSet::acquire()`, `RecordSet::upsertAll()` /
+    `insertAll()` / `deleteAll()`, and any `where()` read.
+  - **Still throws, naming itself**: `upsertByUniqueKey()`, `upsertAllByUniqueKey()`,
+    `deleteUnreferenced()`, and `RecordSet::load()` (relation loading). The last two need
+    multi-column foreign keys, which attrecord cannot yet declare.
   - A key is a **map keyed by column name** — `getOne(['subject_id' => 7, 'area_id' => 2])` —
     never a positional list; order comes from the schema. `Record::pkValues()` returns a loaded
     row's key in that same shape, which is also what to key a lookup array by (keying on one
