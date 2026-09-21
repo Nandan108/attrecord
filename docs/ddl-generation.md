@@ -79,6 +79,10 @@ Two consequences worth knowing before designing a composite-keyed table:
 
 - **No member may be auto-increment**, so the whole key is caller-minted. That is enforced at
   schema build, and it is why `save()` has no generated key to recover after an INSERT.
+- **No member may be a generated column**, also enforced at schema build. The engines split on
+  this: MySQL and PostgreSQL accept a `STORED` member, MariaDB (through 13.x) and SQLite refuse
+  it, and a `VIRTUAL` member is refused everywhere including MySQL, since a key must be stored.
+  Key the table on the columns the expression reads instead.
 - **`LockSet` makes resolving the key a caller obligation discharged before locking begins** —
   the rows to lock are named in full up front, so no part of a key may be derived from anything
   that happens after the lock phase starts.

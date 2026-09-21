@@ -47,6 +47,22 @@ only implementations known to exist.
   The docblock says deferral is the second resort — passing the missing columns is better, and a
   rejection there is the error doing its job.
 
+- **A generated column is refused as a `#[PrimaryKey]` member**, at schema build, alongside the
+  existing auto-increment rule. The engines split on this and the refusing half is the half a
+  table here is most likely to be created on — measured 2026-09-21:
+
+  | | `STORED` member | `VIRTUAL` member |
+  | --- | --- | --- |
+  | MySQL 8.0 / 8.4 / 9.7 | allowed | refused (error 3106) |
+  | PostgreSQL 16 | allowed | n/a |
+  | MariaDB 10.11 … 13.0.2 | refused (error 1903) | refused |
+  | SQLite 3.45 / 3.48 | refused | refused |
+
+  Accepting it would mean a Record that exists on half this library's dialects, failing at
+  `CREATE TABLE` on whichever half its author does not develop on. MariaDB's refusal is current
+  behaviour rather than an old version's: 13.0.2 gives the same error as 10.11. A `VIRTUAL` member
+  is refused by every engine, MySQL included, because a key has to be stored.
+
 ### Fixed
 
 - **Ordered locking is lexicographic over the whole key.** `LockSet` ordered by the first member,

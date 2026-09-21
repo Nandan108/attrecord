@@ -13,6 +13,7 @@ use Nandan108\Attrecord\Dialect\MysqlDialect;
 use Nandan108\Attrecord\Dialect\PgsqlDialect;
 use Nandan108\Attrecord\Dialect\SqliteDialect;
 use Nandan108\Attrecord\Enum\ColumnType;
+use Nandan108\Attrecord\Enum\GeneratedColumnMode;
 use Nandan108\Attrecord\Exception\RecordDeleteException;
 use Nandan108\Attrecord\Exception\SchemaException;
 use Nandan108\Attrecord\LockSet;
@@ -127,6 +128,23 @@ final class CompositePrimaryKeyTest extends TestCase
         $this->expectExceptionMessage('auto-increment');
 
         TableSchema::fromClass(AutoIncMemberPkRecord::class);
+    }
+
+    /**
+     * The engines disagree, and the half that refuses is the half this project develops on.
+     * Measured 2026-09-21: MySQL 8.0/8.4/9.7 and PostgreSQL 16 accept a STORED member; MariaDB
+     * 10.11 through 13.0.2 refuse it (error 1903) and so does SQLite 3.45/3.48. A VIRTUAL member
+     * is refused everywhere, MySQL included (error 3106), since a key has to be stored.
+     *
+     * Accepting it would mean a Record that exists on half the library's dialects, failing at
+     * CREATE TABLE on whichever half its author does not run.
+     */
+    public function testAGeneratedMemberIsRejected(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessage('is a generated column');
+
+        TableSchema::fromClass(GeneratedMemberPkRecord::class);
     }
 
     /** Declaring both is a contradiction, not an override — silently picking one hides the bug. */
@@ -381,6 +399,22 @@ final class CompositeKeyRecord extends Record
 
     #[Column(ColumnType::IntUnsigned)]
     public int $quantity = 0;
+}
+
+/** @internal a key member the database computes — refused, because two of four dialects cannot create it */
+#[Table(name: 'attrecord_generated_member_pk')]
+#[PrimaryKey(columns: ['owner_id', 'derived_key'])]
+final class GeneratedMemberPkRecord extends Record
+{
+    #[Column(ColumnType::IntUnsigned)]
+    public int $owner_id = 0;
+
+    #[Column(
+        ColumnType::BigIntUnsigned,
+        generatedAs: 'IFNULL(`owner_id`, 0)',
+        generatedMode: GeneratedColumnMode::Stored,
+    )]
+    public int $derived_key = 0;
 }
 
 /** @internal key members declared nullable, so an omitted one is detectable rather than defaulted */

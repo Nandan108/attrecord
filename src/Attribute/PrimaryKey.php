@@ -31,9 +31,18 @@ namespace Nandan108\Attrecord\Attribute;
  * Mutually exclusive with `#[Table(primaryKey:)]`: declaring both is a contradiction rather than
  * an override, and throws. Requires **at least two** columns — a one-column list is just
  * `#[Table(primaryKey:)]` spelled a longer way, and accepting it would create a second, silently
- * CRUD-hostile way to say something already expressible. Members must be declared columns, must
- * not repeat, and must not be auto-increment (no engine allows an auto-increment column to be a
- * non-leading part of a composite key, and a leading one would make the rest decorative).
+ * CRUD-hostile way to say something already expressible. Members must be declared columns and must
+ * not repeat.
+ *
+ * Two kinds of column are refused as members:
+ *
+ * - **auto-increment**, because no engine allows one as a non-leading part of a composite key, and
+ *   a leading one would make the rest decorative;
+ * - **generated**, because the engines disagree and the refusing half is the half a table here is
+ *   most likely to be created on. A `STORED` member is accepted by MySQL and PostgreSQL and
+ *   refused by MariaDB (through 13.x) and SQLite; a `VIRTUAL` one is refused by everyone, MySQL
+ *   included, since a key must be stored. Accepting it would mean a Record that exists on half
+ *   this library's dialects.
  *
  * Column **names** (post-`name:`-override), not PHP property names — same convention as
  * {@see UniqueKey}'s class-level form.

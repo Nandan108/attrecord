@@ -869,6 +869,28 @@ final class TableSchema
                         $pkCol,
                     ));
                 }
+                // Refused because the engines disagree, and the half that refuses includes the two
+                // a table here is most likely to be created on. Measured 2026-09-21:
+                //
+                //   STORED  — MySQL 8.0/8.4/9.7 allow; PostgreSQL 16 allows;
+                //             MariaDB 10.11 … 13.0 refuse (error 1903); SQLite 3.45/3.48 refuse.
+                //   VIRTUAL — refused everywhere, MySQL included (error 3106): a key must be stored.
+                //
+                // Accepting it would mean a Record that exists on half this library's dialects, and
+                // the failure would arrive at CREATE TABLE on whichever half the author does not
+                // develop on. MariaDB's refusal is current behaviour rather than an old version's:
+                // 13.0.2 gives the same error as 10.11.
+                if ($columns[$pkCol]->isGenerated) {
+                    throw new SchemaException(sprintf(
+                        '%s: #[PrimaryKey] member "%s" is a generated column. MariaDB (through 13.x) '
+                        .'and SQLite both refuse a generated column in a primary key, and every engine '
+                        .'refuses a VIRTUAL one — so such a table cannot be created on all of this '
+                        .'library\'s dialects. Store the value in an ordinary column, or key the table '
+                        .'on the columns the expression reads.',
+                        $class,
+                        $pkCol,
+                    ));
+                }
             }
         }
 
