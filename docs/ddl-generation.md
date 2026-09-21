@@ -38,7 +38,7 @@ The method lives on `SqlDialect` and both dialects implement it. `PgsqlDialect`
 emits the PostgreSQL equivalent of the same schema — see
 [PostgreSQL output](#postgresql-output) below.
 
-### Composite primary keys (DDL-only, v0.13+)
+### Composite primary keys (v0.13+)
 
 `#[Table(primaryKey:)]` names a single column. For a table keyed on two or more —
 a junction table, or any "one row per (a, b)" state table — declare it at class level:
@@ -53,11 +53,32 @@ All three dialects emit one `PRIMARY KEY (a, b)` clause. `TableSchema::pkColumns
 member list (a single-entry list on an ordinary table), and `TableSchema::$compositePk` is
 non-null only for these.
 
-Such a Record is **DDL-only**: every CRUD path throws, because they identify a row by a single
-`$pk`. That is the point rather than a limitation — the table's reads and writes stay raw SQL,
-while its *shape* becomes declared, so the DDL producer emits it and `attrecord-migrations` can
-compare it against the live database. A hand-written table is invisible to the differ and drifts
-unobserved; this is what makes it visible without pretending the runtime supports composite keys.
+Declaring the shape is worth it on its own: a hand-written table is invisible to the differ and
+drifts unobserved, so `#[PrimaryKey]` is what makes it visible to `attrecord-migrations`.
+
+**Row identity follows the whole key.** `getOne()` / `getOneOrFail()` / `getOneOrNew()`,
+`reload()`, `save()`, `delete()` and `LockSet::acquire()` address such a row by every member;
+anything that cannot yet — `upsertByUniqueKey()`, `deleteUnreferenced()`, and the `RecordSet` bulk
+writers — throws, naming itself and the key. A refusal is not a gap to route around: the paths
+that refuse are the ones where a partial key would silently address the wrong rows.
+
+A key is passed as a **map keyed by column name**, never a positional list:
+
+```php
+$cost = SubjectCost::getOne(['subject_id' => 7, 'cost_area_id' => 2]);
+```
+
+The ordering is the schema's, not the call site's. A positional tuple restates the key order at
+every call, and getting it backwards reads as valid while addressing the wrong row — the same
+failure as `getOne($id)` matching on the first member alone.
+
+Two consequences worth knowing before designing a composite-keyed table:
+
+- **No member may be auto-increment**, so the whole key is caller-minted. That is enforced at
+  schema build, and it is why `save()` has no generated key to recover after an INSERT.
+- **`LockSet` makes resolving the key a caller obligation discharged before locking begins** —
+  the rows to lock are named in full up front, so no part of a key may be derived from anything
+  that happens after the lock phase starts.
 
 ### Two seams for evolution tooling (v0.12.0)
 

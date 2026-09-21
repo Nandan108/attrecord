@@ -116,14 +116,24 @@ Rules:
 - Every persisted column is a **public property** with a `#[Column]` attribute. Properties
   without `#[Column]` are ignored by persistence (e.g. relation properties).
 - The PK property is identified by `#[Table(primaryKey: …)]` (default `'id'`).
-- **Composite PKs** are declared at class level with `#[PrimaryKey(columns: ['a','b'])]`,
-  which is **DDL-only**: `TableSchema::$compositePk` is non-null, `pkColumns()` returns the
-  members, all three dialects emit `PRIMARY KEY (a, b)` — and every CRUD path (`save()`,
-  `delete()`, `upsertByUniqueKey()`, `RecordSet` bulk writers, `load()`, `LockSet::acquire()`)
-  **throws**, since each identifies a row by a single `$pk`. Reads via `where()` still work.
+- **Composite PKs** are declared at class level with `#[PrimaryKey(columns: ['a','b'])]`:
+  `TableSchema::$compositePk` is non-null, `pkColumns()` returns the members, `pkProps()` their
+  property names, and all three dialects emit `PRIMARY KEY (a, b)`.
   Mutually exclusive with `#[Table(primaryKey:)]`; needs >= 2 columns; members must be declared
-  columns and not auto-increment. Use for a table whose R/W is raw SQL but whose shape should
-  be declared so the DDL producer and `attrecord-migrations` can see it.
+  columns and **not auto-increment**, so the whole key is always caller-minted.
+  - **Works on the whole key**: `getOne()` / `getOneOrFail()` / `getOneOrNew()`, `reload()`,
+    `save()` (INSERT and UPDATE), `delete()`, `LockSet::acquire()`, and any `where()` read.
+  - **Still throws, naming itself**: `upsertByUniqueKey()`, `deleteUnreferenced()`, and the
+    `RecordSet` bulk writers (`upsertAll()`, `insertAll()`, `upsertAllByUniqueKey()`,
+    `deleteAll()`, `load()`).
+  - A key is a **map keyed by column name** — `getOne(['subject_id' => 7, 'area_id' => 2])` —
+    never a positional list; order comes from the schema. `Record::pkValues()` returns a loaded
+    row's key in that same shape, which is also what to key a lookup array by (keying on one
+    member collapses rows that share it, silently keeping the last).
+  - `TableSchema::normalizeKey()` refuses a key that is partial, over-complete or a bare scalar;
+    `pkWhere()` builds `"a" = ? AND "b" = ?`. `LockSet` orders lexicographically over the whole
+    tuple and selects with a row-value constructor, `(a, b) IN ((?, ?), …)`.
+  - `dataColumnNames` excludes **every** member, so an UPDATE never SETs part of the key.
 - `name:` on `#[Column]` overrides the SQL column name; the PHP property name is unchanged.
   There is **no** automatic snake_case↔camelCase conversion
   ([design note](design-note-no-name-auto-conversion.md)).

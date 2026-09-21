@@ -1197,8 +1197,6 @@ abstract class Record
      */
     public function save(bool $force = false, ?array $ignoreColumns = null, bool | array | null $readBack = null, OnConflict $onConflict = OnConflict::Fail): static
     {
-        static::schema()->assertSingleColumnPk('save()');
-
         // Immutable rows are write-once: a new-record save (INSERT) is a legitimate append, but
         // saving an existing one is an UPDATE. Refused here without further ado when the Record
         // exempts no column at all — the common case, and no reason to build a write set first.
@@ -1342,7 +1340,6 @@ abstract class Record
         $qt = $dialect->quoteIdentifier($schema->tableName);
         $pk = $schema->pk;
         $pkProp = $schema->pkProp;
-        $qpk = $dialect->quoteIdentifier($pk);
 
         // Resolve the read-back columns now (auto uses the just-built $writtenCols), so a supporting
         // dialect can fold them into the write's RETURNING clause rather than a second round-trip.
@@ -1370,7 +1367,7 @@ abstract class Record
                 if ($canReturn) {
                     // PG/SQLite: one round-trip returns the generated PK plus any folded read-back
                     // columns (a generated column returns its computed value).
-                    $names = array_values(array_unique([$pk, ...$returnCols]));
+                    $names = array_values(array_unique([...$schema->pkColumns(), ...$returnCols]));
                     $returning = 'RETURNING '.implode(', ', array_map($dialect->quoteIdentifier(...), $names));
                     /** @psalm-suppress MixedArgumentTypeCoercion */
                     $returnedRow = $session->fetchOne("{$insertSql} {$returning}", $params);
@@ -1381,13 +1378,19 @@ abstract class Record
 
                         return $this;
                     }
-                    /** @psalm-suppress MixedAssignment, MixedArgument */
-                    $rawPk = $returnedRow[$pk]
-                        ?? throw new RecordSaveException('INSERT did not return a generated key.');
-                    // Cast the returned key through the serializer: PostgreSQL returns a bigint
-                    // PK as a string and a bytea PK as a stream resource — fromDb() normalises
-                    // both to the property's PHP type (int / raw bytes).
-                    $this->{$pkProp} = ColumnSerializer::fromDb($rawPk, $schema->columns[$pk], $returnedRow ?? []);
+                    // Nothing to read back into the key when it is composite: no member of such a
+                    // key may be auto-increment, so every member came from the caller and the row
+                    // was inserted with the key it already has. Only a *generated* key needs
+                    // recovering here.
+                    if (!$schema->isCompositePk()) {
+                        /** @psalm-suppress MixedAssignment, MixedArgument */
+                        $rawPk = $returnedRow[$pk]
+                            ?? throw new RecordSaveException('INSERT did not return a generated key.');
+                        // Cast the returned key through the serializer: PostgreSQL returns a bigint
+                        // PK as a string and a bytea PK as a stream resource — fromDb() normalises
+                        // both to the property's PHP type (int / raw bytes).
+                        $this->{$pkProp} = ColumnSerializer::fromDb($rawPk, $schema->columns[$pk], $returnedRow ?? []);
+                    }
                 } else {
                     /** @psalm-suppress MixedArgumentTypeCoercion */
                     $affected = $session->exec($insertSql, $params);
@@ -1420,12 +1423,18 @@ abstract class Record
                     $setParts[] = "{$qver} = {$qver} + 1";
                     $versionGuard = " AND {$qver} = ?";
                 }
-                // Route the PK through the serializer so a binary PK is wrapped for binding.
-                $params[] = ColumnSerializer::toParam($this->{$pkProp} ?? null, $schema->columns[$pk], $bindBinaryAsLob);
+                // Route each key member through the serializer so a binary one is wrapped for
+                // binding. The whole key, so the UPDATE names one row rather than every row
+                // sharing its first member.
+                /** @var array<string, int|string> $ownKey */
+                $ownKey = $this->pkValues();
+                foreach (self::pkParams($ownKey, $schema) as $keyParam) {
+                    $params[] = $keyParam;
+                }
                 if (null !== $versionCol) {
                     $params[] = $expectedVersion;
                 }
-                $updateSql = "UPDATE {$qt} SET ".implode(', ', $setParts)." WHERE {$qpk} = ?{$versionGuard}";
+                $updateSql = "UPDATE {$qt} SET ".implode(', ', $setParts).' WHERE '.$schema->pkWhere($dialect).$versionGuard;
                 if ($canReturn && $wantReadBack) {
                     // Fold the read-back into UPDATE … RETURNING (PG/SQLite) — no separate SELECT.
                     $returning = 'RETURNING '.implode(', ', array_map($dialect->quoteIdentifier(...), $returnCols));
@@ -1564,26 +1573,30 @@ abstract class Record
      */
     public function delete(): void
     {
-        static::schema()->assertSingleColumnPk('delete()');
         self::assertNotAppendOnly('delete()');
         $this->beforeDelete();
 
         $schema = static::schema();
-        $pk = $schema->pk;
-        /** @psalm-suppress MixedAssignment */
-        $pkVal = $this->{$schema->pkProp};
+        $key = $this->pkValues();
 
-        if (null === $pkVal) {
-            throw new RecordDeleteException('Cannot delete a record with no primary key value.');
+        // Every member, not just the first: a key member left null names a *set* of rows, and a
+        // DELETE that ran on it would take every row sharing what was supplied.
+        /** @psalm-var mixed $value */
+        foreach ($key as $col => $value) {
+            if (null === $value) {
+                throw new RecordDeleteException(\count($key) > 1
+                    ? sprintf('Cannot delete a record whose primary key is incomplete: "%s" has no value (key: %s).', $col, implode(', ', array_keys($key)))
+                    : 'Cannot delete a record with no primary key value.');
+            }
         }
 
         try {
             $conn = static::connection();
-            /** @psalm-suppress MixedArgumentTypeCoercion */
+            /** @var array<string, int|string> $key */
             $conn->session->exec(
                 'DELETE FROM '.$conn->dialect->quoteIdentifier($schema->tableName)
-                    .' WHERE '.$conn->dialect->quoteIdentifier($pk).' = ?',
-                [ColumnSerializer::toParam($pkVal, $schema->columns[$pk], $conn->dialect->bindsBinaryAsLob())],
+                    .' WHERE '.$schema->pkWhere($conn->dialect),
+                self::pkParams($key, $schema),
             );
         } catch (\Throwable $e) {
             throw new RecordDeleteException($e->getMessage(), $e);
@@ -1820,6 +1833,7 @@ abstract class Record
         $session = $conn->session;
         $pk = $schema->pk;
         $qt = $dialect->quoteIdentifier($schema->tableName);
+        // Single-column throughout: upsertByUniqueKey() refuses a composite key upstream.
         $qpk = $dialect->quoteIdentifier($pk);
 
         $whereParts = [];

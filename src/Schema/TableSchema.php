@@ -383,9 +383,10 @@ final class TableSchema
         }
 
         throw new SchemaException(sprintf(
-            '%s: %s is not available on a Record with a composite primary key (%s). '
-            .'#[PrimaryKey(columns: ...)] declares a table for DDL and schema-evolution tooling only; '
-            .'read and write it with raw SQL, or give the table a single-column key.',
+            '%s: %s does not support a composite primary key (%s) yet — it would have to address '
+            .'rows by part of the key, which selects rows the caller never named. Use the '
+            .'whole-key paths (getOne/save/delete/LockSet::acquire), raw SQL for this operation, '
+            .'or give the table a single-column key.',
             $this->tableName,
             $operation,
             implode(', ', $this->compositePk),

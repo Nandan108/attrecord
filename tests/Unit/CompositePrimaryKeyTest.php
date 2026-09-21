@@ -13,6 +13,7 @@ use Nandan108\Attrecord\Dialect\MysqlDialect;
 use Nandan108\Attrecord\Dialect\PgsqlDialect;
 use Nandan108\Attrecord\Dialect\SqliteDialect;
 use Nandan108\Attrecord\Enum\ColumnType;
+use Nandan108\Attrecord\Exception\RecordDeleteException;
 use Nandan108\Attrecord\Exception\SchemaException;
 use Nandan108\Attrecord\LockSet;
 use Nandan108\Attrecord\Record;
@@ -22,13 +23,16 @@ use Nandan108\Attrecord\Test\CapturingDbSession;
 use PHPUnit\Framework\TestCase;
 
 /**
- * `#[PrimaryKey(columns: …)]` — composite keys, **DDL-only**.
+ * `#[PrimaryKey(columns: …)]` — composite keys.
  *
- * The feature is as much about what it refuses as what it emits. A table keyed `(a, b)` can now
- * be *described* in PHP so the DDL producer emits it and schema-evolution tooling can see it —
- * previously such a table needed hand-written DDL, which the differ cannot compare against
- * anything, so it sat outside the managed schema and drifted unobserved. But the CRUD paths all
- * assume one PK column, so they must fail loudly rather than address the wrong rows.
+ * A table keyed `(a, b)` is *described* in PHP, so the DDL producer emits it and
+ * schema-evolution tooling can see it; hand-written DDL is invisible to the differ and drifts
+ * unobserved. Row identity then follows: the paths that address a row by key take the whole key,
+ * and each path that cannot yet still refuses by name rather than matching on one member.
+ *
+ * The feature is as much about what it refuses as what it emits, and the refusals are the tests
+ * worth reading twice — a partial key names a *set* of rows, so accepting one silently addresses
+ * the wrong row on a read and rewrites several on a write.
  *
  * @psalm-suppress PropertyNotSetInConstructor
  */
@@ -134,22 +138,75 @@ final class CompositePrimaryKeyTest extends TestCase
         TableSchema::fromClass(BothPkFormsRecord::class);
     }
 
-    // --------------------------------------------------- CRUD refuses, loudly
+    // ------------------------------------------ CRUD on the whole key, or not at all
 
-    public function testSaveRefuses(): void
+    /** An INSERT carries the whole key, because the caller minted all of it. */
+    public function testSaveInsertsWithEveryKeyMember(): void
     {
-        $this->expectException(SchemaException::class);
-        $this->expectExceptionMessage('save() is not available');
+        $session = new CapturingDbSession();
+        Record::setConnection(new Connection($session, new MysqlDialect()));
 
-        (new CompositeKeyRecord())->save();
+        CompositeKeyRecord::newWith(['owner_id' => 4, 'item_id' => 'aa', 'quantity' => 2])->save();
+
+        $sql = (string) $session->lastSql();
+        self::assertStringStartsWith('INSERT INTO `attrecord_composite_probe`', $sql);
+        self::assertStringContainsString('`owner_id`', $sql);
+        self::assertStringContainsString('`item_id`', $sql, 'the non-leading member is written too');
     }
 
-    public function testDeleteRefuses(): void
+    /**
+     * The UPDATE has to name the whole key. On `WHERE owner_id = ?` alone it would rewrite every
+     * row sharing that owner — the wrong-row bug in its most expensive form, since it is a write.
+     */
+    public function testSaveUpdatesOnTheWholeKey(): void
     {
-        $this->expectException(SchemaException::class);
-        $this->expectExceptionMessage('delete()');
+        $session = new CapturingDbSession();
+        Record::setConnection(new Connection($session, new MysqlDialect()));
 
-        (new CompositeKeyRecord())->delete();
+        // Hydrated rather than constructed: that is what makes it an existing row, so save()
+        // takes the UPDATE branch instead of inserting.
+        $record = new CompositeKeyRecord();
+        $record->hydrateFromRow(['owner_id' => 4, 'item_id' => 'aa', 'quantity' => 2]);
+        $record->quantity = 9;
+        $record->save();
+
+        $sql = (string) $session->lastSql();
+        self::assertStringContainsString('UPDATE `attrecord_composite_probe` SET', $sql);
+        self::assertStringContainsString('WHERE `owner_id` = ? AND `item_id` = ?', $sql);
+        self::assertStringNotContainsString('SET `owner_id`', $sql, 'identity is not data');
+    }
+
+    public function testDeleteNamesTheWholeKey(): void
+    {
+        $session = new CapturingDbSession();
+        Record::setConnection(new Connection($session, new MysqlDialect()));
+
+        CompositeKeyRecord::newWith(['owner_id' => 4, 'item_id' => 'aa', 'quantity' => 1])->delete();
+
+        self::assertSame(
+            'DELETE FROM `attrecord_composite_probe` WHERE `owner_id` = ? AND `item_id` = ?',
+            (string) $session->lastSql(),
+        );
+    }
+
+    /**
+     * A half-supplied key names a set of rows, so the write is refused rather than run — and the
+     * message names the member that is missing, since "incomplete" is useless on a wide key.
+     *
+     * **The guard detects `null`, which is all it can detect.** A member declared `int $x = 0`
+     * has no unset state to find: 0 is a legitimate key value and an omitted assignment produces
+     * it, so such a member is indistinguishable from one supplied. Declaring key properties
+     * nullable — as an auto-increment `?int $id = null` already is — is what makes the omission
+     * visible, and this fixture does that deliberately.
+     */
+    public function testDeleteRefusesAKeyMissingAMember(): void
+    {
+        Record::setConnection(new Connection(new CapturingDbSession(), new MysqlDialect()));
+
+        $this->expectException(RecordDeleteException::class);
+        $this->expectExceptionMessage('"item_id" has no value');
+
+        NullableMemberPkRecord::newWith(['owner_id' => 4])->delete();
     }
 
     public function testBulkWritesRefuse(): void
@@ -256,15 +313,15 @@ final class CompositePrimaryKeyTest extends TestCase
         self::assertNotContains('item_id', $schema->dataColumnNames, 'the non-leading member too');
     }
 
-    /** The message has to say what to do instead, not merely that the door is shut. */
-    public function testTheRefusalNamesTheKeyAndThePointOfTheFeature(): void
+    /** A path that still refuses has to say what to do instead, not merely that the door is shut. */
+    public function testTheRemainingRefusalsNameTheKeyAndThePointOfTheFeature(): void
     {
         try {
-            (new CompositeKeyRecord())->save();
+            (new RecordSet([new CompositeKeyRecord()]))->upsertAll();
             self::fail('expected a SchemaException');
         } catch (SchemaException $e) {
             self::assertStringContainsString('owner_id, item_id', $e->getMessage(), 'names the actual key');
-            self::assertStringContainsString('raw SQL', $e->getMessage(), 'says what to do instead');
+            self::assertStringContainsString('upsertAll()', $e->getMessage(), 'names the operation');
         }
     }
 
@@ -297,6 +354,18 @@ final class CompositeKeyRecord extends Record
 
     #[Column(ColumnType::IntUnsigned)]
     public int $quantity = 0;
+}
+
+/** @internal key members declared nullable, so an omitted one is detectable rather than defaulted */
+#[Table(name: 'attrecord_nullable_member_pk')]
+#[PrimaryKey(columns: ['owner_id', 'item_id'])]
+final class NullableMemberPkRecord extends Record
+{
+    #[Column(ColumnType::IntUnsigned)]
+    public ?int $owner_id = null;
+
+    #[Column(ColumnType::VarChar, length: 16)]
+    public ?string $item_id = null;
 }
 
 /** @internal the control: an ordinary key, so "unchanged" is asserted rather than assumed */
