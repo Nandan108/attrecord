@@ -305,6 +305,43 @@ final class TableSchema
      * On a single-column key this is the `"id" = ?` every CRUD path has always emitted, character
      * for character, so nothing about the ordinary table's SQL changes.
      */
+    /**
+     * `"id" IN (?, ?)`, or `("a", "b") IN ((?, ?), (?, ?))` on a composite key — the predicate
+     * selecting `$rowCount` rows by key, with parameters bound key-major (every member of the
+     * first row, then the second's).
+     *
+     * A single-column key emits exactly the flat `IN` list it always has.
+     */
+    public function pkIn(SqlDialect $dialect, int $rowCount): string
+    {
+        $columns = $this->pkColumns();
+        $quoted = array_map($dialect->quoteIdentifier(...), $columns);
+
+        if (!$this->isCompositePk()) {
+            return $quoted[0].' IN ('.implode(', ', array_fill(0, $rowCount, '?')).')';
+        }
+
+        $tuple = '('.implode(', ', array_fill(0, \count($columns), '?')).')';
+
+        return '('.implode(', ', $quoted).') IN ('.implode(', ', array_fill(0, $rowCount, $tuple)).')';
+    }
+
+    /**
+     * `"a" ASC, "b" ASC` — ascending key order, lexicographic over the whole key.
+     *
+     * **This is the ordering the deadlock guarantee rests on**, so every path that takes row locks
+     * has to emit this one and not a variation of it. Ordering by the first member alone is a
+     * *partial* order: rows sharing it may be taken in either sequence, which is two orderings of
+     * one table — the thing ordered locking exists to prevent.
+     */
+    public function pkOrderBy(SqlDialect $dialect): string
+    {
+        return implode(', ', array_map(
+            static fn (string $col): string => $dialect->quoteIdentifier($col).' ASC',
+            $this->pkColumns(),
+        ));
+    }
+
     public function pkWhere(SqlDialect $dialect): string
     {
         return implode(' AND ', array_map(

@@ -6,6 +6,7 @@ namespace Nandan108\Attrecord\Tests\Integration\Cases;
 
 use Nandan108\Attrecord\LockSet;
 use Nandan108\Attrecord\Record;
+use Nandan108\Attrecord\RecordSet;
 use Nandan108\Attrecord\Tests\Fixtures\CompositeKeyCostRecord;
 
 /**
@@ -121,6 +122,36 @@ trait CompositeKeyCases
         $this->assertTrue($row->isNew());
         $this->assertSame(41, $row->subject_id);
         $this->assertSame(42, $row->area_id);
+    }
+
+    public function testInsertAllAndDeleteAllWorkOnWholeKeys(): void
+    {
+        $rows = [];
+        foreach ([[3, 30], [3, 31], [4, 30]] as [$subject, $area]) {
+            $rows[] = CompositeKeyCostRecord::newWith([
+                'subject_id' => $subject,
+                'area_id'    => $area,
+                'unit_cost'  => '2.0000',
+            ]);
+        }
+        (new RecordSet($rows))->insertAll();
+
+        $this->assertNotNull(CompositeKeyCostRecord::getOne(['subject_id' => 3, 'area_id' => 31]));
+
+        // Delete two of the three, naming each by its whole key. (3, 30) and (4, 30) share an
+        // area and (3, 30) shares a subject with (3, 31), so a partial-key IN would take more.
+        $a = CompositeKeyCostRecord::getOne(['subject_id' => 3, 'area_id' => 30]);
+        $b = CompositeKeyCostRecord::getOne(['subject_id' => 4, 'area_id' => 30]);
+        $this->assertNotNull($a);
+        $this->assertNotNull($b);
+        $this->assertSame(2, (new RecordSet([$a, $b]))->deleteAll());
+
+        $this->assertNull(CompositeKeyCostRecord::getOne(['subject_id' => 3, 'area_id' => 30]));
+        $this->assertNull(CompositeKeyCostRecord::getOne(['subject_id' => 4, 'area_id' => 30]));
+        $this->assertNotNull(
+            CompositeKeyCostRecord::getOne(['subject_id' => 3, 'area_id' => 31]),
+            'the survivor shares a subject with one of the deleted rows',
+        );
     }
 
     /**

@@ -345,7 +345,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         foreach ($dirtyRecords as $r) {
             $r->beforeSave();
             /** @psalm-suppress MixedPropertyFetch */
-            $isInsert = null === $r->{$pkProp};
+            $isInsert = !self::isExistingRow($r, $schema);
             $r->applyAutoTimestamps($isInsert);
             if ($isInsert) {
                 $r->seedVersionForInsert();
@@ -367,7 +367,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         /** @var list<Record> $insertedRecords */
         $insertedRecords = array_values(array_filter(
             $dirtyRecords,
-            static fn (Record $r): bool => null === $r->{$pkProp},
+            static fn (Record $r): bool => !self::isExistingRow($r, $schema),
         ));
 
         // Resolve the read-back columns now, while insert/update state is still known.
@@ -670,7 +670,6 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     public function insertAll(?array $ignoreColumns = null, bool | array | null $readBack = null, OnConflict $onConflict = OnConflict::Fail): ?SaveResult
     {
         if ([] !== $this->records) {
-            $this->records[0]::schema()->assertSingleColumnPk('insertAll()');
         }
         if (empty($this->records)) {
             return null;
@@ -690,7 +689,11 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $pkProp = $schema->pkProp;
         $pkColumn = $schema->columns[$pk];
         $pkAutoIncrement = $pkColumn->autoIncrement;
-        $returningSuffix = $dialect->insertReturningSuffix($dialect->quoteIdentifier($pk));
+        // Nothing to return on a composite key: no member may be auto-increment, so every value
+        // was supplied by the caller and there is no generated id to read back.
+        $returningSuffix = $schema->isCompositePk()
+            ? ''
+            : $dialect->insertReturningSuffix($dialect->quoteIdentifier($pk));
 
         foreach ($records as $r) {
             $r->beforeSave();
@@ -726,7 +729,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         if ($pkAutoIncrement && !$ignoreConflicts) {
             $newRecords = array_values(array_filter(
                 $records,
-                static fn (Record $r): bool => null === $r->{$pkProp},
+                static fn (Record $r): bool => !self::isExistingRow($r, $schema),
             ));
             foreach ($newRecords as $index => $record) {
                 if (array_key_exists($index, $insertedIds)) {
@@ -858,7 +861,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $newRecords = [];
         $keyedRecords = [];
         foreach ($dirtyRecords as $r) {
-            if (null === $r->{$pkProp}) {
+            if (!self::isExistingRow($r, $schema)) {
                 $newRecords[] = $r;
             } else {
                 $keyedRecords[] = $r;
@@ -885,7 +888,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             // Capture inserts (PK-null) before the write back-fills their ids, for afterSave().
             $chunkInsertSet = [];
             foreach ($chunk as $r) {
-                if (null === $r->{$pkProp}) {
+                if (!self::isExistingRow($r, $schema)) {
                     $chunkInsertSet[spl_object_id($r)] = true;
                 }
             }
@@ -909,7 +912,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             if ($pkAutoIncrement && [] !== $insertedIds) {
                 $newInChunk = array_values(array_filter(
                     $chunk,
-                    static fn (Record $r): bool => null === $r->{$pkProp},
+                    static fn (Record $r): bool => !self::isExistingRow($r, $schema),
                 ));
                 foreach ($newInChunk as $index => $record) {
                     if (array_key_exists($index, $insertedIds)) {
@@ -1325,9 +1328,8 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     private function buildPlan(array $dirty, TableSchema $schema, SqlDialect $dialect, array $ignore = [], array $ignoreOnUpdate = []): array
     {
         $pk = $schema->pk;
-        $pkProp = $schema->pkProp;
-        $noKeyRecords = array_values(array_filter($dirty, fn (Record $r) => null === $r->{$pkProp}));
-        $keyedRecords = array_values(array_filter($dirty, fn (Record $r) => null !== $r->{$pkProp}));
+        $noKeyRecords = array_values(array_filter($dirty, fn (Record $r) => !self::isExistingRow($r, $schema)));
+        $keyedRecords = array_values(array_filter($dirty, fn (Record $r) => self::isExistingRow($r, $schema)));
 
         $upsert = null;
 
@@ -1405,11 +1407,32 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      *
      * @return int number of deleted rows
      */
+    /**
+     * Whether a record should be written as an **existing** row rather than a new one.
+     *
+     * One question — *does the caller hold an identity this row already has in the database?* —
+     * with two mechanics, because the two key shapes answer it differently:
+     *
+     * - **Surrogate key**: a non-null PK can only have come *from* the database, since the caller
+     *   has no way to invent a meaningful auto-increment id. So PK-presence is the answer, and it
+     *   is load-bearing: a sparse upsert is written by constructing a record, setting its PK and
+     *   the few changed columns, and sending it. `UpsertStrategy::Lockless` refuses a null PK
+     *   outright for the same reason — there is nothing to coalesce on.
+     * - **Composite key**: every member is caller-minted, so a complete key says nothing about
+     *   whether the row exists. `isNew()` is the only remaining evidence, and it is the right
+     *   one: a composite-keyed record that was never hydrated is not known to exist.
+     */
+    private static function isExistingRow(Record $record, TableSchema $schema): bool
+    {
+        if ($schema->isCompositePk()) {
+            return !$record->isNew();
+        }
+
+        return null !== $record->{$schema->pkProp};
+    }
+
     public function deleteAll(): int
     {
-        if ([] !== $this->records) {
-            $this->records[0]::schema()->assertSingleColumnPk('deleteAll()');
-        }
         if (empty($this->records)) {
             return 0;
         }
@@ -1419,24 +1442,42 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             throw AppendOnlyViolationException::forOperation($first::class, 'deleteAll()');
         }
         $schema = $first::schema();
-        $pk = $schema->pk;
-        $pkProp = $schema->pkProp;
-        /** @psalm-suppress MixedReturnStatement */
-        $ids = array_values(array_filter(
-            array_map(fn (Record $r): mixed => $r->{$pkProp}, $this->records),
-        ));
+        $pkColumns = $schema->pkColumns();
 
-        if (empty($ids)) {
+        // A row contributes only when *every* member of its key has a value. A partly-keyed row
+        // names a set rather than a row, and dropping the incomplete member instead would widen
+        // the DELETE to every row sharing what was supplied.
+        $keys = [];
+        foreach ($this->records as $r) {
+            $key = $r->pkValues();
+            foreach ($pkColumns as $col) {
+                if (null === $key[$col]) {
+                    continue 2;
+                }
+            }
+            $keys[] = $key;
+        }
+
+        if (empty($keys)) {
             return 0;
         }
 
-        $placeholders = implode(', ', array_fill(0, \count($ids), '?'));
         $conn = $first::connection();
-        $sql = 'DELETE FROM '.$conn->dialect->quoteIdentifier($schema->tableName)
-            .' WHERE '.$conn->dialect->quoteIdentifier($pk)." IN ({$placeholders})";
+        $dialect = $conn->dialect;
+        $bindBinaryAsLob = $dialect->bindsBinaryAsLob();
 
-        /** @psalm-suppress MixedArgumentTypeCoercion */
-        return $conn->session->exec($sql, $ids);
+        // Key-major, matching the tuple order pkIn() emits.
+        $params = [];
+        foreach ($keys as $key) {
+            foreach ($pkColumns as $col) {
+                $params[] = ColumnSerializer::toParam($key[$col], $schema->columns[$col], $bindBinaryAsLob);
+            }
+        }
+
+        $sql = 'DELETE FROM '.$dialect->quoteIdentifier($schema->tableName)
+            .' WHERE '.$schema->pkIn($dialect, \count($keys));
+
+        return $conn->session->exec($sql, $params);
     }
 
     // -----------------------------------------------------------------

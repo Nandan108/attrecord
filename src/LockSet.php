@@ -87,37 +87,20 @@ final class LockSet
             // Quote identifiers so the FOR UPDATE read is portable (backticks on MySQL/MariaDB,
             // double quotes on PostgreSQL).
             $qt = $dialect->quoteIdentifier($schema->tableName);
-            $pkColumns = $schema->pkColumns();
-            $quoted = array_map($dialect->quoteIdentifier(...), $pkColumns);
             $bindBinaryAsLob = $dialect->bindsBinaryAsLob();
-
-            // **Ascending key order is the deadlock guarantee**, and on a composite key that means
-            // lexicographic over the *whole* tuple. Ordering by the first member alone would be a
-            // partial order — rows sharing it could be taken in either sequence, which is two
-            // orderings of one table, precisely what this class exists to prevent.
-            $orderBy = implode(', ', array_map(static fn (string $q): string => "{$q} ASC", $quoted));
+            $predicate = $schema->pkIn($dialect, \count($ids));
+            $orderBy = $schema->pkOrderBy($dialect);
             $forUpdateClause = $dialect->forUpdateClause();
 
             // Bind every key member through the serializer so a binary member is wrapped for the
             // dialects that need it (PostgreSQL bytea); int/string members and MySQL pass through.
+            // Key-major, matching the tuple order pkIn() emits.
             $boundIds = [];
-            if ($schema->isCompositePk()) {
-                // Row-value constructor: `(a, b) IN ((?, ?), …)`. One tuple per target row.
-                $tuple = '('.implode(', ', array_fill(0, count($pkColumns), '?')).')';
-                $predicate = '('.implode(', ', $quoted).') IN ('
-                    .implode(', ', array_fill(0, count($ids), $tuple)).')';
-                foreach ($ids as $id) {
-                    $key = $schema->normalizeKey($id, 'LockSet::acquire()');
-                    foreach ($pkColumns as $col) {
-                        $boundIds[] = ColumnSerializer::toParam($key[$col], $schema->columns[$col], $bindBinaryAsLob);
-                    }
-                }
-            } else {
-                $predicate = $quoted[0].' IN ('.implode(', ', array_fill(0, count($ids), '?')).')';
-                $pkColumn = $schema->columns[$schema->pk];
-                foreach ($ids as $id) {
-                    /** @var int|string $id */
-                    $boundIds[] = ColumnSerializer::toParam($id, $pkColumn, $bindBinaryAsLob);
+            $pkColumns = $schema->pkColumns();
+            foreach ($ids as $id) {
+                $key = $schema->normalizeKey($id, 'LockSet::acquire()');
+                foreach ($pkColumns as $col) {
+                    $boundIds[] = ColumnSerializer::toParam($key[$col], $schema->columns[$col], $bindBinaryAsLob);
                 }
             }
 
