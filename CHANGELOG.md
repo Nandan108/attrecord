@@ -79,15 +79,27 @@ only implementations known to exist.
   locking read, derived table and join are keyed on the whole key; joining on one member would
   attach a derived row to every row sharing it and write the wrong values into each.
 
-- **Insert-versus-update detection reads the evidence each key shape offers.** A non-null
-  *surrogate* PK can only have come from the database — a caller cannot invent a meaningful
-  auto-increment id — so PK-presence still means "this row exists", and the sparse-upsert idiom
-  depends on it. A *composite* key is caller-minted either way, so `isNew()` is the only evidence
-  there is. One question, two mechanics.
+- **The bulk writers ask two questions where they used to ask one**, because on a composite key
+  the two come apart:
 
-  This was nearly got wrong: unifying both on `isNew()` looks tidier and broke 18 of this
-  package's own tests, `UpsertStrategy::Lockless` most clearly, since it refuses a null PK because
-  "a null PK has nothing to coalesce on".
+  - *Is this row known to already exist?* — which drives `#[CreatedAt]` vs `#[UpdatedAt]`, version
+    seeding and `afterSave($wasInsert)`. A non-null **surrogate** PK can only have come from the
+    database, since a caller cannot invent a meaningful auto-increment id; on a **composite** key
+    `isNew()` answers it — was this object loaded, or built.
+  - *May it be written as a plain `INSERT`?* — which requires **proof of absence**. A null
+    surrogate PK is proof: the database had not assigned one, so no row can carry it. A complete
+    composite key is not, because the caller minted every member and minting says nothing about
+    what is stored. Without that distinction, upserting a composite-keyed row that already exists
+    is a duplicate-key error — which is what a membership table does on its second page load.
+
+  Genuinely-new composite rows therefore take insert-ignore → lock → update rather than a plain
+  `INSERT`. That path is correct whether or not the row exists, which is the property being bought.
+
+  Both halves were got wrong once on the way here. Unifying everything on `isNew()` looks tidier
+  and broke 18 of this package's own tests — `UpsertStrategy::Lockless` most clearly, since it
+  refuses a null PK because "a null PK has nothing to coalesce on". Then treating "never hydrated"
+  as "known to be absent" produced the duplicate-key error above. Dogfooding against a real
+  membership table is what surfaced the second.
 
 ### Still refused, by name
 

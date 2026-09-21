@@ -203,6 +203,35 @@ trait CompositeKeyCases
     }
 
     /**
+     * **A complete composite key never proves the row is absent.** The caller minted every member,
+     * and minting them says nothing about what is stored — so a minted row must be written through
+     * the upsert, not as a plain INSERT.
+     *
+     * This is the membership-table pattern: a workbench subscription re-sends the subjects it
+     * watches on every page load, most of which are already rows. Treating "never hydrated" as
+     * "known to be new" turns that into a duplicate-key error on the second load.
+     */
+    public function testUpsertAllAcceptsAMintedRowThatAlreadyExists(): void
+    {
+        $this->seedCosts();
+
+        // Same key as a seeded row, built fresh — the caller does not know whether it exists.
+        $minted = CompositeKeyCostRecord::newWith([
+            'subject_id' => 1,
+            'area_id'    => 10,
+            'unit_cost'  => '99.0000',
+        ]);
+        (new RecordSet([$minted]))->upsertAll();
+
+        $row = CompositeKeyCostRecord::getOne(['subject_id' => 1, 'area_id' => 10]);
+        $this->assertNotNull($row);
+        $this->assertSame(99.0, (float) $row->unit_cost, 'the existing row was updated, not duplicated');
+
+        $siblings = CompositeKeyCostRecord::where('subject_id', 1);
+        $this->assertCount(2, [...$siblings], 'still two areas for subject 1 — nothing was inserted');
+    }
+
+    /**
      * The row-value `IN` plus tuple ordering, executed rather than merely built. This is the case
      * whose syntax support genuinely varies — and SQLite's own docs carried a "not supported" note
      * that has been stale since 3.15, which is reason to run it rather than read about it.

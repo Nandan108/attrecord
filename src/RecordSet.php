@@ -862,7 +862,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         $newRecords = [];
         $keyedRecords = [];
         foreach ($dirtyRecords as $r) {
-            if (!self::isExistingRow($r, $schema)) {
+            if (self::canInsertDirectly($r, $schema)) {
                 $newRecords[] = $r;
             } else {
                 $keyedRecords[] = $r;
@@ -1336,8 +1336,8 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      */
     private function buildPlan(array $dirty, TableSchema $schema, SqlDialect $dialect, array $ignore = [], array $ignoreOnUpdate = []): array
     {
-        $noKeyRecords = array_values(array_filter($dirty, fn (Record $r) => !self::isExistingRow($r, $schema)));
-        $keyedRecords = array_values(array_filter($dirty, fn (Record $r) => self::isExistingRow($r, $schema)));
+        $noKeyRecords = array_values(array_filter($dirty, fn (Record $r) => self::canInsertDirectly($r, $schema)));
+        $keyedRecords = array_values(array_filter($dirty, fn (Record $r) => !self::canInsertDirectly($r, $schema)));
 
         $upsert = null;
 
@@ -1438,19 +1438,20 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     }
 
     /**
-     * Whether a record should be written as an **existing** row rather than a new one.
-     *
-     * One question — *does the caller hold an identity this row already has in the database?* —
-     * with two mechanics, because the two key shapes answer it differently:
+     * Whether this row is **known** to already exist — the semantic question, which drives
+     * `#[CreatedAt]` vs `#[UpdatedAt]`, version seeding and `afterSave($wasInsert)`.
      *
      * - **Surrogate key**: a non-null PK can only have come *from* the database, since the caller
-     *   has no way to invent a meaningful auto-increment id. So PK-presence is the answer, and it
-     *   is load-bearing: a sparse upsert is written by constructing a record, setting its PK and
-     *   the few changed columns, and sending it. `UpsertStrategy::Lockless` refuses a null PK
-     *   outright for the same reason — there is nothing to coalesce on.
-     * - **Composite key**: every member is caller-minted, so a complete key says nothing about
-     *   whether the row exists. `isNew()` is the only remaining evidence, and it is the right
-     *   one: a composite-keyed record that was never hydrated is not known to exist.
+     *   cannot invent a meaningful auto-increment id. PK-presence is load-bearing here: a sparse
+     *   upsert is written by constructing a record, setting its PK and the few changed columns,
+     *   and sending it. `UpsertStrategy::Lockless` refuses a null PK for the same reason — there
+     *   is nothing to coalesce on.
+     * - **Composite key**: every member is caller-minted, so a complete key says nothing either
+     *   way. `isNew()` is the only evidence there is, and it answers *this* question — was this
+     *   object loaded, or built — which is what the timestamps and hooks want.
+     *
+     * **It does not answer which SQL to emit.** For that, see {@see canInsertDirectly()}: "not
+     * known to exist" is not "known to be absent", and only the second licenses a plain INSERT.
      */
     private static function isExistingRow(Record $record, TableSchema $schema): bool
     {
@@ -1459,6 +1460,24 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         }
 
         return null !== $record->{$schema->pkProp};
+    }
+
+    /**
+     * Whether this row may be written as a plain `INSERT`, rather than through the keyed
+     * insert-ignore → lock → update upsert.
+     *
+     * The upsert is correct whether or not the row exists; the plain INSERT is a faster path that
+     * requires **proof of absence**. A null surrogate PK is such proof: the database had not
+     * assigned one yet, so no row can be carrying it. A complete composite key is not — the
+     * caller minted every member, and minting them says nothing about what is stored.
+     *
+     * Conflating the two is a duplicate-key error waiting for the first caller who upserts a
+     * composite-keyed row that is already there — which is exactly what a membership table does
+     * on every page load.
+     */
+    private static function canInsertDirectly(Record $record, TableSchema $schema): bool
+    {
+        return !$schema->isCompositePk() && null === $record->{$schema->pkProp};
     }
 
     /**
