@@ -120,7 +120,10 @@ Rules:
   `TableSchema::$compositePk` is non-null, `pkColumns()` returns the members, `pkProps()` their
   property names, and all three dialects emit `PRIMARY KEY (a, b)`.
   Mutually exclusive with `#[Table(primaryKey:)]`; needs >= 2 columns; members must be declared
-  columns and **not auto-increment**, so the whole key is always caller-minted.
+  columns, must not repeat, and may be neither **auto-increment** (so the whole key is always
+  caller-minted) nor **generated** — MariaDB through 13.x and SQLite refuse a generated column in a
+  primary key, and every engine refuses a `VIRTUAL` one, so such a table cannot be created on all
+  four dialects.
   - **Works on the whole key**: `getOne()` / `getOneOrFail()` / `getOneOrNew()`, `reload()`,
     `save()` (INSERT and UPDATE), `delete()`, `LockSet::acquire()`, `RecordSet::upsertAll()` /
     `insertAll()` / `deleteAll()`, and any `where()` read.
@@ -132,8 +135,13 @@ Rules:
     row's key in that same shape, which is also what to key a lookup array by (keying on one
     member collapses rows that share it, silently keeping the last).
   - `TableSchema::normalizeKey()` refuses a key that is partial, over-complete or a bare scalar;
-    `pkWhere()` builds `"a" = ? AND "b" = ?`. `LockSet` orders lexicographically over the whole
-    tuple and selects with a row-value constructor, `(a, b) IN ((?, ?), …)`.
+    `pkWhere()` builds `"a" = ? AND "b" = ?`, `pkIn()` the row-value `(a, b) IN ((?, ?), …)`, and
+    `pkOrderBy()` the ascending lexicographic order that `LockSet` and the three-step upsert both
+    lock in.
+  - **A complete composite key is not evidence the row is absent** — the caller minted every
+    member. So `upsertAll()` routes such rows through the keyed insert-ignore → lock → update
+    rather than a plain `INSERT`, and all three upsert strategies (Locked, Chunked, Lockless)
+    coalesce on the whole key. Only a null *surrogate* PK proves absence.
   - `dataColumnNames` excludes **every** member, so an UPDATE never SETs part of the key.
 - `name:` on `#[Column]` overrides the SQL column name; the PHP property name is unchanged.
   There is **no** automatic snake_case↔camelCase conversion

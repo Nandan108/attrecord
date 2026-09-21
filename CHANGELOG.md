@@ -108,6 +108,16 @@ only implementations known to exist.
   member of a composite key is caller-minted, so even a record that was never hydrated carries the
   whole key and has something to coalesce on.
 
+### Documentation
+
+- **When a surrogate primary key is doing real work** — `docs/ddl-generation.md`. Composite-key
+  CRUD makes it tempting to read every surrogate over a unique key as a workaround to remove, and
+  an audit of 81 Records in this library's main consumer found 14 candidates of which only two
+  were worth converting. Over a unique key a surrogate is *always* redundant, so that is the wrong
+  question; ask what the clustered key is doing. InnoDB stores the primary key in every secondary
+  index as its row pointer, so a wide natural key inflates every index; and an auto-increment key
+  makes inserts append-only where a random natural key splits pages on every write.
+
 ### Still refused, by name
 
 `upsertByUniqueKey()` and `upsertAllByUniqueKey()` (their `$preserveAutoIncrement` machinery is

@@ -884,8 +884,11 @@ developer machine runs 8.3.
 
 `#[Table]` carries only cross-dialect fields (`name`, `primaryKey`, `comment`).
 A key spanning several columns is declared separately with
-`#[PrimaryKey(columns: ['a', 'b'])]`, which marks the Record **DDL-only** — see
-[docs/ddl-generation.md](docs/ddl-generation.md#composite-primary-keys-ddl-only-v013).
+`#[PrimaryKey(columns: ['a', 'b'])]`, and such a row is addressed by its whole key —
+`getOne(['a' => 1, 'b' => 2])`, never a positional list. Members may be neither auto-increment nor
+generated. See
+[docs/ddl-generation.md](docs/ddl-generation.md#composite-primary-keys-v013), which also covers when
+a surrogate key is still the right choice.
 MySQL-specific options live on a separate `#[MysqlTableOptions]` class-level
 attribute that other dialects ignore. Every field is nullable so you override
 only what you care about; `MysqlDialect` supplies sensible defaults
