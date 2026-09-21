@@ -87,6 +87,26 @@ Two consequences worth knowing before designing a composite-keyed table:
   the rows to lock are named in full up front, so no part of a key may be derived from anything
   that happens after the lock phase starts.
 
+#### A surrogate key is not automatically a workaround
+
+Before this existed, a table whose identity was several columns needed a surrogate primary key to
+be usable through attrecord at all, with the real key demoted to a `UNIQUE`. Many such tables
+should now be keyed on the pair — but not all, and the difference is not taste:
+
+- **Convert** when the natural key is **narrow and its inserts are not random**. A junction or
+  membership table is the clearest case: the clustered key then groups related rows together, so a
+  read or delete scoped to one parent becomes a contiguous range instead of a scatter in insertion
+  order.
+- **Keep the surrogate** when the natural key is **wide**, because InnoDB stores the primary key in
+  every secondary index as its row pointer — a four-column `VARCHAR` key can turn an 8-byte index
+  entry pointer into several hundred bytes.
+- **Keep the surrogate** when the natural key is **random and the table is write-heavy**. An
+  auto-increment key makes inserts append-only; clustering on a random string (an idempotency key,
+  a digest) makes each insert a page split in the middle of the tree.
+
+The question to ask is not "is the surrogate redundant?" — over a unique key it always is — but
+"what is the clustered key doing?" A narrow monotonic surrogate is doing real work.
+
 ### Two seams for evolution tooling (v0.12.0)
 
 Both exist because the `attrecord-migrations` companion needed them against a real schema, and
