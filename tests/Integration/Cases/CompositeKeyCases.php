@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord\Tests\Integration\Cases;
 
+use Nandan108\Attrecord\Enum\UpsertStrategy;
 use Nandan108\Attrecord\LockSet;
 use Nandan108\Attrecord\Record;
 use Nandan108\Attrecord\RecordSet;
@@ -229,6 +230,61 @@ trait CompositeKeyCases
 
         $siblings = CompositeKeyCostRecord::where('subject_id', 1);
         $this->assertCount(2, [...$siblings], 'still two areas for subject 1 — nothing was inserted');
+    }
+
+    /**
+     * The lockless single-statement strategy coalesces on the **whole** key.
+     *
+     * PostgreSQL names the conflict target explicitly and rejects a partial one — `ON CONFLICT (a)`
+     * on a table keyed `(a, b)` matches no constraint. MySQL infers it from `ON DUPLICATE KEY` and
+     * would coalesce correctly by luck, so this only fails on one of the two engines, which is the
+     * reason it is asserted here rather than trusted.
+     *
+     * Both record shapes are exercised: a hydrated row, and a minted one carrying the whole key.
+     * The second is not a null-PK record — the guard that rejects those is about a surrogate key
+     * with no value yet, and every member of a composite key comes from the caller.
+     */
+    public function testLocklessUpsertCoalescesOnTheWholeKey(): void
+    {
+        $this->seedCosts();
+
+        $hydrated = CompositeKeyCostRecord::getOne(['subject_id' => 1, 'area_id' => 10]);
+        $this->assertNotNull($hydrated);
+        $hydrated->unit_cost = '8.0000';
+        (new RecordSet([$hydrated]))->upsertAll(strategy: UpsertStrategy::Lockless);
+
+        $minted = CompositeKeyCostRecord::newWith([
+            'subject_id' => 1,
+            'area_id'    => 20,
+            'unit_cost'  => '9.0000',
+        ]);
+        (new RecordSet([$minted]))->upsertAll(strategy: UpsertStrategy::Lockless);
+
+        $this->assertSame(8.0, (float) CompositeKeyCostRecord::getOne(['subject_id' => 1, 'area_id' => 10])?->unit_cost);
+        $this->assertSame(9.0, (float) CompositeKeyCostRecord::getOne(['subject_id' => 1, 'area_id' => 20])?->unit_cost);
+        // seedCosts() gives subject 1 two areas; both were coalesced onto, neither duplicated.
+        $this->assertCount(2, [...CompositeKeyCostRecord::where('subject_id', 1)], 'coalesced, not duplicated');
+    }
+
+    /** The chunked path sorts and locks by the whole key too, across a mixed batch. */
+    public function testChunkedUpsertHandlesAMixedBatch(): void
+    {
+        $this->seedCosts();
+
+        $rows = [CompositeKeyCostRecord::getOne(['subject_id' => 1, 'area_id' => 10])];
+        $this->assertNotNull($rows[0]);
+        $rows[0]->unit_cost = '6.0000';
+        foreach ([[5, 50], [6, 60], [7, 70]] as [$subject, $area]) {
+            $rows[] = CompositeKeyCostRecord::newWith([
+                'subject_id' => $subject,
+                'area_id'    => $area,
+                'unit_cost'  => '1.0000',
+            ]);
+        }
+        (new RecordSet($rows))->upsertAll(chunkSize: 2);
+
+        $this->assertSame(6.0, (float) CompositeKeyCostRecord::getOne(['subject_id' => 1, 'area_id' => 10])?->unit_cost);
+        $this->assertNotNull(CompositeKeyCostRecord::getOne(['subject_id' => 7, 'area_id' => 70]));
     }
 
     /**

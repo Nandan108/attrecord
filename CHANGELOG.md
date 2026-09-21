@@ -101,6 +101,13 @@ only implementations known to exist.
   as "known to be absent" produced the duplicate-key error above. Dogfooding against a real
   membership table is what surfaced the second.
 
+- **`UpsertStrategy::Lockless` coalesces on the whole key.** Its conflict target was the key's
+  first member, which PostgreSQL rejects outright (`ON CONFLICT (a)` on a table keyed `(a, b)`
+  matches no constraint) while MySQL infers the right key from `ON DUPLICATE KEY` and coalesces
+  correctly by accident. The strategy's null-PK guard is also scoped to surrogate keys now: every
+  member of a composite key is caller-minted, so even a record that was never hydrated carries the
+  whole key and has something to coalesce on.
+
 ### Still refused, by name
 
 `upsertByUniqueKey()` and `upsertAllByUniqueKey()` (their `$preserveAutoIncrement` machinery is

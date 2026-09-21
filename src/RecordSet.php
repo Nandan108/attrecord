@@ -491,7 +491,10 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
         // fires only when the column is omitted, and a single uniform-column statement can't omit it
         // for some rows and not others). Route genuinely-new rows through the default Locked strategy
         // or insertAll(). ($insertedRecords is the PK-null subset, computed by upsertAll().)
-        if ([] !== $insertedRecords) {
+        // Composite keys are exempt: every member is caller-minted, so even a record that was
+        // never hydrated carries the whole key and has something to coalesce on. The guard below
+        // is about a *surrogate* key with no value yet.
+        if (!$schema->isCompositePk() && [] !== $insertedRecords) {
             throw new AttrecordException(
                 'upsertAll(strategy: Lockless) requires every record to carry its primary key: a null '
                 .'PK has nothing to coalesce on (and an explicit NULL auto-increment PK is rejected by '
@@ -556,7 +559,7 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      */
     private function buildLocklessUpsertSql(array $records, TableSchema $schema, SqlDialect $dialect, array $ignore, array $ignoreOnUpdate, string $pk): string
     {
-        $presentCols = [$pk => true];
+        $presentCols = array_fill_keys($schema->pkColumns(), true);
         /** @var array<string, null> $updateCols col => null (copy the incoming value) */
         $updateCols = [];
         foreach ($records as $record) {
@@ -595,7 +598,11 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             $rows[] = $row;
         }
 
-        return $dialect->buildBulkUpsertSql($schema->tableName, [$pk], $colNames, $rows, $updateCols);
+        // The conflict target is the whole key. PostgreSQL names it explicitly and rejects a
+        // partial one outright — `ON CONFLICT (a)` on a table keyed `(a, b)` matches no constraint.
+        // MySQL infers the key from ON DUPLICATE KEY and would have coalesced correctly by luck,
+        // which is exactly the kind of accident that only shows up on the other engine.
+        return $dialect->buildBulkUpsertSql($schema->tableName, $schema->pkColumns(), $colNames, $rows, $updateCols);
     }
 
     /**
