@@ -430,41 +430,6 @@ final class TableSchema
         ));
     }
 
-    /**
-     * The single column a one-column FOREIGN KEY may reference on this table — `$pk`, and only
-     * when the key has one member.
-     *
-     * A composite key has no such column, and the failure mode is why this refuses rather than
-     * returning the first member. `REFERENCES t (first_member)` is a *leftmost-prefix* reference:
-     * MySQL 8.0 and MariaDB (through 13.0.2) accept it and enforce a constraint nobody declared,
-     * MySQL 8.4+ and PostgreSQL reject the DDL, and SQLite accepts the DDL and fails the child
-     * INSERT instead. So the same declaration is silently wrong, loudly wrong, or wrong later,
-     * depending on where it runs.
-     *
-     * @param string $declaredBy the referencing declaration, for the message
-     *
-     * @throws SchemaException when this table's primary key has more than one member
-     */
-    public function fkTargetColumn(string $declaredBy): string
-    {
-        if (null === $this->compositePk) {
-            return $this->pk;
-        }
-
-        throw new SchemaException(sprintf(
-            '%s references %s, whose primary key is composite (%s). A foreign key must name '
-            .'every member of the key it references; naming one column would reference a prefix of '
-            .'the key, which engines variously accept as a different constraint, reject, or accept '
-            .'and then refuse the insert. Multi-column foreign keys are not supported yet. Until '
-            .'they are, reference a table with a single-column key, or declare the constraint in '
-            .'hand-written DDL — #[ForeignKey(references: "<table>", referencesColumn: "<col>")] '
-            .'names a table literally and derives no key, so it is not affected by this.',
-            $declaredBy,
-            $this->tableName,
-            implode(', ', $this->compositePk),
-        ));
-    }
-
     /** @var array<string, true>|null memoized: the set of assignable column property names */
     private ?array $_columnProperties = null;
 
@@ -1144,8 +1109,15 @@ final class TableSchema
      * the *column* is folded into a digest and the table name kept, that being the more useful half
      * when reading an error message. The result is deterministic and always within the limit.
      */
-    private static function foreignKeyConstraintName(string $tablePrefix, string $tableName, string $column): string
+    /**
+     * @param list<string> $columns the constraint's local columns, in order — joined with `_`, so a
+     *                              one-column key derives exactly the name it always did and no
+     *                              existing constraint is renamed by the arrival of multi-column keys
+     */
+    private static function foreignKeyConstraintName(string $tablePrefix, string $tableName, array $columns): string
     {
+        $column = implode('_', $columns);
+
         $logical = '' !== $tablePrefix && str_starts_with($tableName, $tablePrefix)
             ? substr($tableName, \strlen($tablePrefix))
             : $tableName;
@@ -1582,12 +1554,12 @@ final class TableSchema
             }
             $seenColumns[$fkColumn] = true;
 
-            $constraintName = self::foreignKeyConstraintName($tablePrefix, $tableName, $fkColumn);
+            $constraintName = self::foreignKeyConstraintName($tablePrefix, $tableName, [$fkColumn]);
 
             /** @var class-string $targetClass */
             $fks[] = new ForeignKeyDefinition(
                 constraintName: $constraintName,
-                localColumn: $fkColumn,
+                localColumns: [$fkColumn],
                 onDelete: $relAttr->onDelete,
                 onUpdate: $relAttr->onUpdate,
                 targetClass: $targetClass,
@@ -1598,29 +1570,36 @@ final class TableSchema
         // that have no Record class (raw-SQL-owned or external tables).
         foreach ($reflClass->getAttributes(ForeignKey::class) as $fkAttrRefl) {
             $fkAttr = $fkAttrRefl->newInstance();
-            $fkColumn = $fkAttr->column;
+            $fkColumns = $fkAttr->columns;
 
-            if (!isset($columns[$fkColumn])) {
+            foreach ($fkColumns as $fkColumn) {
+                if (!isset($columns[$fkColumn])) {
+                    throw new SchemaException(sprintf(
+                        '%s: #[ForeignKey] column "%s" is not a declared #[Column].',
+                        $class,
+                        $fkColumn,
+                    ));
+                }
+            }
+
+            // Keyed by the whole tuple, not by each column: two constraints may legitimately share
+            // a column — `(tenant_id, order_id)` and `(tenant_id, user_id)` are different rules —
+            // while the same tuple twice is a duplicate declaration either way.
+            $tuple = implode(', ', $fkColumns);
+            if (isset($seenColumns[$tuple])) {
                 throw new SchemaException(sprintf(
-                    '%s: #[ForeignKey] column "%s" is not a declared #[Column].',
+                    '%s: foreign-key column(s) (%s) are declared by more than one #[Relation]/#[ForeignKey].',
                     $class,
-                    $fkColumn,
+                    $tuple,
                 ));
             }
-            if (isset($seenColumns[$fkColumn])) {
-                throw new SchemaException(sprintf(
-                    '%s: foreign-key column "%s" is declared by more than one #[Relation]/#[ForeignKey].',
-                    $class,
-                    $fkColumn,
-                ));
-            }
-            $seenColumns[$fkColumn] = true;
+            $seenColumns[$tuple] = true;
 
-            $constraintName = self::foreignKeyConstraintName($tablePrefix, $tableName, $fkColumn);
+            $constraintName = self::foreignKeyConstraintName($tablePrefix, $tableName, $fkColumns);
 
             $fks[] = new ForeignKeyDefinition(
                 constraintName: $constraintName,
-                localColumn: $fkColumn,
+                localColumns: $fkColumns,
                 onDelete: $fkAttr->onDelete,
                 onUpdate: $fkAttr->onUpdate,
                 source: $fkAttr,

@@ -460,10 +460,13 @@ final class MysqlDialect implements SqlDialect
     #[\Override]
     public function buildForeignKeyLine(ForeignKeyDefinition $fk): string
     {
+        $localCols = \implode(', ', \array_map($this->quoteIdentifier(...), $fk->localColumns));
+        $targetCols = \implode(', ', \array_map($this->quoteIdentifier(...), $fk->targetColumnNames()));
+
         return 'CONSTRAINT '.$this->quoteIdentifier($fk->constraintName)
-            .' FOREIGN KEY ('.$this->quoteIdentifier($fk->localColumn).')'
+            .' FOREIGN KEY ('.$localCols.')'
             .' REFERENCES '.$this->quoteIdentifier($fk->targetTableName())
-            .' ('.$this->quoteIdentifier($fk->targetColumnName()).')'
+            .' ('.$targetCols.')'
             .' ON DELETE '.$fk->onDelete->value
             .' ON UPDATE '.$fk->onUpdate->value;
     }

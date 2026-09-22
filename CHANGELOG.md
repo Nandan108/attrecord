@@ -6,6 +6,67 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-09-22
+
+**Foreign keys over more than one column.** 0.22 made a composite primary key identify a row; this
+makes it referenceable. `#[ForeignKey]` takes a list for `column` and for `referencesColumn`, the
+two sides pair positionally, and against a Record target the referenced columns are that Record's
+whole primary key in key order:
+
+```php
+#[ForeignKey(column: ['order_id', 'line_id'], references: OrderLine::class, onDelete: ForeignKeyAction::Cascade)]
+#[ForeignKey(column: ['tenant_id', 'doc_id'], references: 'documents', referencesColumn: ['tenant', 'id'])]
+```
+
+0.22.1 refused this case because emitting the key's first member constrains a different column than
+the one declared. The refusal stays, now on **arity** — naming fewer columns than the key has still
+references a prefix, and the engines still disagree three ways about what that means.
+
+**Contains breaking changes** for anyone reading the schema model directly. The three in-package
+dialects and `attrecord-migrations` are updated; nothing in a Record declaration changes, and a
+one-column key derives exactly the constraint name it always did, so no existing constraint is
+renamed.
+
+- `ForeignKeyDefinition::$localColumn` → `$localColumns` (`list<string>`), and
+  `targetColumnName(): string` → `targetColumnNames(): list<string>`.
+- `ForeignKey::$column` → `$columns` (`list<string>`), and `referencesColumn(): string` →
+  `referencesColumns(): list<string>`.
+- `InboundReference::$childColumn` / `$referencedColumn` → `$childColumns` / `$referencedColumns`.
+- `TableSchema::fkTargetColumn()`, added in 0.22.1, is gone: the question it answered — *which one
+  column* — is not the question any more.
+
+### Added
+
+- **Multi-column `#[ForeignKey]`**, emitted by all three dialects and converged by
+  `attrecord-migrations`, whose differ already modelled live keys as column lists.
+- **`InboundReference::isComposite()` / `references(string $column)`**, and one reference per
+  *constraint* rather than per column.
+
+### Changed
+
+- **The inbound reader assembles constraints whole.** A multi-column key is one rule; reporting it
+  as one reference per column describes `(tenant_id, order_id) → (tenant, id)` as a
+  `tenant_id → tenant` constraint, which would report every row in a tenant as referencing every
+  order in it. This was already wrong for a hand-written composite key — attrecord did not have to
+  emit one for the catalogue to contain one — so it is a fix as much as a consequence.
+
+  `referencedKeys()` and `Record::deleteUnreferenced()` now **throw** when a referrer is composite,
+  naming the constraint and its whole key. Both take a list of single values, which cannot say which
+  *tuples* to test, and testing the asked-about member alone reports rows as held that are not —
+  which reads exactly like a correct "cannot delete".
+
+- **One catalogue read now serves every column of a table.** The `$column` filter moved out of the
+  catalogue query and onto assembled constraints, because filtering in SQL returns the member asked
+  about and hides the rest — making a composite key indistinguishable from a single-column one. The
+  narrower cache key went with it.
+
+### Not included
+
+- **`#[Relation]` stays single-column.** Its foreign key is one column because the relation it
+  hydrates is loaded by one column, and a relation property that cannot load is not a relation. A
+  composite FK is declared with the class-level `#[ForeignKey]`, which is constraint-only by
+  definition. Batch hydration over a multi-column key is separate work.
+
 ## [0.22.1] - 2026-09-22
 
 ### Fixed
@@ -1385,7 +1446,8 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.22.1...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/Nandan108/attrecord/compare/v0.22.1...v0.23.0
 [0.22.1]: https://github.com/Nandan108/attrecord/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/Nandan108/attrecord/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/Nandan108/attrecord/compare/v0.20.0...v0.21.0

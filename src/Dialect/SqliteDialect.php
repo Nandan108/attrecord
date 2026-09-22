@@ -465,9 +465,9 @@ final class SqliteDialect implements SqlDialect
     public function buildForeignKeyLine(ForeignKeyDefinition $fk): string
     {
         return 'CONSTRAINT '.$this->quoteIdentifier($fk->constraintName)
-            .' FOREIGN KEY ('.$this->quoteIdentifier($fk->localColumn).')'
+            .' FOREIGN KEY ('.\implode(', ', \array_map($this->quoteIdentifier(...), $fk->localColumns)).')'
             .' REFERENCES '.$this->quoteIdentifier($fk->targetTableName())
-            .' ('.$this->quoteIdentifier($fk->targetColumnName()).')'
+            .' ('.\implode(', ', \array_map($this->quoteIdentifier(...), $fk->targetColumnNames())).')'
             .' ON DELETE '.$fk->onDelete->value
             .' ON UPDATE '.$fk->onUpdate->value;
     }

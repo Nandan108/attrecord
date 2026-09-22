@@ -6,6 +6,7 @@ namespace Nandan108\Attrecord\Schema;
 
 use Nandan108\Attrecord\DbSession;
 use Nandan108\Attrecord\Enum\ForeignKeyAction;
+use Nandan108\Attrecord\Exception\SchemaException;
 use Nandan108\Attrecord\SqlDialect;
 
 /**
@@ -18,12 +19,17 @@ use Nandan108\Attrecord\SqlDialect;
 abstract class AbstractReferenceReader implements ReferenceReader
 {
     /**
-     * Memoized inbound lookups, keyed by table + column.
+     * Memoized inbound lookups, keyed by table.
      *
      * `information_schema` scans cost real time on a server with thousands of tables, which is
      * ordinary shared hosting, and the answer only changes when the schema does. Caching per
      * instance rather than statically keeps the lifetime a caller's decision: hold a reader for a
      * request. A long-lived process that migrates its own schema should build a new one afterwards.
+     *
+     * Keyed by table and not by table + column, because the column filter is applied **after** the
+     * constraints are assembled: a multi-column key must be seen whole to be recognised as one, and
+     * filtering it away in the catalogue query would hide every member but the one asked about. One
+     * read then serves every column of that table.
      *
      * @var array<string, list<InboundReference>>
      */
@@ -46,7 +52,12 @@ abstract class AbstractReferenceReader implements ReferenceReader
     #[\Override]
     final public function inboundForeignKeys(DbSession $session, string $table, ?string $column = null): array
     {
-        return $this->cache[$table."\0".((string) $column)] ??= $this->readInbound($session, $table, $column);
+        $all = $this->cache[$table] ??= $this->readInbound($session, $table);
+        if (null === $column) {
+            return $all;
+        }
+
+        return array_values(array_filter($all, static fn (InboundReference $r): bool => $r->references($column)));
     }
 
     #[\Override]
@@ -59,6 +70,27 @@ abstract class AbstractReferenceReader implements ReferenceReader
         $referrers = $this->inboundForeignKeys($session, $table, $column);
         if ([] === $referrers) {
             return []; // nothing can reference these — and no query needs to prove it
+        }
+
+        // A multi-column constraint cannot be answered from a list of single values: whether a row
+        // references (tenant, id) depends on both members together, and this signature can only
+        // carry one column's worth. Testing the asked-about member alone would report every row
+        // sharing that value as a referrer — which reads as a correct "cannot delete" and is not.
+        foreach ($referrers as $referrer) {
+            if ($referrer->isComposite()) {
+                throw new SchemaException(sprintf(
+                    'referencedKeys(%s.%s): constraint "%s" on %s references (%s) as one key, so '
+                    .'whether a row references a given %s depends on every member together. Ask '
+                    .'about the whole key — this method answers about one column, and testing one '
+                    .'member of a multi-column key reports rows that merely share that value.',
+                    $table,
+                    $column,
+                    $referrer->constraintName,
+                    $referrer->childTable,
+                    implode(', ', $referrer->referencedColumns),
+                    $column,
+                ));
+            }
         }
 
         // Every branch of the UNION binds the whole chunk, so the statement costs
@@ -111,9 +143,11 @@ abstract class AbstractReferenceReader implements ReferenceReader
         // caller asked about a set, and answering a set one row at a time is how a bulk screen turns
         // into a minute of database time.
         foreach ($referrers as $ref) {
-            $branches[] = 'SELECT '.$this->dialect->quoteIdentifier($ref->childColumn).' AS k'
+            // Single-column by construction: referencedKeys() refuses a composite referrer above.
+            $childColumn = $ref->childColumns[0];
+            $branches[] = 'SELECT '.$this->dialect->quoteIdentifier($childColumn).' AS k'
                 .' FROM '.$this->dialect->quoteIdentifier($ref->childTable)
-                .' WHERE '.$this->dialect->quoteIdentifier($ref->childColumn).' IN '.$placeholders;
+                .' WHERE '.$this->dialect->quoteIdentifier($childColumn).' IN '.$placeholders;
             foreach ($chunk as $key) {
                 $params[] = $key;
             }
@@ -131,18 +165,66 @@ abstract class AbstractReferenceReader implements ReferenceReader
     }
 
     /**
-     * The engine's own answer to "what points at this", uncached.
+     * The engine's own answer to "what points at this", uncached and unfiltered — **one entry per
+     * constraint**, with its column pairs in constraint order. The column filter is applied by
+     * {@see inboundForeignKeys()} afterwards, on whole constraints.
      *
      * @return list<InboundReference>
      */
-    abstract protected function readInbound(DbSession $session, string $table, ?string $column): array;
+    abstract protected function readInbound(DbSession $session, string $table): array;
+
+    /**
+     * Assemble catalogue rows — one per column pair, in constraint order — into one reference per
+     * constraint.
+     *
+     * @param iterable<array{constraint: string, table: string, child: string, referenced: string, onDelete: string|null}> $rows
+     *
+     * @return list<InboundReference>
+     */
+    final protected static function assemble(iterable $rows): array
+    {
+        /** @var array<string, array{table: string, child: list<string>, referenced: list<string>, onDelete: string|null}> $byConstraint */
+        $byConstraint = [];
+
+        foreach ($rows as $row) {
+            // Keyed by child table *and* constraint name: engines scope a constraint name per
+            // schema or per table, and two tables may hold identically named keys.
+            $key = $row['table']."\0".$row['constraint'];
+            $byConstraint[$key] ??= [
+                'table'      => $row['table'],
+                'child'      => [],
+                'referenced' => [],
+                'onDelete'   => $row['onDelete'],
+            ];
+            $byConstraint[$key]['child'][] = $row['child'];
+            $byConstraint[$key]['referenced'][] = $row['referenced'];
+        }
+
+        $references = [];
+        foreach ($byConstraint as $key => $acc) {
+            $references[] = new InboundReference(
+                childTable: $acc['table'],
+                childColumns: $acc['child'],
+                constraintName: substr($key, \strlen($acc['table']) + 1),
+                referencedColumns: $acc['referenced'],
+                // `static::`, not `self::`: PostgreSQL overrides this to read a one-character
+                // spelling, and a self-bound call would silently hand every PG constraint a null
+                // rule — "not known", which is exactly what a caller weighing a delete would trust.
+                onDelete: static::action($acc['onDelete']),
+            );
+        }
+
+        return $references;
+    }
 
     /**
      * Map an engine's ON DELETE spelling onto {@see ForeignKeyAction}, or null when it is one this
      * library has no case for. Null rather than a default: a caller weighing deletability is better
      * served by "not known" than by a plausible wrong answer.
+     *
+     * Overridable because PostgreSQL spells the action as one character rather than a word.
      */
-    final protected static function action(?string $raw): ?ForeignKeyAction
+    protected static function action(?string $raw): ?ForeignKeyAction
     {
         if (null === $raw) {
             return null;

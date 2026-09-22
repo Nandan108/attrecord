@@ -294,14 +294,19 @@ records. The **keyed bulk upsert does not yet guard or bump** (per-row version p
 | `onDelete` | `ForeignKeyAction` | `Restrict` | |
 | `onUpdate` | `ForeignKeyAction` | `Restrict` | |
 
-- **`referencesColumn` applies only to the table-name form.** With a Record FQCN the target column
-  is that Record's primary key, and `referencesColumn` is ignored.
-- **A Record target with a composite key throws** (v0.22.1+) — `SchemaException`, from both this
-  attribute and `#[Relation(emitFk: true)]`, naming the whole target key. Multi-column FKs are not
-  supported yet, and emitting the key's first member would constrain a different column than the
-  one declared: MySQL 8.0 and MariaDB accept that as a leftmost-prefix reference, MySQL 8.4+
-  (err 6125) and PostgreSQL reject it, SQLite accepts the DDL and then fails the child insert.
-  Escape hatch: name the target as a literal table + column, which derives nothing.
+- **`column` / `referencesColumn` take a list for a multi-column key** (v0.23), paired positionally
+  and never sorted. `ForeignKeyDefinition::$localColumns` / `targetColumnNames()` are both
+  `list<string>`.
+- **`referencesColumn` applies only to the table-name form.** With a Record FQCN the referenced
+  columns are that Record's **whole** primary key, in key order, and `referencesColumn` is ignored.
+- **Arity must match**, checked when the target resolves — `SchemaException` otherwise, from both
+  this attribute and `#[Relation(emitFk: true)]`. Naming fewer columns than the key has would
+  reference a *prefix*: MySQL 8.0 and MariaDB accept that and enforce a rule nobody declared,
+  MySQL 8.4+ (err 6125) and PostgreSQL reject it, SQLite accepts the DDL and then fails the child
+  insert. So a single-column `#[Relation]` at a composite-keyed Record throws; declare the FK with
+  a class-level `#[ForeignKey]` naming every member.
+- **Two constraints may share a column**; only the same tuple twice is a duplicate. A one-column
+  key derives exactly the constraint name it always did, so nothing is renamed by this.
 
 ### `#[Check]` (class-level, repeatable — v0.17.0)
 | Param | Type | Notes |
@@ -890,9 +895,21 @@ $reader->inboundForeignKeys(DbSession $s, string $table, ?string $column = null)
 $reader->referencedKeys(DbSession $s, string $table, string $column, list<scalar> $keys): list<scalar>
 ```
 
-`InboundReference`: `$childTable`, `$childColumn`, `$constraintName`, `$referencedColumn`,
+`InboundReference`: `$childTable`, `$childColumns`, `$constraintName`, `$referencedColumns`,
 `$onDelete` (`?ForeignKeyAction` — null when the engine reports an action with no case here, never a
-guess). Physical (prefixed) names throughout; nothing is resolved to a Record.
+guess), plus `isComposite()` / `references(string $column)`. Physical (prefixed) names throughout;
+nothing is resolved to a Record.
+
+- **One reference per constraint, not per column** (v0.23; the two column fields were scalars
+  before). A multi-column key is one rule, and splitting it per column would describe
+  `(tenant_id, order_id) → (tenant, id)` as a `tenant_id → tenant` constraint — reporting every row
+  in a tenant as referencing every order in it. `referencedKeys()` and `Record::deleteUnreferenced()`
+  therefore **throw** on a composite referrer: both take a list of single values, which cannot say
+  which *tuples* to test, and testing the asked-about member alone reads exactly like a correct
+  "cannot delete".
+- **One catalogue read serves every column of a table.** The `$column` filter is applied to
+  assembled constraints, not in the catalogue query — filtering in SQL would return the member asked
+  about and hide the rest, making a composite key indistinguishable from a single-column one.
 
 - **Direction.** A Record declares only the keys it *owns*, so the outbound question is answerable
   from attributes and the inbound one is not — it lives in the catalogue, and may involve tables with

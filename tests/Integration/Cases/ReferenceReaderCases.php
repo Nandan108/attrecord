@@ -68,13 +68,14 @@ trait ReferenceReaderCases
     {
         $found = $this->reader()->inboundForeignKeys(self::session(), self::table(RefPartyRecord::class));
 
-        $columns = array_map(static fn (InboundReference $r): string => $r->childColumn, $found);
+        $columns = array_map(static fn (InboundReference $r): string => $r->childColumns[0], $found);
         sort($columns);
         $this->assertSame(['buyer_party_id', 'ship_to_party_id'], $columns);
 
         foreach ($found as $ref) {
             $this->assertSame(self::table(RefDocumentRecord::class), $ref->childTable);
-            $this->assertSame('content_hash', $ref->referencedColumn, 'the referenced column is not the parent PK by accident — it is the PK, but named');
+            $this->assertFalse($ref->isComposite(), 'each of these is a one-column key');
+            $this->assertSame(['content_hash'], $ref->referencedColumns, 'the referenced column is not the parent PK by accident — it is the PK, but named');
             $this->assertNotSame('', $ref->constraintName);
         }
     }
@@ -83,7 +84,7 @@ trait ReferenceReaderCases
     {
         $byColumn = [];
         foreach ($this->reader()->inboundForeignKeys(self::session(), self::table(RefPartyRecord::class)) as $ref) {
-            $byColumn[$ref->childColumn] = $ref->onDelete;
+            $byColumn[$ref->childColumns[0]] = $ref->onDelete;
         }
 
         // The two keys deliberately differ, so a reader that reported one constraint's rule for all

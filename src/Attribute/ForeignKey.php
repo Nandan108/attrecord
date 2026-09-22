@@ -31,6 +31,12 @@ use Nandan108\Attrecord\Schema\TableSchema;
  *     #[ForeignKey(column: 'revision_id', references: 'revisions', onDelete: ForeignKeyAction::SetNull)]
  *     final class AuditEntry extends Record { ... }
  *
+ * **Multi-column keys**: pass a list, and the two sides pair positionally (v0.23+). Against a
+ * Record target the referenced columns are its whole primary key, so only the local side is given:
+ *
+ *     #[ForeignKey(column: ['order_id', 'line_id'], references: OrderLine::class)]
+ *     #[ForeignKey(column: ['tenant_id', 'doc_id'], references: 'documents', referencesColumn: ['tenant', 'id'])]
+ *
  * Use {@see Relation} when you also want object hydration of the target; `#[ForeignKey]` is the
  * constraint-only declaration (and the only option when the target has no Record). The target
  * is resolved lazily, at DDL-build time, via {@see references()} / {@see referencesColumn()}.
@@ -53,19 +59,40 @@ final class ForeignKey
     private static array $isRecordClass = [];
 
     /**
-     * @param string           $column           local FK column (must be a declared #[Column])
-     * @param string           $references       target table base name (un-prefixed) OR target Record class-string
-     * @param string           $referencesColumn target column when `$references` is a table name (ignored for a Record class — its PK is used)
-     * @param ForeignKeyAction $onDelete         ON DELETE action
-     * @param ForeignKeyAction $onUpdate         ON UPDATE action
+     * The local FK columns, in constraint order — a one-entry list for the ordinary case.
+     *
+     * A list rather than a scalar even when there is one, so every consumer reads the whole key
+     * the same way. Order is load-bearing: it pairs with {@see referencesColumns()}.
+     *
+     * @var list<string>
+     */
+    public readonly array $columns;
+
+    /**
+     * @param string|array<string> $column           local FK column(s) (each a declared #[Column]); an array declares a multi-column key, in constraint order
+     * @param string               $references       target table base name (un-prefixed) OR target Record class-string
+     * @param string|array<string> $referencesColumn target column(s) when `$references` is a table name, paired positionally with `$column` (ignored for a Record class — its whole primary key is used)
+     * @param ForeignKeyAction     $onDelete         ON DELETE action
+     * @param ForeignKeyAction     $onUpdate         ON UPDATE action
      */
     public function __construct(
-        public readonly string $column,
+        string | array $column,
         private readonly string $references,
-        private readonly string $referencesColumn = 'id',
+        private readonly string | array $referencesColumn = 'id',
         public readonly ForeignKeyAction $onDelete = ForeignKeyAction::Restrict,
         public readonly ForeignKeyAction $onUpdate = ForeignKeyAction::Restrict,
     ) {
+        $this->columns = \is_array($column) ? array_values($column) : [$column];
+
+        if ([] === $this->columns) {
+            throw new SchemaException('#[ForeignKey] names no column. A foreign key constrains at least one.');
+        }
+        if (\count($this->columns) !== \count(array_unique($this->columns))) {
+            throw new SchemaException(sprintf(
+                '#[ForeignKey(column: [%s])] lists a column more than once.',
+                implode(', ', $this->columns),
+            ));
+        }
     }
 
     /**
@@ -78,18 +105,25 @@ final class ForeignKey
     }
 
     /**
-     * Resolve the target column — the target Record's primary key when `$references` is a
-     * Record class-string, otherwise the given column name.
+     * Resolve the target columns, in constraint order — the target Record's **whole** primary key
+     * when `$references` is a Record class-string, otherwise the given column name(s).
      *
-     * @throws SchemaException when `$references` names a Record whose key is composite — see
-     *                         {@see TableSchema::fkTargetColumn()}. The table-name form is
-     *                         unaffected: it derives no key, so `$referencesColumn` stands.
+     * Arity is not checked here: pairing is a property of the constraint, so
+     * {@see \Nandan108\Attrecord\Schema\ForeignKeyDefinition::targetColumnNames()} checks it where
+     * both sides are known.
+     *
+     * @return list<string>
      */
-    public function referencesColumn(): string
+    public function referencesColumns(): array
     {
-        return $this->getTargetSchema()?->fkTargetColumn(
-            sprintf('#[ForeignKey(column: "%s")]', $this->column),
-        ) ?? $this->referencesColumn;
+        $schema = $this->getTargetSchema();
+        if (null !== $schema) {
+            return $schema->pkColumns();
+        }
+
+        return \is_array($this->referencesColumn)
+            ? array_values($this->referencesColumn)
+            : [$this->referencesColumn];
     }
 
     /**

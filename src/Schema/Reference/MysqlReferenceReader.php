@@ -6,7 +6,6 @@ namespace Nandan108\Attrecord\Schema\Reference;
 
 use Nandan108\Attrecord\DbSession;
 use Nandan108\Attrecord\Schema\AbstractReferenceReader;
-use Nandan108\Attrecord\Schema\InboundReference;
 
 /**
  * Inbound foreign keys on MySQL and MariaDB, from `information_schema`.
@@ -22,7 +21,7 @@ use Nandan108\Attrecord\Schema\InboundReference;
 final class MysqlReferenceReader extends AbstractReferenceReader
 {
     #[\Override]
-    protected function readInbound(DbSession $session, string $table, ?string $column): array
+    protected function readInbound(DbSession $session, string $table): array
     {
         $sql = 'SELECT kcu.TABLE_NAME, kcu.COLUMN_NAME, kcu.CONSTRAINT_NAME, kcu.REFERENCED_COLUMN_NAME, rc.DELETE_RULE
                   FROM information_schema.KEY_COLUMN_USAGE kcu
@@ -31,25 +30,22 @@ final class MysqlReferenceReader extends AbstractReferenceReader
                    AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
                  WHERE kcu.TABLE_SCHEMA = DATABASE()
                    AND kcu.REFERENCED_TABLE_SCHEMA = DATABASE()
-                   AND kcu.REFERENCED_TABLE_NAME = ?';
-        $params = [$table];
+                   AND kcu.REFERENCED_TABLE_NAME = ?
+                 ORDER BY kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION';
 
-        if (null !== $column) {
-            $sql .= ' AND kcu.REFERENCED_COLUMN_NAME = ?';
-            $params[] = $column;
+        // ORDINAL_POSITION is the column's place *within its constraint*, so ordering by it keeps a
+        // multi-column key's pairs in declaration order — which is what makes them a key.
+        $rows = [];
+        foreach ($session->fetchAll($sql, [$table]) as $row) {
+            $rows[] = [
+                'table'      => (string) $row['TABLE_NAME'],
+                'constraint' => (string) $row['CONSTRAINT_NAME'],
+                'child'      => (string) $row['COLUMN_NAME'],
+                'referenced' => (string) $row['REFERENCED_COLUMN_NAME'],
+                'onDelete'   => isset($row['DELETE_RULE']) ? (string) $row['DELETE_RULE'] : null,
+            ];
         }
 
-        $references = [];
-        foreach ($session->fetchAll($sql, $params) as $row) {
-            $references[] = new InboundReference(
-                childTable: (string) $row['TABLE_NAME'],
-                childColumn: (string) $row['COLUMN_NAME'],
-                constraintName: (string) $row['CONSTRAINT_NAME'],
-                referencedColumn: (string) $row['REFERENCED_COLUMN_NAME'],
-                onDelete: self::action(isset($row['DELETE_RULE']) ? (string) $row['DELETE_RULE'] : null),
-            );
-        }
-
-        return $references;
+        return self::assemble($rows);
     }
 }

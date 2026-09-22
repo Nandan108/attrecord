@@ -86,20 +86,9 @@ Consequences worth knowing before designing a composite-keyed table:
 - **`LockSet` makes resolving the key a caller obligation discharged before locking begins** —
   the rows to lock are named in full up front, so no part of a key may be derived from anything
   that happens after the lock phase starts.
-- **Nothing can point a foreign key at it yet** (v0.22.1+). `#[Relation(emitFk: true)]` and
-  `#[ForeignKey(references: SomeRecord::class)]` both derive the target column from the target's
-  key, and both throw a `SchemaException` naming the whole key when that key has more than one
-  member. Multi-column foreign keys are the next piece of work; until they land, a composite-keyed
-  table can be referenced only through hand-written DDL, or via
-  `#[ForeignKey(references: '<table>', referencesColumn: '<col>')]`, which names its target
-  literally and derives nothing.
-
-  This refuses rather than emitting because the column it would otherwise emit is the key's
-  **first member** — a *different* column from the one declared, not a narrower version of it.
-  Referencing a leftmost prefix of a key is accepted by MySQL 8.0 and MariaDB (through 13.0.2),
-  which then enforce a constraint nobody wrote; rejected outright by MySQL 8.4+ (err 6125) and
-  PostgreSQL; and on SQLite accepted as DDL that converges cleanly and then refuses every child
-  insert with `foreign key mismatch`. One declaration, three different wrong answers.
+- **A foreign key pointing at it must name every member** (v0.23+) — see
+  [Multi-column foreign keys](#multi-column-foreign-keys-v023) below. A one-column FK at a
+  composite-keyed target is refused, on arity, by both declaration forms.
 
 #### A surrogate key is not automatically a workaround
 
@@ -367,18 +356,57 @@ final class InventoryLedger extends Record { /* … */ }
 
 | Field              | Default                      | Purpose                                                                          |
 | ------------------ | ---------------------------- | -------------------------------------------------------------------------------- |
-| `column`           | —                            | Local FK column (must be a declared `#[Column]`).                                |
+| `column`           | —                            | Local FK column, or a **list** of them for a multi-column key (each a declared `#[Column]`). |
 | `references`       | —                            | Target **table base name** (un-prefixed) **or** a target **Record class-string**. |
-| `referencesColumn` | `'id'`                       | Target column — used with the table-name form; ignored for a class (its PK is used). |
+| `referencesColumn` | `'id'`                       | Target column(s) — used with the table-name form; ignored for a class (its whole PK is used). |
 | `onDelete`         | `ForeignKeyAction::Restrict` | `REFERENCES … ON DELETE` action.                                                 |
 | `onUpdate`         | `ForeignKeyAction::Restrict` | `REFERENCES … ON UPDATE` action.                                                 |
 
 The target is resolved lazily at DDL-build time via `ForeignKey::references()` /
-`ForeignKey::referencesColumn()`: a class form resolves to the target Record's table + PK; a
+`ForeignKey::referencesColumns()`: a class form resolves to the target Record's table + PK; a
 table-name form has the active prefix (`Record::tablePrefix()`) applied — so either resolves
-correctly under a prefix. Constraint naming and the duplicate-FK-column guard are shared with
-`#[Relation]` FKs (a column used by both a `#[Relation]` and a `#[ForeignKey]`, or a
-`#[ForeignKey]` on an undeclared column, throws at schema build).
+correctly under a prefix. Constraint naming and the duplicate-key guard are shared with
+`#[Relation]` FKs (a `#[ForeignKey]` on an undeclared column, or the same column tuple declared
+twice, throws at schema build).
+
+#### Multi-column foreign keys (v0.23)
+
+Pass a list, and the two sides pair **positionally**. Against a Record target only the local side
+is given — the referenced columns are that Record's whole primary key, in key order:
+
+```php
+#[Table(name: 'shipment_lines')]
+#[ForeignKey(column: ['order_id', 'line_id'], references: OrderLine::class, onDelete: ForeignKeyAction::Cascade)]
+#[ForeignKey(column: ['tenant_id', 'doc_id'], references: 'documents', referencesColumn: ['tenant', 'id'])]
+final class ShipmentLine extends Record { /* … */ }
+```
+
+Three things follow from pairing being the constraint:
+
+- **The two sides must have the same number of columns**, checked when the target resolves. Naming
+  fewer would reference a *prefix* of the key, which is a different constraint that no engine agrees
+  about: MySQL 8.0 and MariaDB (measured through 13.0.2) accept it and enforce a rule nobody wrote,
+  MySQL 8.4+ (`ERROR 6125`) and PostgreSQL reject it, and SQLite accepts the DDL, converges clean,
+  and then fails every child insert with `foreign key mismatch`. The split runs *through* MySQL, so
+  a matrix covering 8.0 and 8.4 disagrees with itself.
+- **Order is never sorted away.** `column[$i]` references `referencesColumn[$i]`, so a tuple with
+  its pairs shuffled is a different constraint that reads like the same one.
+- **Two constraints may share a column.** `(tenant_id, order_id)` and `(tenant_id, user_id)` are
+  different rules; only the same tuple twice is a duplicate. The constraint name carries every
+  column, so the two never collide.
+
+**`#[Relation]` stays single-column.** Its foreign key is one column because the relation it
+hydrates is loaded by one column; a composite FK is declared with the class-level `#[ForeignKey]`,
+which is constraint-only by definition and therefore promises nothing it cannot keep. Batch
+hydration over a multi-column key is a separate piece of work.
+
+**The inbound direction knows about them too.** `ReferenceReader::inboundForeignKeys()` returns one
+`InboundReference` per *constraint*, carrying `childColumns` / `referencedColumns` as paired lists —
+never one reference per column, which would describe `(tenant_id, order_id) → (tenant, id)` as a
+`tenant_id → tenant` rule and report every row in a tenant as referencing every order in it.
+`referencedKeys()` and `Record::deleteUnreferenced()` both take a list of single values, which
+cannot express a tuple, so both **refuse** when a referrer is composite rather than testing one
+member and reporting a row as held that is not.
 
 ### `#[UniqueKey]` and `#[Index]` — class-level form
 

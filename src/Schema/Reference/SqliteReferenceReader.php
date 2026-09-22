@@ -6,7 +6,6 @@ namespace Nandan108\Attrecord\Schema\Reference;
 
 use Nandan108\Attrecord\DbSession;
 use Nandan108\Attrecord\Schema\AbstractReferenceReader;
-use Nandan108\Attrecord\Schema\InboundReference;
 
 /**
  * Inbound foreign keys on SQLite, which has no constraint catalogue — `PRAGMA foreign_key_list(t)`
@@ -26,9 +25,12 @@ use Nandan108\Attrecord\Schema\InboundReference;
 final class SqliteReferenceReader extends AbstractReferenceReader
 {
     #[\Override]
-    protected function readInbound(DbSession $session, string $table, ?string $column): array
+    protected function readInbound(DbSession $session, string $table): array
     {
+        // `f.id` is the constraint's ordinal within the child table and `f.seq` the column's place
+        // within that constraint — so `id` groups a multi-column key and `seq` orders its pairs.
         $sql = 'SELECT m.name AS child_table,
+                       f.id   AS constraint_id,
                        f."from" AS child_column,
                        f."to"   AS referenced_column,
                        f.on_delete
@@ -36,10 +38,11 @@ final class SqliteReferenceReader extends AbstractReferenceReader
                   JOIN pragma_foreign_key_list(m.name) f
                  WHERE m.type = \'table\'
                    AND m.name NOT LIKE \'sqlite_%\'
-                   AND f."table" = ?';
+                   AND f."table" = ?
+                 ORDER BY m.name, f.id, f.seq';
 
         $primaryKey = null;
-        $references = [];
+        $rows = [];
 
         foreach ($session->fetchAll($sql, [$table]) as $row) {
             // A null `to` means "the parent's primary key", spelled by omission. Resolved once, and
@@ -48,27 +51,21 @@ final class SqliteReferenceReader extends AbstractReferenceReader
                 ? (string) $row['referenced_column']
                 : ($primaryKey ??= $this->primaryKeyOf($session, $table));
 
-            if (null !== $column && $referencedColumn !== $column) {
-                continue;
-            }
-
-            $childTable = (string) $row['child_table'];
-            $childColumn = (string) $row['child_column'];
-
-            $references[] = new InboundReference(
-                childTable: $childTable,
-                childColumn: $childColumn,
+            $rows[] = [
+                'table' => (string) $row['child_table'],
                 // SQLite does not name a foreign key in any queryable place; the pragma reports an
                 // ordinal, not a name. A synthetic one keeps the read-model honest about identity
-                // (child table + column *is* the identity here) instead of inventing a fake match
-                // for whatever the DDL might have called it.
-                constraintName: $childTable.'.'.$childColumn,
-                referencedColumn: $referencedColumn,
-                onDelete: self::action(isset($row['on_delete']) ? (string) $row['on_delete'] : null),
-            );
+                // instead of inventing a fake match for whatever the DDL might have called it.
+                // Built from the constraint's *id* rather than its column, so the members of a
+                // multi-column key assemble into one reference rather than one rule per column.
+                'constraint' => 'fk#'.((string) ($row['constraint_id'] ?? '0')),
+                'child'      => (string) $row['child_column'],
+                'referenced' => $referencedColumn,
+                'onDelete'   => isset($row['on_delete']) ? (string) $row['on_delete'] : null,
+            ];
         }
 
-        return $references;
+        return self::assemble($rows);
     }
 
     /** The single-column primary key of `$table`, or `'rowid'` when it has none declared. */

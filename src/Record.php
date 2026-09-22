@@ -895,7 +895,9 @@ abstract class Record
      *
      * @return int rows actually deleted — fewer than `count($keys)` when some are still referenced
      *
-     * @throws SchemaException on a composite primary key, or an unknown `$column`
+     * @throws SchemaException on a composite primary key, an unknown `$column`, or a referrer whose
+     *                         own foreign key spans several columns — a list of single values cannot
+     *                         say which tuples to test
      */
     public static function deleteUnreferenced(array $keys, ?string $column = null): int
     {
@@ -928,10 +930,29 @@ abstract class Record
         // One alias per referrer, and never the table's own name: see the docblock. Numbered rather
         // than derived from the child table, because the same table may reference this one twice
         // through different columns and two branches must not collide.
+        // A multi-column referrer cannot be guarded one column at a time: a row references this one
+        // only when every member matches together, so a guard on one member holds back rows that
+        // merely share that value — a delete that silently does less than it says.
+        foreach ($referrers as $ref) {
+            if ($ref->isComposite()) {
+                throw new SchemaException(sprintf(
+                    '%s::deleteUnreferenced(): constraint "%s" on %s references (%s) as one key. '
+                    .'Whether a row is referenced depends on every member together, which a list of '
+                    .'single %s values cannot express.',
+                    static::class,
+                    $ref->constraintName,
+                    $ref->childTable,
+                    implode(', ', $ref->referencedColumns),
+                    $column,
+                ));
+            }
+        }
+
         $guards = '';
         foreach ($referrers as $i => $ref) {
             $alias = $dialect->quoteIdentifier('__ar_ref'.$i);
-            $qChildCol = $dialect->quoteIdentifier($ref->childColumn);
+            // Single-column by construction: a composite referrer is refused above.
+            $qChildCol = $dialect->quoteIdentifier($ref->childColumns[0]);
 
             // A table that references *itself* cannot be read directly here: MySQL refuses to touch
             // the delete's target table anywhere in the statement's FROM (error 1093), aliased or

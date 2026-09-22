@@ -9,6 +9,7 @@ use Nandan108\Attrecord\LockSet;
 use Nandan108\Attrecord\Record;
 use Nandan108\Attrecord\RecordSet;
 use Nandan108\Attrecord\Tests\Fixtures\CompositeKeyCostRecord;
+use Nandan108\Attrecord\Tests\Fixtures\CompositeKeyCostRefRecord;
 
 /**
  * Composite primary keys, against a real engine.
@@ -29,7 +30,8 @@ trait CompositeKeyCases
     /** @return list<class-string<Record>> */
     protected static function recordClasses(): array
     {
-        return [CompositeKeyCostRecord::class];
+        // Parent first: the child's FOREIGN KEY is inline in its CREATE TABLE.
+        return [CompositeKeyCostRecord::class, CompositeKeyCostRefRecord::class];
     }
 
     /** Subject 1 in two areas, subject 2 sharing one of those areas. */
@@ -66,6 +68,72 @@ trait CompositeKeyCases
         $this->assertSame(77, $row->subject_id);
         $this->assertSame(88, $row->area_id, 'the non-leading member is not clobbered');
         $this->assertFalse($row->isNew());
+    }
+
+    /**
+     * The whole point of a multi-column foreign key, on a real engine: the DDL was accepted, and
+     * the constraint it created is over **both** columns.
+     *
+     * A pair that exists is admitted; a pair whose first member exists and whose second does not is
+     * rejected. That second insert is the discriminating one — under the single-column constraint
+     * attrecord emitted before v0.23, `subject_id = 1` satisfies it and the row goes in.
+     */
+    public function testACompositeForeignKeyEnforcesThePairNotItsFirstMember(): void
+    {
+        $this->seedCosts();
+
+        CompositeKeyCostRefRecord::newWith([
+            'cost_subject_id' => 1,
+            'cost_area_id'    => 20,
+            'label'           => 'an existing pair',
+        ])->save();
+
+        $this->assertSame(1, $this->countRefsOfSubject(1));
+
+        $rejected = false;
+        try {
+            CompositeKeyCostRefRecord::newWith([
+                'cost_subject_id' => 1,    // exists
+                'cost_area_id'    => 999,  // does not, and (1, 999) is not a row
+                'label'           => 'half a key',
+            ])->save();
+        } catch (\Throwable) {
+            $rejected = true;
+        }
+
+        $this->assertTrue($rejected, 'a pair that is not a row must be refused, though its first member is one');
+        $this->assertSame(1, $this->countRefsOfSubject(1), 'and nothing was written');
+    }
+
+    private function countRefsOfSubject(int $subjectId): int
+    {
+        return \count(iterator_to_array(CompositeKeyCostRefRecord::where('cost_subject_id', $subjectId)));
+    }
+
+    /** The referential action applies to the pair too: deleting the parent row takes its children. */
+    public function testCascadeFollowsTheWholeKey(): void
+    {
+        $this->seedCosts();
+
+        foreach ([[1, 10], [1, 20]] as [$subject, $area]) {
+            CompositeKeyCostRefRecord::newWith([
+                'cost_subject_id' => $subject,
+                'cost_area_id'    => $area,
+            ])->save();
+        }
+
+        $parent = CompositeKeyCostRecord::getOne(['subject_id' => 1, 'area_id' => 10]);
+        $this->assertNotNull($parent);
+        $parent->delete();
+
+        $survivors = CompositeKeyCostRefRecord::where('cost_subject_id', 1);
+        $remaining = array_map(
+            static fn (CompositeKeyCostRefRecord $r): ?int => $r->cost_area_id,
+            iterator_to_array($survivors),
+        );
+
+        // Only the child of (1, 10) goes. Cascading on subject_id alone would take both.
+        $this->assertSame([20], array_values($remaining));
     }
 
     public function testUpdateTouchesOnlyTheKeyedRow(): void

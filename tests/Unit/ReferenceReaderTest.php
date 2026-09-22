@@ -41,16 +41,21 @@ final class ReferenceReaderTest extends TestCase
     }
 
     #[Test]
-    public function adifferentColumnIsADifferentQuestion(): void
+    public function oneCatalogueReadServesEveryColumnOfATable(): void
     {
+        // The column filter is applied to assembled constraints rather than in the catalogue query,
+        // because a multi-column key has to be seen whole to be recognised as one — filtering it in
+        // SQL would return the member asked about and hide the rest, making a composite constraint
+        // indistinguishable from a single-column one. Answering every column from one read is the
+        // side benefit.
         $session = new ScriptedSession([]);
         $reader = new MysqlReferenceReader(new MysqlDialect());
 
         $reader->inboundForeignKeys($session, 'parties');
         $reader->inboundForeignKeys($session, 'parties', 'content_hash');
-        $reader->inboundForeignKeys($session, 'parties', 'content_hash');
+        $reader->inboundForeignKeys($session, 'parties', 'something_else');
 
-        self::assertCount(2, $session->queries, 'the whole-table and per-column answers are cached apart');
+        self::assertCount(1, $session->queries);
     }
 
     #[Test]
@@ -76,6 +81,72 @@ final class ReferenceReaderTest extends TestCase
         self::assertStringContainsString(' UNION ', $union['sql']);
         self::assertSame(2, substr_count($union['sql'], 'IN (?, ?, ?)'), 'one branch per referring column');
         self::assertSame(['a', 'b', 'c', 'a', 'b', 'c'], $union['params'], 'the key set is bound per branch');
+    }
+
+    /**
+     * A multi-column key is one rule, so the rows the catalogue reports per column assemble into a
+     * single reference carrying both pairs, in constraint order.
+     */
+    #[Test]
+    public function aMultiColumnConstraintAssemblesIntoOneReference(): void
+    {
+        $session = new ScriptedSession([
+            ['TABLE_NAME' => 'docs', 'COLUMN_NAME' => 'tenant_id', 'CONSTRAINT_NAME' => 'fk_pair', 'REFERENCED_COLUMN_NAME' => 'tenant', 'DELETE_RULE' => 'CASCADE'],
+            ['TABLE_NAME' => 'docs', 'COLUMN_NAME' => 'order_id', 'CONSTRAINT_NAME' => 'fk_pair', 'REFERENCED_COLUMN_NAME' => 'id', 'DELETE_RULE' => 'CASCADE'],
+        ]);
+        $reader = new MysqlReferenceReader(new MysqlDialect());
+
+        $found = $reader->inboundForeignKeys($session, 'orders');
+
+        self::assertCount(1, $found, 'two catalogue rows, one constraint');
+        self::assertTrue($found[0]->isComposite());
+        self::assertSame(['tenant_id', 'order_id'], $found[0]->childColumns, 'in constraint order');
+        self::assertSame(['tenant', 'id'], $found[0]->referencedColumns, 'paired with the local side');
+    }
+
+    /**
+     * Filtering by referenced column keeps the constraint **whole**: asking about `id` yields the
+     * pair, not the half of it that matched. The other half is what makes it composite, and hiding
+     * it is what would make a composite key look answerable.
+     */
+    #[Test]
+    public function aColumnFilterKeepsTheWholeConstraint(): void
+    {
+        $session = new ScriptedSession([
+            ['TABLE_NAME' => 'docs', 'COLUMN_NAME' => 'tenant_id', 'CONSTRAINT_NAME' => 'fk_pair', 'REFERENCED_COLUMN_NAME' => 'tenant', 'DELETE_RULE' => 'CASCADE'],
+            ['TABLE_NAME' => 'docs', 'COLUMN_NAME' => 'order_id', 'CONSTRAINT_NAME' => 'fk_pair', 'REFERENCED_COLUMN_NAME' => 'id', 'DELETE_RULE' => 'CASCADE'],
+        ]);
+        $reader = new MysqlReferenceReader(new MysqlDialect());
+
+        $found = $reader->inboundForeignKeys($session, 'orders', 'id');
+
+        self::assertCount(1, $found);
+        self::assertSame(['tenant', 'id'], $found[0]->referencedColumns);
+    }
+
+    /**
+     * `referencedKeys()` answers about one column, and a composite referrer cannot be answered that
+     * way — testing the asked-about member alone reports every row sharing that value as a referrer,
+     * which reads exactly like a correct "cannot delete".
+     */
+    #[Test]
+    public function referencedKeysRefusesACompositeReferrer(): void
+    {
+        $session = new ScriptedSession([
+            ['TABLE_NAME' => 'docs', 'COLUMN_NAME' => 'tenant_id', 'CONSTRAINT_NAME' => 'fk_pair', 'REFERENCED_COLUMN_NAME' => 'tenant', 'DELETE_RULE' => 'CASCADE'],
+            ['TABLE_NAME' => 'docs', 'COLUMN_NAME' => 'order_id', 'CONSTRAINT_NAME' => 'fk_pair', 'REFERENCED_COLUMN_NAME' => 'id', 'DELETE_RULE' => 'CASCADE'],
+        ]);
+        $reader = new MysqlReferenceReader(new MysqlDialect());
+
+        try {
+            $reader->referencedKeys($session, 'orders', 'id', ['a']);
+            self::fail('expected a SchemaException');
+        } catch (SchemaException $e) {
+            self::assertStringContainsString('fk_pair', $e->getMessage(), 'names the constraint');
+            self::assertStringContainsString('tenant, id', $e->getMessage(), 'names the whole key');
+        }
+
+        self::assertCount(1, $session->queries, 'it refuses before reading any data');
     }
 
     #[Test]

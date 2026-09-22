@@ -375,13 +375,14 @@ final class CompositePrimaryKeyTest extends TestCase
 
     /**
      * A one-column FK pointing at a composite-keyed Record is refused — on the #[Relation] form
-     * and the class-level #[ForeignKey] form alike, since both derive the target column from the
+     * and the class-level #[ForeignKey] form alike, since both derive the target columns from the
      * target's key.
      *
-     * The value is in refusing *at all*: the column it would otherwise have emitted is the key's
-     * first member, which is a different column from the one declared, not a narrower version of
-     * it. Emitting it produces a constraint on MySQL 8.0 and MariaDB, an error on MySQL 8.4+ and
-     * PostgreSQL, and a DDL that converges but rejects every insert on SQLite.
+     * Refused on **arity**, which is the whole point: one local column against a two-column key
+     * would reference a *prefix*, and the column it would land on is the key's first member — a
+     * different column from the one declared, not a narrower version of it. That emits a constraint
+     * on MySQL 8.0 and MariaDB, an error on MySQL 8.4+ and PostgreSQL, and DDL that converges but
+     * rejects every insert on SQLite.
      */
     public function testAOneColumnFkAtACompositeKeyedTargetIsRefused(): void
     {
@@ -390,27 +391,63 @@ final class CompositePrimaryKeyTest extends TestCase
             self::assertCount(1, $fks, $class);
 
             try {
-                $fks[0]->targetColumnName();
+                $fks[0]->targetColumnNames();
                 self::fail("expected a SchemaException for $class");
             } catch (SchemaException $e) {
                 self::assertStringContainsString('owner_id, item_id', $e->getMessage(), 'names the whole target key');
                 self::assertStringContainsString('attrecord_composite_probe', $e->getMessage(), 'names the target table');
-                self::assertStringContainsString('not supported yet', $e->getMessage(), 'says it is a gap, not a verdict');
+                self::assertStringContainsString('same number of columns', $e->getMessage(), 'says what is actually wrong');
             }
         }
     }
 
-    /**
-     * The refusal is about a *derived* key, so the literal-table-name form still stands: it names
-     * its target column outright and reads no Record, which is the escape hatch the message points
-     * at.
-     */
-    public function testALiterallyNamedTargetIsUnaffected(): void
+    /** Naming both members is the supported form, and the two sides pair in declaration order. */
+    public function testAMultiColumnFkAtACompositeKeyedTargetResolves(): void
     {
-        $fks = TableSchema::fromClass(FkToLiteralTableRecord::class)->foreignKeys;
+        $fks = TableSchema::fromClass(FkPairToCompositeRecord::class)->foreignKeys;
 
         self::assertCount(1, $fks);
-        self::assertSame('some_column', $fks[0]->targetColumnName());
+        self::assertSame(['owner_ref', 'item_ref'], $fks[0]->localColumns);
+        self::assertSame(['owner_id', 'item_id'], $fks[0]->targetColumnNames(), 'the target key, in key order');
+    }
+
+    /** All three dialects render both sides as column lists, paired positionally. */
+    public function testAllThreeDialectsRenderTheColumnPairs(): void
+    {
+        $fk = TableSchema::fromClass(FkPairToCompositeRecord::class)->foreignKeys[0];
+
+        foreach ([new MysqlDialect(), new PgsqlDialect(), new SqliteDialect()] as $dialect) {
+            $line = $dialect->buildForeignKeyLine($fk);
+
+            self::assertMatchesRegularExpression(
+                '/FOREIGN KEY \(.owner_ref., .item_ref.\) REFERENCES .attrecord_composite_probe. \(.owner_id., .item_id.\)/',
+                $line,
+                $dialect::class,
+            );
+        }
+    }
+
+    /** A literal table target pairs with the columns it was given, deriving nothing. */
+    public function testALiterallyNamedTargetPairsWithItsOwnColumns(): void
+    {
+        $fks = TableSchema::fromClass(FkToLiteralTableRecord::class)->foreignKeys;
+        self::assertCount(1, $fks);
+        self::assertSame(['some_column'], $fks[0]->targetColumnNames());
+
+        $pair = TableSchema::fromClass(FkPairToLiteralTableRecord::class)->foreignKeys;
+        self::assertCount(1, $pair);
+        self::assertSame(['tenant_id', 'doc_id'], $pair[0]->localColumns);
+        self::assertSame(['tenant', 'id'], $pair[0]->targetColumnNames());
+    }
+
+    /** Mismatched arity against a literal target is refused too — nothing derives the pairing. */
+    public function testALiteralTargetWithMismatchedArityIsRefused(): void
+    {
+        $fks = TableSchema::fromClass(FkLopsidedLiteralRecord::class)->foreignKeys;
+
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessageMatches('/same number of columns/');
+        $fks[0]->targetColumnNames();
     }
 
     /** The ordinary case keeps working: a single-column key resolves to that column. */
@@ -419,7 +456,48 @@ final class CompositePrimaryKeyTest extends TestCase
         $fks = TableSchema::fromClass(FkToSingleKeyRecord::class)->foreignKeys;
 
         self::assertCount(1, $fks);
-        self::assertSame('id', $fks[0]->targetColumnName());
+        self::assertSame(['id'], $fks[0]->targetColumnNames());
+    }
+
+    /**
+     * A one-column key derives exactly the constraint name it always did, so the arrival of
+     * multi-column keys renames nothing — a changed name is a drop and re-add of every FK.
+     */
+    public function testSingleColumnConstraintNamesAreUnchanged(): void
+    {
+        $fks = TableSchema::fromClass(FkToSingleKeyRecord::class)->foreignKeys;
+
+        self::assertSame('fk_attrecord_fk_single_target_id', $fks[0]->constraintName);
+    }
+
+    /** A multi-column constraint is named for its whole tuple, so two keys sharing a column differ. */
+    public function testMultiColumnConstraintNamesCarryEveryColumn(): void
+    {
+        $fks = TableSchema::fromClass(FkPairToCompositeRecord::class)->foreignKeys;
+
+        self::assertSame('fk_attrecord_fk_pair_owner_ref_item_ref', $fks[0]->constraintName);
+    }
+
+    /** Two constraints may share a column; the same tuple twice is still a duplicate. */
+    public function testTwoConstraintsMayShareAColumn(): void
+    {
+        $fks = TableSchema::fromClass(FkSharedColumnRecord::class)->foreignKeys;
+
+        self::assertCount(2, $fks, 'overlapping tuples are two distinct rules');
+    }
+
+    public function testTheSameTupleTwiceIsRefused(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessageMatches('/more than one/');
+        TableSchema::fromClass(FkDuplicateTupleRecord::class);
+    }
+
+    public function testAColumnListedTwiceInOneKeyIsRefused(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessageMatches('/more than once/');
+        TableSchema::fromClass(FkRepeatedColumnRecord::class);
     }
 
     /** Reads are *not* blocked: a SELECT by WHERE needs no primary key. */
@@ -534,6 +612,98 @@ final class FkViaAttributeRecord extends Record
 
     #[Column(ColumnType::IntUnsigned)]
     public int $probe_id = 0;
+}
+
+/** @internal the supported form: both members named, paired with the target's key in order */
+#[Table(name: 'attrecord_fk_pair')]
+#[ForeignKey(column: ['owner_ref', 'item_ref'], references: CompositeKeyRecord::class)]
+final class FkPairToCompositeRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::IntUnsigned)]
+    public int $owner_ref = 0;
+
+    #[Column(ColumnType::Binary, length: 16)]
+    public string $item_ref = '';
+}
+
+/** @internal a multi-column key at a literal table — the pairing is given, not derived */
+#[Table(name: 'attrecord_fk_pair_literal')]
+#[ForeignKey(column: ['tenant_id', 'doc_id'], references: 'documents', referencesColumn: ['tenant', 'id'])]
+final class FkPairToLiteralTableRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::IntUnsigned)]
+    public int $tenant_id = 0;
+
+    #[Column(ColumnType::IntUnsigned)]
+    public int $doc_id = 0;
+}
+
+/** @internal two local columns, one referenced column — a pairing that cannot exist */
+#[Table(name: 'attrecord_fk_lopsided')]
+#[ForeignKey(column: ['tenant_id', 'doc_id'], references: 'documents', referencesColumn: 'id')]
+final class FkLopsidedLiteralRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::IntUnsigned)]
+    public int $tenant_id = 0;
+
+    #[Column(ColumnType::IntUnsigned)]
+    public int $doc_id = 0;
+}
+
+/** @internal `tenant_id` carries two different rules — legal SQL, and two constraints */
+#[Table(name: 'attrecord_fk_shared_col')]
+#[ForeignKey(column: ['tenant_id', 'order_id'], references: 'orders', referencesColumn: ['tenant', 'id'])]
+#[ForeignKey(column: ['tenant_id', 'user_id'], references: 'users', referencesColumn: ['tenant', 'id'])]
+final class FkSharedColumnRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::IntUnsigned)]
+    public int $tenant_id = 0;
+
+    #[Column(ColumnType::IntUnsigned)]
+    public int $order_id = 0;
+
+    #[Column(ColumnType::IntUnsigned)]
+    public int $user_id = 0;
+}
+
+/** @internal the same tuple declared twice */
+#[Table(name: 'attrecord_fk_dup_tuple')]
+#[ForeignKey(column: ['tenant_id', 'order_id'], references: 'orders', referencesColumn: ['tenant', 'id'])]
+#[ForeignKey(column: ['tenant_id', 'order_id'], references: 'others', referencesColumn: ['tenant', 'id'])]
+final class FkDuplicateTupleRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::IntUnsigned)]
+    public int $tenant_id = 0;
+
+    #[Column(ColumnType::IntUnsigned)]
+    public int $order_id = 0;
+}
+
+/** @internal one column named twice inside a single key */
+#[Table(name: 'attrecord_fk_repeated_col')]
+#[ForeignKey(column: ['tenant_id', 'tenant_id'], references: 'orders', referencesColumn: ['tenant', 'id'])]
+final class FkRepeatedColumnRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::IntUnsigned)]
+    public int $tenant_id = 0;
 }
 
 /** @internal a target named as a table, not a Record — no key is derived, so nothing is refused */
