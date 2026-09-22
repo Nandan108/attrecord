@@ -75,7 +75,7 @@ The ordering is the schema's, not the call site's. A positional tuple restates t
 every call, and getting it backwards reads as valid while addressing the wrong row — the same
 failure as `getOne($id)` matching on the first member alone.
 
-Two consequences worth knowing before designing a composite-keyed table:
+Consequences worth knowing before designing a composite-keyed table:
 
 - **No member may be auto-increment**, so the whole key is caller-minted. That is enforced at
   schema build, and it is why `save()` has no generated key to recover after an INSERT.
@@ -86,6 +86,20 @@ Two consequences worth knowing before designing a composite-keyed table:
 - **`LockSet` makes resolving the key a caller obligation discharged before locking begins** —
   the rows to lock are named in full up front, so no part of a key may be derived from anything
   that happens after the lock phase starts.
+- **Nothing can point a foreign key at it yet** (v0.22.1+). `#[Relation(emitFk: true)]` and
+  `#[ForeignKey(references: SomeRecord::class)]` both derive the target column from the target's
+  key, and both throw a `SchemaException` naming the whole key when that key has more than one
+  member. Multi-column foreign keys are the next piece of work; until they land, a composite-keyed
+  table can be referenced only through hand-written DDL, or via
+  `#[ForeignKey(references: '<table>', referencesColumn: '<col>')]`, which names its target
+  literally and derives nothing.
+
+  This refuses rather than emitting because the column it would otherwise emit is the key's
+  **first member** — a *different* column from the one declared, not a narrower version of it.
+  Referencing a leftmost prefix of a key is accepted by MySQL 8.0 and MariaDB (through 13.0.2),
+  which then enforce a constraint nobody wrote; rejected outright by MySQL 8.4+ (err 6125) and
+  PostgreSQL; and on SQLite accepted as DDL that converges cleanly and then refuses every child
+  insert with `foreign key mismatch`. One declaration, three different wrong answers.
 
 #### A surrogate key is not automatically a workaround
 

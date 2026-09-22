@@ -80,10 +80,16 @@ final class ForeignKey
     /**
      * Resolve the target column — the target Record's primary key when `$references` is a
      * Record class-string, otherwise the given column name.
+     *
+     * @throws SchemaException when `$references` names a Record whose key is composite — see
+     *                         {@see TableSchema::fkTargetColumn()}. The table-name form is
+     *                         unaffected: it derives no key, so `$referencesColumn` stands.
      */
     public function referencesColumn(): string
     {
-        return $this->getTargetSchema()?->pk ?? $this->referencesColumn;
+        return $this->getTargetSchema()?->fkTargetColumn(
+            sprintf('#[ForeignKey(column: "%s")]', $this->column),
+        ) ?? $this->referencesColumn;
     }
 
     /**

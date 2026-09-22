@@ -957,6 +957,15 @@ name), `referencesColumn` (target column, default `id`), `onDelete` / `onUpdate`
 target is resolved lazily at DDL-build time. A `references` value that is a class but
 **not** a `Record` subclass throws.
 
+**A Record target must have a single-column key.** Naming a Record whose `#[PrimaryKey]`
+lists several columns throws — from `#[Relation]` too, since both derive the target
+column from the target's key. Multi-column foreign keys are not supported yet, and the
+column that would otherwise be emitted is the key's *first member*, which constrains a
+different column than the one declared: MySQL 8.0 and MariaDB accept that silently, MySQL
+8.4+ and PostgreSQL reject it, and SQLite accepts the DDL and then refuses every child
+insert. Name such a target as a literal table + column instead, or write the constraint
+by hand.
+
 Schema-build time validation surfaces mistakes early: `VarChar`/`Char`/`Decimal`/
 `Enum`/`Set` required arguments, mutually exclusive `default` / `defaultExpr`,
 class- vs property-level key form conflicts, FK column references.

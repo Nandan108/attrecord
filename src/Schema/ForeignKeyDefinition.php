@@ -50,11 +50,18 @@ final class ForeignKeyDefinition
             ?? throw new \LogicException('ForeignKeyDefinition has neither a targetClass nor a #[ForeignKey] source.');
     }
 
-    /** Resolve the target column name. */
+    /**
+     * Resolve the target column name.
+     *
+     * @throws \Nandan108\Attrecord\Exception\SchemaException when the target's key is composite —
+     *                                                        see {@see TableSchema::fkTargetColumn()}
+     */
     public function targetColumnName(): string
     {
         if (null !== $this->targetClass) {
-            return TableSchema::fromClass($this->targetClass)->pk;
+            return TableSchema::fromClass($this->targetClass)->fkTargetColumn(
+                sprintf('Constraint "%s" on column "%s"', $this->constraintName, $this->localColumn),
+            );
         }
 
         return $this->source?->referencesColumn()

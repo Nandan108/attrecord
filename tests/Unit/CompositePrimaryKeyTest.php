@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Nandan108\Attrecord\Tests\Unit;
 
 use Nandan108\Attrecord\Attribute\Column;
+use Nandan108\Attrecord\Attribute\ForeignKey;
 use Nandan108\Attrecord\Attribute\LockTier;
 use Nandan108\Attrecord\Attribute\PrimaryKey;
+use Nandan108\Attrecord\Attribute\Relation;
 use Nandan108\Attrecord\Attribute\Table;
 use Nandan108\Attrecord\Connection;
 use Nandan108\Attrecord\Dialect\MysqlDialect;
@@ -14,6 +16,7 @@ use Nandan108\Attrecord\Dialect\PgsqlDialect;
 use Nandan108\Attrecord\Dialect\SqliteDialect;
 use Nandan108\Attrecord\Enum\ColumnType;
 use Nandan108\Attrecord\Enum\GeneratedColumnMode;
+use Nandan108\Attrecord\Enum\RelationType;
 use Nandan108\Attrecord\Exception\RecordDeleteException;
 use Nandan108\Attrecord\Exception\SchemaException;
 use Nandan108\Attrecord\LockSet;
@@ -370,6 +373,55 @@ final class CompositePrimaryKeyTest extends TestCase
         }
     }
 
+    /**
+     * A one-column FK pointing at a composite-keyed Record is refused — on the #[Relation] form
+     * and the class-level #[ForeignKey] form alike, since both derive the target column from the
+     * target's key.
+     *
+     * The value is in refusing *at all*: the column it would otherwise have emitted is the key's
+     * first member, which is a different column from the one declared, not a narrower version of
+     * it. Emitting it produces a constraint on MySQL 8.0 and MariaDB, an error on MySQL 8.4+ and
+     * PostgreSQL, and a DDL that converges but rejects every insert on SQLite.
+     */
+    public function testAOneColumnFkAtACompositeKeyedTargetIsRefused(): void
+    {
+        foreach ([FkViaRelationRecord::class, FkViaAttributeRecord::class] as $class) {
+            $fks = TableSchema::fromClass($class)->foreignKeys;
+            self::assertCount(1, $fks, $class);
+
+            try {
+                $fks[0]->targetColumnName();
+                self::fail("expected a SchemaException for $class");
+            } catch (SchemaException $e) {
+                self::assertStringContainsString('owner_id, item_id', $e->getMessage(), 'names the whole target key');
+                self::assertStringContainsString('attrecord_composite_probe', $e->getMessage(), 'names the target table');
+                self::assertStringContainsString('not supported yet', $e->getMessage(), 'says it is a gap, not a verdict');
+            }
+        }
+    }
+
+    /**
+     * The refusal is about a *derived* key, so the literal-table-name form still stands: it names
+     * its target column outright and reads no Record, which is the escape hatch the message points
+     * at.
+     */
+    public function testALiterallyNamedTargetIsUnaffected(): void
+    {
+        $fks = TableSchema::fromClass(FkToLiteralTableRecord::class)->foreignKeys;
+
+        self::assertCount(1, $fks);
+        self::assertSame('some_column', $fks[0]->targetColumnName());
+    }
+
+    /** The ordinary case keeps working: a single-column key resolves to that column. */
+    public function testASingleColumnTargetStillResolves(): void
+    {
+        $fks = TableSchema::fromClass(FkToSingleKeyRecord::class)->foreignKeys;
+
+        self::assertCount(1, $fks);
+        self::assertSame('id', $fks[0]->targetColumnName());
+    }
+
     /** Reads are *not* blocked: a SELECT by WHERE needs no primary key. */
     public function testReadBuildersAreNotBlocked(): void
     {
@@ -456,6 +508,58 @@ final class SinglePkRecord extends Record
 {
     #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
     public ?int $id = null;
+}
+
+/** @internal a one-column FK at a composite-keyed target, via the relation form */
+#[Table(name: 'attrecord_fk_via_relation')]
+final class FkViaRelationRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::IntUnsigned)]
+    public int $probe_id = 0;
+
+    #[Relation(RelationType::ManyToOne, class: CompositeKeyRecord::class, foreignKey: 'probe_id')]
+    public ?CompositeKeyRecord $probe = null;
+}
+
+/** @internal the same mistake via the class-level form */
+#[Table(name: 'attrecord_fk_via_attribute')]
+#[ForeignKey(column: 'probe_id', references: CompositeKeyRecord::class)]
+final class FkViaAttributeRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::IntUnsigned)]
+    public int $probe_id = 0;
+}
+
+/** @internal a target named as a table, not a Record — no key is derived, so nothing is refused */
+#[Table(name: 'attrecord_fk_literal')]
+#[ForeignKey(column: 'other_id', references: 'some_table', referencesColumn: 'some_column')]
+final class FkToLiteralTableRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::IntUnsigned)]
+    public int $other_id = 0;
+}
+
+/** @internal the ordinary case, kept beside the refusals so a regression shows up as a pair */
+#[Table(name: 'attrecord_fk_single')]
+final class FkToSingleKeyRecord extends Record
+{
+    #[Column(ColumnType::BigIntUnsigned, autoIncrement: true)]
+    public ?int $id = null;
+
+    #[Column(ColumnType::BigIntUnsigned)]
+    public int $target_id = 0;
+
+    #[Relation(RelationType::ManyToOne, class: SinglePkRecord::class, foreignKey: 'target_id')]
+    public ?SinglePkRecord $target = null;
 }
 
 /** @internal */

@@ -430,6 +430,41 @@ final class TableSchema
         ));
     }
 
+    /**
+     * The single column a one-column FOREIGN KEY may reference on this table — `$pk`, and only
+     * when the key has one member.
+     *
+     * A composite key has no such column, and the failure mode is why this refuses rather than
+     * returning the first member. `REFERENCES t (first_member)` is a *leftmost-prefix* reference:
+     * MySQL 8.0 and MariaDB (through 13.0.2) accept it and enforce a constraint nobody declared,
+     * MySQL 8.4+ and PostgreSQL reject the DDL, and SQLite accepts the DDL and fails the child
+     * INSERT instead. So the same declaration is silently wrong, loudly wrong, or wrong later,
+     * depending on where it runs.
+     *
+     * @param string $declaredBy the referencing declaration, for the message
+     *
+     * @throws SchemaException when this table's primary key has more than one member
+     */
+    public function fkTargetColumn(string $declaredBy): string
+    {
+        if (null === $this->compositePk) {
+            return $this->pk;
+        }
+
+        throw new SchemaException(sprintf(
+            '%s references %s, whose primary key is composite (%s). A foreign key must name '
+            .'every member of the key it references; naming one column would reference a prefix of '
+            .'the key, which engines variously accept as a different constraint, reject, or accept '
+            .'and then refuse the insert. Multi-column foreign keys are not supported yet. Until '
+            .'they are, reference a table with a single-column key, or declare the constraint in '
+            .'hand-written DDL — #[ForeignKey(references: "<table>", referencesColumn: "<col>")] '
+            .'names a table literally and derives no key, so it is not affected by this.',
+            $declaredBy,
+            $this->tableName,
+            implode(', ', $this->compositePk),
+        ));
+    }
+
     /** @var array<string, true>|null memoized: the set of assignable column property names */
     private ?array $_columnProperties = null;
 

@@ -294,6 +294,15 @@ records. The **keyed bulk upsert does not yet guard or bump** (per-row version p
 | `onDelete` | `ForeignKeyAction` | `Restrict` | |
 | `onUpdate` | `ForeignKeyAction` | `Restrict` | |
 
+- **`referencesColumn` applies only to the table-name form.** With a Record FQCN the target column
+  is that Record's primary key, and `referencesColumn` is ignored.
+- **A Record target with a composite key throws** (v0.22.1+) — `SchemaException`, from both this
+  attribute and `#[Relation(emitFk: true)]`, naming the whole target key. Multi-column FKs are not
+  supported yet, and emitting the key's first member would constrain a different column than the
+  one declared: MySQL 8.0 and MariaDB accept that as a leftmost-prefix reference, MySQL 8.4+
+  (err 6125) and PostgreSQL reject it, SQLite accepts the DDL and then fails the child insert.
+  Escape hatch: name the target as a literal table + column, which derives nothing.
+
 ### `#[Check]` (class-level, repeatable — v0.17.0)
 | Param | Type | Notes |
 |---|---|---|

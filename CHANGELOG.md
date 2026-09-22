@@ -6,6 +6,33 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-09-22
+
+### Fixed
+
+- **A foreign key aimed at a composite-keyed Record is refused instead of silently emitted against
+  the wrong column.** `#[Relation(emitFk: true)]` and `#[ForeignKey(references: SomeRecord::class)]`
+  both derive the target column from the target's primary key, and both read `TableSchema::$pk` —
+  which, for a composite key, is its **first member**. So a child declaring an FK to a table keyed
+  `(order_id, line_id)` emitted `REFERENCES parent (order_id)`: not a narrowed constraint but a
+  constraint on a different column, with no type mismatch to give it away.
+
+  What made it worth a release of its own is that the engines disagree about it three ways.
+  Referencing a leftmost prefix of a key is **accepted** by MySQL 8.0.46 and MariaDB (measured
+  through 13.0.2), which enforce a constraint nobody declared; **rejected** by MySQL 8.4.10 and
+  9.7.2 (`ERROR 6125`, "Missing unique key") and by PostgreSQL 16; and on SQLite 3.45 the DDL is
+  accepted, converges clean, and then every child `INSERT` fails with `foreign key mismatch`. The
+  split runs through MySQL itself, so a matrix testing 8.0 and 8.4 disagrees with itself, and the
+  permissive side is where most local development happens.
+
+  Both paths now throw a `SchemaException` naming the referencing constraint, the target table and
+  every member of its key, and saying that multi-column foreign keys are not supported yet.
+  `TableSchema::fkTargetColumn()` is the new single place that decision is made.
+
+  **Unaffected: the literal form.** `#[ForeignKey(references: '<table>', referencesColumn: '<col>')]`
+  names its target outright and derives no key, so it still resolves — it is the escape hatch the
+  message points at, alongside hand-written DDL.
+
 ## [0.22.0] - 2026-09-21
 
 **A composite primary key now identifies a row, not just a table.** `#[PrimaryKey(columns: …)]`
@@ -1358,7 +1385,8 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/Nandan108/attrecord/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/Nandan108/attrecord/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/Nandan108/attrecord/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/Nandan108/attrecord/compare/v0.19.0...v0.20.0
