@@ -46,7 +46,28 @@ interface DbSession
      */
     public function fetchScalar(string $sql, array $params = []): string | int | float | null;
 
-    /** Return the last generated auto-increment id for this session. */
+    /**
+     * Return the last generated auto-increment id for this session.
+     *
+     * **For a multi-row INSERT, attrecord reads this as the FIRST id of the batch**, and derives
+     * the rest as `first + 0 … first + n-1` (see `RecordSet`'s insert path). That is a MySQL and
+     * MariaDB guarantee — `LAST_INSERT_ID()` reports the first id of a multi-row insert, and the
+     * range is contiguous for a single statement — and it is not a property of the SQL standard.
+     *
+     * SQLite reports the **last** rowid instead, and PostgreSQL has no meaningful answer without a
+     * sequence name. Both are handled by never taking this path: {@see SqlDialect::supportsReturning()}
+     * is true for those dialects, so ids come back from `RETURNING` and every id is read directly.
+     *
+     * **The trap is a session whose dialect says MySQL while the backend is something else** — a
+     * translator, a proxy, a compatibility layer. `lastInsertId()` then answers honestly for the
+     * real engine, attrecord interprets it as MySQL's first-of-batch, and a batch of n rows is
+     * back-filled with ids `last … last + n-1`: every row but one carries the id of a different
+     * row. Nothing errors. The symptom is rows related to the wrong parent.
+     *
+     * A session in that position must either normalise here (MySQL's answer is
+     * `insert_id - rows_affected + 1` when the driver reports the last id) or present a dialect
+     * whose `supportsReturning()` is true.
+     */
     public function lastInsertId(): string | int;
 
     /**

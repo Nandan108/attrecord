@@ -830,6 +830,16 @@ string works and wrapping is unnecessary (but harmless).
 `buildCreateTable()` embeds, exposed so schema-evolution tooling composes `ALTER TABLE … ADD/MODIFY …`
 from the same rendering authority; on SQLite the column fragment is always the non-PK form).
 
+**Subclassing a dialect (v0.23.1+).** The three concrete dialects are **not final**, so a consumer
+whose backend answers to MySQL's SQL but behaves differently — a translator, a proxy, a
+compatibility layer — subclasses and corrects the answers that differ. Exactly four methods are
+overridable, the ones describing what the *backend can do* rather than how SQL is spelled:
+`bindsBinaryAsLob()`, `supportsReturning()`, `forUpdateClause()`, `connectionInitStatements()`.
+Every other public method is `final`, enforced by reflection in `DialectExtensionPointsTest` —
+overriding a capability answer picks a well-tested branch, overriding a builder leaves the matrix
+behind while still wearing the dialect's name. attrecord therefore never names a particular backend:
+the quirks live in the consumer that has the quirky backend, and need no release here.
+
 New in v0.2.0:
 - `forUpdateClause(): string` — the row-locking suffix for a `SELECT … FOR UPDATE` read.
   Returns `'FOR UPDATE'` on `MysqlDialect` and `PgsqlDialect`; `''` on `SqliteDialect` (SQLite

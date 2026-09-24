@@ -27,9 +27,17 @@ use Nandan108\Attrecord\UpsertSql;
  * RETURNING (SQLite 3.35+), since lastInsertId() reports only the last rowid of a multi-row
  * INSERT.
  *
+ * ## Extending this dialect
+ *
+ * Not final, on the same terms as {@see MysqlDialect} — see its docblock for the reasoning.
+ * The extension points are {@see bindsBinaryAsLob()}, {@see supportsReturning()},
+ * {@see forUpdateClause()} and {@see connectionInitStatements()}; every other method is `final`.
+ * `supportsReturning()` is the one most likely to need overriding here, since RETURNING needs
+ * SQLite 3.35+ and an older library will parse it as a syntax error.
+ *
  * @api
  */
-final class SqliteDialect implements SqlDialect
+class SqliteDialect implements SqlDialect
 {
     use UpsertJoinBuilder;
 
@@ -54,13 +62,13 @@ final class SqliteDialect implements SqlDialect
     }
 
     #[\Override]
-    public function quoteIdentifier(string $name): string
+    final public function quoteIdentifier(string $name): string
     {
         return '"'.\str_replace('"', '""', $name).'"';
     }
 
     #[\Override]
-    public function toLiteral(mixed $value, ColumnDefinition $col): string
+    final public function toLiteral(mixed $value, ColumnDefinition $col): string
     {
         if (null === $value) {
             return 'NULL';
@@ -102,7 +110,7 @@ final class SqliteDialect implements SqlDialect
     }
 
     #[\Override]
-    public function insertReturningSuffix(string $quotedPkColumn): string
+    final public function insertReturningSuffix(string $quotedPkColumn): string
     {
         // Use RETURNING (SQLite 3.35+) rather than lastInsertId(): for a multi-row INSERT SQLite
         // returns the *last* rowid, which would break RecordSet::upsertAll()'s first-id-based range
@@ -143,25 +151,25 @@ final class SqliteDialect implements SqlDialect
     }
 
     #[\Override]
-    public function escapeLikeWildcards(string $literal): string
+    final public function escapeLikeWildcards(string $literal): string
     {
         return \str_replace(['\\', '%', '_'], ['\\\\', '\%', '\_'], $literal);
     }
 
     #[\Override]
-    public function likeEscapeSuffix(): string
+    final public function likeEscapeSuffix(): string
     {
         return " ESCAPE '\\'";
     }
 
     #[\Override]
-    public function incomingRef(string $column): string
+    final public function incomingRef(string $column): string
     {
         return 'excluded.'.$this->quoteIdentifier($column);
     }
 
     #[\Override]
-    public function buildSingleUpsertSql(
+    final public function buildSingleUpsertSql(
         string $tableName,
         array $columnNames,
         array $conflictCols,
@@ -192,7 +200,7 @@ final class SqliteDialect implements SqlDialect
      * @param list<list<string>> $rows
      */
     #[\Override]
-    public function buildBulkInsert(
+    final public function buildBulkInsert(
         string $tableName,
         array $columnNames,
         array $rows,
@@ -211,7 +219,7 @@ final class SqliteDialect implements SqlDialect
     }
 
     #[\Override]
-    public function insertIgnoreClause(array $columnNames): string
+    final public function insertIgnoreClause(array $columnNames): string
     {
         // `ON CONFLICT DO NOTHING` (SQLite 3.24+) skips only a key conflict — unlike `INSERT OR
         // IGNORE`, which also silently drops NOT NULL / CHECK violations. Matches the PG form.
@@ -229,7 +237,7 @@ final class SqliteDialect implements SqlDialect
      * @param list<array<string, bool>> $rowDirtyColumns
      */
     #[\Override]
-    public function buildUpsertSql(
+    final public function buildUpsertSql(
         string $tableName,
         array $pkColumns,
         array $columnNames,
@@ -299,7 +307,7 @@ final class SqliteDialect implements SqlDialect
      * @param array<string, ?string> $updateColumns
      */
     #[\Override]
-    public function buildBulkUpsertSql(
+    final public function buildBulkUpsertSql(
         string $tableName,
         array $conflictCols,
         array $columnNames,
@@ -342,7 +350,7 @@ final class SqliteDialect implements SqlDialect
      * @param list<string> $omitForeignKeys
      */
     #[\Override]
-    public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false, array $omitForeignKeys = []): string
+    final public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false, array $omitForeignKeys = []): string
     {
         $qt = $this->quoteIdentifier($schema->tableName);
         $createKeyword = $ifNotExists ? 'CREATE TABLE IF NOT EXISTS' : 'CREATE TABLE';
@@ -387,7 +395,7 @@ final class SqliteDialect implements SqlDialect
     }
 
     #[\Override]
-    public function buildColumnLine(ColumnDefinition $col): string
+    final public function buildColumnLine(ColumnDefinition $col): string
     {
         // Public fragment form (see SqlDialect): always the non-PK rendering — the inline
         // `INTEGER PRIMARY KEY AUTOINCREMENT` form is a CREATE-TABLE-only concern, and an
@@ -434,7 +442,7 @@ final class SqliteDialect implements SqlDialect
     }
 
     #[\Override]
-    public function renderColumnType(ColumnDefinition $col): string
+    final public function renderColumnType(ColumnDefinition $col): string
     {
         $type = $col->type;
 
@@ -462,7 +470,7 @@ final class SqliteDialect implements SqlDialect
     }
 
     #[\Override]
-    public function buildForeignKeyLine(ForeignKeyDefinition $fk): string
+    final public function buildForeignKeyLine(ForeignKeyDefinition $fk): string
     {
         return 'CONSTRAINT '.$this->quoteIdentifier($fk->constraintName)
             .' FOREIGN KEY ('.\implode(', ', \array_map($this->quoteIdentifier(...), $fk->localColumns)).')'
@@ -473,7 +481,7 @@ final class SqliteDialect implements SqlDialect
     }
 
     #[\Override]
-    public function buildCheckLine(CheckDefinition $check): string
+    final public function buildCheckLine(CheckDefinition $check): string
     {
         return 'CONSTRAINT '.$this->quoteIdentifier($check->constraintName)
             .' CHECK ('.$check->expression.')';

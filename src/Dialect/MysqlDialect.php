@@ -19,9 +19,32 @@ use Nandan108\Attrecord\UpsertSql;
  * Uses backtick identifier quoting, X'hex' binary literals, and the deadlock-safe
  * INSERT IGNORE + SELECT FOR UPDATE + CASE UPDATE bulk-upsert pattern.
  *
+ * ## Extending this dialect
+ *
+ * The class is **not final**, so a consumer whose backend answers to MySQL's SQL while behaving
+ * differently — a translator, a proxy, a compatibility layer — can subclass it and correct the
+ * handful of answers that differ. The motivating case is WordPress's SQLite translator, which
+ * reports itself as MySQL 8.0 and then binds binary values as text.
+ *
+ * **Exactly four methods are extension points**, and they are the ones that describe what the
+ * *backend can do* rather than how SQL is spelled:
+ *
+ *  - {@see bindsBinaryAsLob()}
+ *  - {@see supportsReturning()}
+ *  - {@see forUpdateClause()}
+ *  - {@see connectionInitStatements()}
+ *
+ * Everything else is `final`. That is deliberate: the SQL this class emits is covered by a
+ * tri-engine test matrix, and a subclass that rewrote a builder would be outside everything those
+ * tests establish while still claiming to be this dialect. Overriding a capability answer changes
+ * *which* well-tested branch attrecord takes; overriding a builder changes the SQL itself.
+ *
+ * Subclassing is also why attrecord itself never names a particular backend: the quirks live in
+ * the consumer that has the quirky backend, and need no release here to fix.
+ *
  * @api
  */
-final class MysqlDialect implements SqlDialect
+class MysqlDialect implements SqlDialect
 {
     use UpsertJoinBuilder;
 
@@ -64,13 +87,13 @@ final class MysqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function quoteIdentifier(string $name): string
+    final public function quoteIdentifier(string $name): string
     {
         return '`'.\str_replace('`', '``', $name).'`';
     }
 
     #[\Override]
-    public function toLiteral(mixed $value, ColumnDefinition $col): string
+    final public function toLiteral(mixed $value, ColumnDefinition $col): string
     {
         if (null === $value) {
             return 'NULL';
@@ -117,7 +140,7 @@ final class MysqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function insertReturningSuffix(string $quotedPkColumn): string
+    final public function insertReturningSuffix(string $quotedPkColumn): string
     {
         return '';
     }
@@ -142,19 +165,19 @@ final class MysqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function escapeLikeWildcards(string $literal): string
+    final public function escapeLikeWildcards(string $literal): string
     {
         return \str_replace(['\\', '%', '_'], ['\\\\', '\%', '\_'], $literal);
     }
 
     #[\Override]
-    public function likeEscapeSuffix(): string
+    final public function likeEscapeSuffix(): string
     {
         return '';
     }
 
     #[\Override]
-    public function incomingRef(string $column): string
+    final public function incomingRef(string $column): string
     {
         // VALUES(col) is deprecated on MySQL 8.0.20+ but is the only form MariaDB supports, so it
         // stays the portable choice across the MySQL/MariaDB family this dialect serves.
@@ -162,7 +185,7 @@ final class MysqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function buildSingleUpsertSql(
+    final public function buildSingleUpsertSql(
         string $tableName,
         array $columnNames,
         array $conflictCols,
@@ -190,7 +213,7 @@ final class MysqlDialect implements SqlDialect
      * @param list<list<string>> $rows
      */
     #[\Override]
-    public function buildBulkInsert(
+    final public function buildBulkInsert(
         string $tableName,
         array $columnNames,
         array $rows,
@@ -209,7 +232,7 @@ final class MysqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function insertIgnoreClause(array $columnNames): string
+    final public function insertIgnoreClause(array $columnNames): string
     {
         // A no-op `col = col` set ignores *only* a key conflict, unlike `INSERT IGNORE` which would
         // also downgrade truncation / NOT NULL errors to warnings. Any written column serves.
@@ -225,7 +248,7 @@ final class MysqlDialect implements SqlDialect
      * @param list<array<string, bool>> $rowDirtyColumns
      */
     #[\Override]
-    public function buildUpsertSql(
+    final public function buildUpsertSql(
         string $tableName,
         array $pkColumns,
         array $columnNames,
@@ -296,7 +319,7 @@ final class MysqlDialect implements SqlDialect
      * @param array<string, ?string> $updateColumns
      */
     #[\Override]
-    public function buildBulkUpsertSql(
+    final public function buildBulkUpsertSql(
         string $tableName,
         array $conflictCols,
         array $columnNames,
@@ -328,7 +351,7 @@ final class MysqlDialect implements SqlDialect
 
     /** @param list<string> $omitForeignKeys */
     #[\Override]
-    public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false, array $omitForeignKeys = []): string
+    final public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false, array $omitForeignKeys = []): string
     {
         $qt = $this->quoteIdentifier($schema->tableName);
         $createKeyword = $ifNotExists ? 'CREATE TABLE IF NOT EXISTS' : 'CREATE TABLE';
@@ -383,7 +406,7 @@ final class MysqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function buildColumnLine(ColumnDefinition $col): string
+    final public function buildColumnLine(ColumnDefinition $col): string
     {
         $parts = [$this->quoteIdentifier($col->name), $this->renderColumnType($col)];
 
@@ -425,7 +448,7 @@ final class MysqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function renderColumnType(ColumnDefinition $col): string
+    final public function renderColumnType(ColumnDefinition $col): string
     {
         $type = $col->type;
         $precision = $col->precision ?? 0;
@@ -458,7 +481,7 @@ final class MysqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function buildForeignKeyLine(ForeignKeyDefinition $fk): string
+    final public function buildForeignKeyLine(ForeignKeyDefinition $fk): string
     {
         $localCols = \implode(', ', \array_map($this->quoteIdentifier(...), $fk->localColumns));
         $targetCols = \implode(', ', \array_map($this->quoteIdentifier(...), $fk->targetColumnNames()));
@@ -472,7 +495,7 @@ final class MysqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function buildCheckLine(CheckDefinition $check): string
+    final public function buildCheckLine(CheckDefinition $check): string
     {
         return 'CONSTRAINT '.$this->quoteIdentifier($check->constraintName)
             .' CHECK ('.$check->expression.')';

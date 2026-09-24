@@ -824,6 +824,12 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
                 // MySQL/MariaDB: lastInsertId() is the first ID; the range is sequential. Only
                 // meaningful for auto-increment PKs — for application-minted PKs (e.g. BINARY(16)
                 // UUIDs) the caller already knows the IDs, so leave $insertedIds empty.
+                //
+                // First-of-batch is a MySQL-family guarantee, not a standard one: SQLite reports
+                // the LAST rowid and PostgreSQL has no answer without a sequence name. Both avoid
+                // this branch entirely via supportsReturning(). A session presenting a MySQL
+                // dialect over a non-MySQL backend does not, and silently back-fills every row but
+                // one with another row's id — see DbSession::lastInsertId().
                 $n = $session->exec($plan['insert']);
                 if ($n > 0 && $pkAutoIncrement) {
                     $firstId = (int) $session->lastInsertId();

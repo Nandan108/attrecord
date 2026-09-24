@@ -6,6 +6,61 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-09-24
+
+**The dialects are subclassable, and only their capability answers are.**
+
+A backend can speak MySQL's SQL and behave differently underneath — a translator, a proxy, a
+compatibility layer. The motivating case is WordPress's SQLite Database Integration, which reports
+itself as MySQL 8.0 and then binds binary values as text, so every lookup by a `BINARY(16)` id
+matches nothing. Silently: the rows are simply absent.
+
+Nothing in attrecord was wrong there. `BinaryParam` already marks binary values from the column
+type, and `SqlDialect::bindsBinaryAsLob()` already asks the right question — *does this backend need
+binary values marked rather than passed as a string?* `MysqlDialect` answers `false`, which is
+correct for MySQL and wrong for a backend only pretending to be it.
+
+So rather than add a constructor flag per quirk, or teach attrecord the name of each such
+environment, the three dialect classes lose `final` and a consumer corrects the answers itself:
+
+```php
+final class TranslatorBackedMysqlDialect extends MysqlDialect
+{
+    public function bindsBinaryAsLob(): bool { return true; }
+}
+```
+
+**Exactly four methods are extension points**, and they are the ones describing what the *backend
+can do* rather than how SQL is spelled: `bindsBinaryAsLob()`, `supportsReturning()`,
+`forUpdateClause()` and `connectionInitStatements()`. Every other public method is now `final`.
+
+That split is deliberate. The SQL these classes emit is covered by a tri-engine matrix; a subclass
+that rewrote a builder would sit outside everything those tests establish while still presenting
+itself as the dialect. Overriding a capability answer changes *which* well-tested branch attrecord
+takes. It is enforced by reflection in `DialectExtensionPointsTest`, not just documented, because a
+contract that lives only in a docblock drifts the first time somebody adds a method.
+
+Purely additive: nothing could subclass these classes before, so marking their methods `final`
+breaks no existing code.
+
+### Changed
+
+- `MysqlDialect`, `PgsqlDialect` and `SqliteDialect` are no longer `final`; their non-capability
+  methods are.
+
+### Documentation
+
+- **`DbSession::lastInsertId()` now states the assumption attrecord makes of it.** For a multi-row
+  INSERT attrecord reads it as the **first** id of the batch and derives the rest — a MySQL and
+  MariaDB guarantee, not a standard one. SQLite reports the *last* rowid and PostgreSQL has no
+  answer without a sequence name; both avoid the path entirely via `supportsReturning()`.
+
+  The trap is a session whose dialect says MySQL while the backend is something else: a batch of
+  *n* rows is then back-filled with ids `last … last + n-1`, so every row but one carries another
+  row's id. Nothing errors; the symptom is rows related to the wrong parent. Found by the sqlite
+  lane's Playground spike, where it presented as an order projection pushing stock back up — a sale
+  un-selling itself.
+
 ## [0.23.0] - 2026-09-22
 
 **Foreign keys over more than one column.** 0.22 made a composite primary key identify a row; this
@@ -1446,7 +1501,8 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.23.1...HEAD
+[0.23.1]: https://github.com/Nandan108/attrecord/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/Nandan108/attrecord/compare/v0.22.1...v0.23.0
 [0.22.1]: https://github.com/Nandan108/attrecord/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/Nandan108/attrecord/compare/v0.21.0...v0.22.0

@@ -24,9 +24,15 @@ use Nandan108\Attrecord\UpsertSql;
  * New-record INSERTs use RETURNING to retrieve the generated PK, since PDO's
  * lastInsertId() is unreliable without an explicit sequence name in PostgreSQL.
  *
+ * ## Extending this dialect
+ *
+ * Not final, on the same terms as {@see MysqlDialect} — see its docblock for the reasoning.
+ * The extension points are {@see bindsBinaryAsLob()}, {@see supportsReturning()},
+ * {@see forUpdateClause()} and {@see connectionInitStatements()}; every other method is `final`.
+ *
  * @api
  */
-final class PgsqlDialect implements SqlDialect
+class PgsqlDialect implements SqlDialect
 {
     use UpsertJoinBuilder;
 
@@ -38,13 +44,13 @@ final class PgsqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function quoteIdentifier(string $name): string
+    final public function quoteIdentifier(string $name): string
     {
         return '"'.\str_replace('"', '""', $name).'"';
     }
 
     #[\Override]
-    public function toLiteral(mixed $value, ColumnDefinition $col): string
+    final public function toLiteral(mixed $value, ColumnDefinition $col): string
     {
         if (null === $value) {
             // A bare NULL is untyped. In `INSERT … VALUES` PG infers the type from the target
@@ -94,7 +100,7 @@ final class PgsqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function insertReturningSuffix(string $quotedPkColumn): string
+    final public function insertReturningSuffix(string $quotedPkColumn): string
     {
         return "RETURNING {$quotedPkColumn}";
     }
@@ -119,25 +125,25 @@ final class PgsqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function escapeLikeWildcards(string $literal): string
+    final public function escapeLikeWildcards(string $literal): string
     {
         return \str_replace(['\\', '%', '_'], ['\\\\', '\%', '\_'], $literal);
     }
 
     #[\Override]
-    public function likeEscapeSuffix(): string
+    final public function likeEscapeSuffix(): string
     {
         return " ESCAPE '\\'";
     }
 
     #[\Override]
-    public function incomingRef(string $column): string
+    final public function incomingRef(string $column): string
     {
         return 'EXCLUDED.'.$this->quoteIdentifier($column);
     }
 
     #[\Override]
-    public function buildSingleUpsertSql(
+    final public function buildSingleUpsertSql(
         string $tableName,
         array $columnNames,
         array $conflictCols,
@@ -168,7 +174,7 @@ final class PgsqlDialect implements SqlDialect
      * @param list<list<string>> $rows
      */
     #[\Override]
-    public function buildBulkInsert(
+    final public function buildBulkInsert(
         string $tableName,
         array $columnNames,
         array $rows,
@@ -187,7 +193,7 @@ final class PgsqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function insertIgnoreClause(array $columnNames): string
+    final public function insertIgnoreClause(array $columnNames): string
     {
         // Targetless DO NOTHING skips any primary/unique-key conflict while still surfacing other
         // errors — safer than a blunt swallow, and consistent with the MySQL no-op form.
@@ -201,7 +207,7 @@ final class PgsqlDialect implements SqlDialect
      * @param list<array<string, bool>> $rowDirtyColumns
      */
     #[\Override]
-    public function buildUpsertSql(
+    final public function buildUpsertSql(
         string $tableName,
         array $pkColumns,
         array $columnNames,
@@ -273,7 +279,7 @@ final class PgsqlDialect implements SqlDialect
      * @param array<string, ?string> $updateColumns
      */
     #[\Override]
-    public function buildBulkUpsertSql(
+    final public function buildBulkUpsertSql(
         string $tableName,
         array $conflictCols,
         array $columnNames,
@@ -318,7 +324,7 @@ final class PgsqlDialect implements SqlDialect
      * @param list<string> $omitForeignKeys
      */
     #[\Override]
-    public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false, array $omitForeignKeys = []): string
+    final public function buildCreateTable(TableSchema $schema, bool $ifNotExists = false, array $omitForeignKeys = []): string
     {
         $qt = $this->quoteIdentifier($schema->tableName);
         $createKeyword = $ifNotExists ? 'CREATE TABLE IF NOT EXISTS' : 'CREATE TABLE';
@@ -369,7 +375,7 @@ final class PgsqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function buildColumnLine(ColumnDefinition $col): string
+    final public function buildColumnLine(ColumnDefinition $col): string
     {
         $parts = [$this->quoteIdentifier($col->name), $this->renderColumnType($col)];
 
@@ -409,7 +415,7 @@ final class PgsqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function renderColumnType(ColumnDefinition $col): string
+    final public function renderColumnType(ColumnDefinition $col): string
     {
         // Auto-increment columns use the SERIAL pseudo-types (sequence-backed).
         if ($col->autoIncrement) {
@@ -462,7 +468,7 @@ final class PgsqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function buildForeignKeyLine(ForeignKeyDefinition $fk): string
+    final public function buildForeignKeyLine(ForeignKeyDefinition $fk): string
     {
         return 'CONSTRAINT '.$this->quoteIdentifier($fk->constraintName)
             .' FOREIGN KEY ('.\implode(', ', \array_map($this->quoteIdentifier(...), $fk->localColumns)).')'
@@ -473,7 +479,7 @@ final class PgsqlDialect implements SqlDialect
     }
 
     #[\Override]
-    public function buildCheckLine(CheckDefinition $check): string
+    final public function buildCheckLine(CheckDefinition $check): string
     {
         return 'CONSTRAINT '.$this->quoteIdentifier($check->constraintName)
             .' CHECK ('.$check->expression.')';
