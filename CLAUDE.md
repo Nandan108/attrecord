@@ -61,6 +61,13 @@ Generated SQL must be valid on **all three** engines. Known traps:
   conflicts (prefer `ON CONFLICT DO NOTHING` when you mean *only* key conflicts).
 - **MySQL `VALUES(col)` for the incoming row is deprecated (8.0.20+)** but is the only form MariaDB
   supports — keep it as the portable MySQL-family choice. PG/SQLite use `EXCLUDED.col`.
+- **`GREATEST`/`LEAST` disagree about NULL, and the spelling hides it.** Measured 2026-09-24:
+  `GREATEST(1, NULL)` is `NULL` on MariaDB and `NULL` on SQLite (`max(1, NULL)`), and **`1` on
+  PostgreSQL** — PG ignores NULLs where the others propagate them. So the arrangement that looks
+  right (`GREATEST` on MySQL *and* PG, `max` on SQLite) is wrong on the engine whose spelling
+  matched, silently, with a different number for the same rows. Generalisation worth holding onto:
+  **matching the local spelling is not porting the expression** — check the NULL and empty-set
+  behaviour of any scalar function before assuming a same-named one is the same function.
 
 ## Snapshot canonicalization (the v0.7.0 → v0.9.1 PG-red root cause, fixed in v0.9.2)
 

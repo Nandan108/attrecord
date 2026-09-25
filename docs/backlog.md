@@ -62,3 +62,49 @@ as is its PrestaShop adapter.
 product that cannot grant schema creation, for instance. Unlike the FK case this only touches index
 and unique-key emission, and it should be PostgreSQL-only: MySQL scopes index names per table, so
 prefixing them there would mangle names for no benefit.
+
+---
+
+## A SQL fragment vocabulary on `SqlDialect` — *deferred, it is PostgreSQL work*
+
+A dozen or so expression-level methods, each rendered per dialect, so hand-written SQL composes
+portable fragments instead of MySQL-only constructs: `nullSafeEquals`, `greatest`/`least`,
+`castToInt`, `nowWithFraction`, `dateAdd`, `groupConcat`, `regexpMatch`, `concat`, `ifNull`. Plain
+string in, plain string out, so a fragment drops into a raw `WhereClause` predicate
+(`"WHERE {$d->nullSafeEquals('a','b')}"`), into `generatedAs`, and into raw SQL, with no query
+builder anywhere. Designed 2026-09-24 against a real count — roughly 200 MySQL-only sites across a
+consumer's three repositories.
+
+**Why it is deferred.** The consumer that asked for it (InvFlux, running under WordPress Playground's
+SQLite translator) stays on `MysqlDialect`, because the translator only knows tables it created
+itself. So the fragments would always render their MySQL form there and buy nothing. The vocabulary
+is therefore **PostgreSQL work wearing a SQLite hat**, and it waits for that trigger. The handful of
+constructs the translator actually rejects were rewritten consumer-side in the subset both engines
+accept — a null-safe comparison spelled out longhand, `SELECT … FOR UPDATE` then `UPDATE` in place of
+`LAST_INSERT_ID(expr)` as a counter, `INSERT IGNORE` then a unique-key lookup for interning.
+
+**Trigger to revisit:** a consumer actually running on PostgreSQL, or a second engine reached through
+something other than a translator.
+
+**The rule it has to follow, if it is ever built — a fragment promises semantics, not syntax.**
+Rendering each engine's local spelling is the easy half and the wrong target. Measured 2026-09-24:
+
+| Expression | MariaDB | SQLite 3.51 | PostgreSQL 16 |
+|---|---|---|---|
+| `GREATEST(1, NULL)` / `max(1, NULL)` | `NULL` | `NULL` | **`1`** |
+
+PostgreSQL's `GREATEST` *ignores* NULLs where MySQL's and SQLite's propagate them. So the obvious
+arrangement — `GREATEST` on MySQL and PostgreSQL, `max` on SQLite — is the one that is wrong, and it
+is wrong on the engine whose spelling matched. Same rows, different number, no error. Three
+consequences: each fragment states its NULL behaviour and every dialect meets it; a fragment an
+engine cannot honour **throws at render time naming itself** rather than degrading to something close
+(`regexpMatch` on SQLite, which has no regex without a registered UDF; `castToInt` offers signed only,
+since `UNSIGNED` has no counterpart elsewhere); and every fragment is tested for the same **value**
+on three engines, never the same string — a string-equality test would have passed the `GREATEST`
+bug.
+
+**One thing this would close, and a gap worth knowing about meanwhile.** `generatedAs` is a raw
+string emitted verbatim by all three dialects, so portability there is entirely the author's problem.
+Our own tri-backend matrix does not test that: every fixture is a hand-picked portable expression
+(`COALESCE(x, 0)`), so the suite has never once run a non-portable generation expression. That is
+coverage which looks real and is not.
