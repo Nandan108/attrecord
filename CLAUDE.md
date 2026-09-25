@@ -26,6 +26,19 @@ difference, not a style one.
 5. **Docs move with the code.** A public-surface change updates **all three** doc homes:
    `README.md` (the human narrative guide), `docs/llm-reference.md` (the exhaustive AI-facing
    reference), and `CHANGELOG.md`. The README is the one that silently drifts — check it explicitly.
+
+   **Search for prose the change makes FALSE, not just for a place to add a paragraph.** A new
+   capability usually contradicts an existing sentence, and a doc that now asserts the opposite is
+   worse than one that says nothing: a reader who follows it is actively misled, and the passage
+   reads as confident and current. Grep the docs for the *old* behaviour's vocabulary — the thing
+   the change stopped being true about — not for the new feature's name, which by definition appears
+   nowhere yet.
+   > **Why this rule exists (2026-09-25):** 0.24.0 made a structured `WhereClause` predicate bind
+   > its own binary values. Both `README.md` and `docs/llm-reference.md` said attrecord "has no
+   > column metadata to drive the binding" for such a predicate, and the README followed it with a
+   > worked example doing the now-unnecessary manual wrap **as the recommended form**. Both were
+   > true the day before and false at commit. A grep for the new behaviour found nothing; a grep
+   > for `BinaryParam` — the old workaround — found both immediately.
 6. **No consumer domain vocabulary in reference material.** attrecord is general-purpose
    infrastructure published on its own. Docblock examples, README/`docs/` snippets and test
    fixtures must read as if the library had no particular consumer: a reader has no idea what a
@@ -37,6 +50,52 @@ difference, not a style one.
    (`docs/arch-*.md`) cite InvFlux at length and should, because they record *why* a mechanism
    exists and the driving consumer is part of that history. Reference material is different — it
    ships to everyone as the description of the API.
+
+7. **The sibling package still passes, and its floor is part of the release.**
+   `attrecord-migrations` consumes the dialects, `TableSchema` and `ForeignKeyDefinition` directly,
+   so it is the first thing a schema-model change breaks — and it is a separate repository, so
+   nothing here tells you. Run its suite against the working tree before tagging:
+   ```bash
+   docker compose up -d                                 # its integration suites use THESE containers
+   composer test --working-dir=../attrecord-migrations   # expects the path repo to resolve ../attrecord
+   ```
+   Item 1's rule applies to this run too, and is easier to miss because the containers live in *this*
+   repo while the suite lives in that one: with them down it reports **208 tests, 4 skipped** instead
+   of **258, 0** — a green run that never touched MySQL or PostgreSQL.
+
+   It resolves this working tree through a gitignored `composer.local.json` (the
+   `wikimedia/composer-merge-plugin` setup). If `composer show nandan108/attrecord` there reports a
+   version you do not recognise, the path repo is not wired and the run is testing a **published**
+   attrecord instead — a green suite that says nothing about your change.
+
+   **Then decide what the release forces on it, and the rule is the version, not the diff:**
+
+   | This release | Consumers' `^0.x` floors | What to do |
+   |---|---|---|
+   | **patch** (0.23.0 → 0.23.1) | already admit it | nothing |
+   | **minor** (0.23.x → 0.24.0) | **do not** admit it | raise every floor in **one pass** |
+
+   Composer's caret treats the leftmost non-zero as the breaking axis, so on `0.x` a **minor behaves
+   like a major**: `^0.23` means `>=0.23.0 <0.24.0`. Two packages in one graph asking for `^0.23`
+   and `^0.24` are disjoint and the graph has no solution. So a minor forces a coordinated bump
+   across **every** consumer — `invflux-core`, `invflux-storage-mysql`, the adapter, **and
+   attrecord-migrations** — and attrecord must be **tagged first**, or their CI resolves `^0.24`
+   against a Packagist that does not have it yet.
+
+   **attrecord-migrations is the one that gets forgotten, because it is transitive**: it is not a
+   package anyone edits to adopt a new attrecord, it just sits in the middle constraining the graph.
+   > **Why this rule exists (2026-09-22):** the 0.22 pass raised attrecord's floor in the three
+   > direct consumers and left `attrecord-migrations` at `^0.9`, whose 0.9.0 required attrecord
+   > `^0.21`. Disjoint. Every local `composer install` kept working because the sibling **path
+   > repositories answer before Packagist**, so the break was invisible for three days and would
+   > have surfaced in CI or a distribution build. Verify a floor change by resolving it the way CI
+   > does — a scratch `composer.json` with only the published constraints and
+   > `composer update --dry-run` — never by the local tree being happy.
+
+   Its own bump is usually a **patch**: raising its attrecord floor is verified-backward-compatible
+   whenever the span it is forced over contains no break *for it*. 0.10.0 and 0.11.0 were minors
+   because theirs did (`SqlDialect::buildUpsertSql()`, then `ForeignKeyDefinition`); a release that
+   only adds optional parameters to a `final` class forces nothing and takes a patch.
 
 ## Cross-dialect gotchas (the running list — add to it every time one bites)
 
