@@ -2032,20 +2032,39 @@ binary values bind as ordinary byte strings exactly as any other string (so a cu
 reads decode the wire stream back to raw bytes. Net effect: a non-UTF-8 byte string round-trips
 correctly on all three engines, and nothing changes for a MySQL-only deployment.
 
-The one case that needs help is an **ad-hoc `WhereClause` predicate on a binary column**,
-where attrecord has no column metadata to drive the binding. On PostgreSQL and SQLite, wrap the
-value in `Nandan108\Attrecord\BinaryParam` so the session binds it as binary rather than text (on
-MySQL a plain byte string works, but wrapping is harmless):
+**Since v0.24.0 a structured `WhereClause` predicate wraps for you too**, because it does know the
+column — `where('uuid', $rawBytes)` keeps the column name beside the value, so the schema answers
+what the bytes are. Both of these are correct and equivalent:
+
+```php
+use Nandan108\Attrecord\WhereClause;
+
+Subject::find(WhereClause::where('uuid', $rawBytes));   // wrapped from the schema
+Subject::find(WhereClause::where('uuid', new BinaryParam($rawBytes)));   // explicit, still fine
+```
+
+That covers `where()`, `whereIn()`, `whereBetween()` and `whereInTuples()`, on every method that
+takes a `WhereClause` — `find`, `findOne`, `countWhere`, `existsWhere`, `sumWhere`, `updateWhere`,
+`deleteWhere` — as well as lookups by **primary key** (`getOne($rawBytes)`, `delete()`) and column
+writes (`save()`, `upsertAll()`).
+
+Two cases still need the explicit wrap:
 
 ```php
 use Nandan108\Attrecord\BinaryParam;
-use Nandan108\Attrecord\WhereClause;
+use Nandan108\Attrecord\RawSql;
 
-Subject::find(WhereClause::where('uuid', new BinaryParam($rawBytes)));
+// 1. A raw predicate carries no column association — nothing can be inferred.
+Subject::find(WhereClause::whereRaw(new RawSql('uuid = ?', [new BinaryParam($rawBytes)])));
+Subject::find('uuid = ?', [new BinaryParam($rawBytes)]);
+
+// 2. A binary column that has a caster. The auto-wrap skips those on purpose: a caster is written
+//    for the write path's PHP type, and applying it to an already-scalar predicate value would
+//    transform it rather than bind it.
 ```
 
-Binary lookups by **primary key** (`getOne($rawBytes)`, `delete()`) need no wrapping — the PK
-column type is known and the wrapping is applied for you.
+On MySQL none of this is required in either direction — `bindsBinaryAsLob()` is false there and a
+plain byte string binds correctly, so wrapping is merely harmless.
 
 ---
 

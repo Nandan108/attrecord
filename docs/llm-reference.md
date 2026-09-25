@@ -805,10 +805,25 @@ scalars is unaffected:
   bytes. The dirty snapshot for binary columns is taken from the decoded value (the stream is
   single-read).
 
-**When you must wrap manually:** an ad-hoc `WhereClause` predicate on a binary column has no
-column metadata, so on PostgreSQL pass `new BinaryParam($bytes)` as the value. PK lookups
-(`getOne`, `delete`) and column writes (`save`, `upsertAll`) wrap for you. On MySQL, a plain byte
-string works and wrapping is unnecessary (but harmless).
+**Wrapping is automatic wherever attrecord knows the column** (v0.24+). That is PK lookups
+(`getOne`, `delete`), column writes (`save`, `upsertAll`), **and structured `WhereClause`
+predicates** — `where()`, `whereIn()`, `whereBetween()`, `whereInTuples()` — through
+`WhereClause::params(?TableSchema, bool $bindBinaryAsLob)`, which every `Record` path calls via
+`Record::predicateParams()`. All seven `WhereClause` entry points (`find`, `findOne`, `countWhere`,
+`existsWhere`, `sumWhere`, `updateWhere`, `deleteWhere`) go through it.
+
+**When you must still wrap manually — two cases:**
+
+- **A raw predicate.** `whereRaw()` / `RawSql` carries no column association, so nothing can be
+  inferred; pass `new BinaryParam($bytes)`. Same for the raw-string `$params` of `find('x = ?', …)`,
+  whose type admits a `BinaryParam` as of v0.24.
+- **A binary column that has a caster.** The auto-wrap deliberately skips those: a caster is written
+  for the write path's PHP type, and applying it to an already-scalar predicate value would
+  transform it (a `JsonCaster` would re-encode it). Wrap explicitly there.
+
+A manual `BinaryParam` inside a *structured* predicate stays harmless — the auto-wrap only touches
+plain strings, so an already-wrapped value passes through untouched. On MySQL none of this is needed
+either way, since `bindsBinaryAsLob()` is false and a byte string binds correctly.
 
 ---
 
