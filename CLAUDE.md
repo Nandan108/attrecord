@@ -42,6 +42,11 @@ difference, not a style one.
 
 Generated SQL must be valid on **all three** engines. Known traps:
 
+> **This list is for divergence no version raise will fix** — differing NULL semantics, different
+> literal syntax, different quoting. A workaround that a *newer* MySQL/MariaDB/PostgreSQL/SQLite
+> would let us delete belongs in [docs/version-floor-debt.md](docs/version-floor-debt.md) instead,
+> so a floor raise finds it. Same rule for PHP-version workarounds.
+
 - **PostgreSQL `ON CONFLICT DO UPDATE SET`: a bare column is ambiguous** between the target table and
   the `EXCLUDED` pseudo-row (SQLSTATE 42702). The "existing value" reference must be **table-qualified**
   (`table.col`). `Record::stored()` / `UpsertColumn->stored` do this; hand-written upsert expressions

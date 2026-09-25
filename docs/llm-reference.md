@@ -13,10 +13,10 @@ prose and worked examples, and the topic docs in this directory for deep dives
   eager relation loading, deadlock-safe locking, and `CREATE TABLE` DDL emission.
 - **No runtime dependencies.** Psalm level 1 clean. Namespace root `Nandan108\Attrecord\`,
   PSR-4 from `src/`.
-- **Three supported SQL dialects: MySQL/MariaDB, PostgreSQL, and SQLite (>= 3.33).** A
+- **Three supported SQL dialects: MySQL/MariaDB, PostgreSQL, and SQLite (>= 3.35).** A
   `SqlDialect` abstraction isolates the differences; the same Record code runs on all three.
-  SQLite is a first-class target as of v0.2.0 (requires SQLite >= 3.33 for `UPDATE … FROM` in
-  the bulk-upsert join). See [§13 Dialect portability](#13-dialect-portability).
+  SQLite is a first-class target as of v0.2.0. Its floor is the later of two features: `UPDATE …
+  FROM` in the bulk-upsert join (3.33) and `RETURNING` for id back-fill (3.35). See [§13 Dialect portability](#13-dialect-portability).
 - **Constructor params with `?` are nullable; param order matches the listed constructor.**
   All attribute properties are `readonly`.
 - **Conventions.** Column SQL type comes from `ColumnType`; PHP property type is whatever you
@@ -411,7 +411,7 @@ Static finders:
 - `findOne(string|WhereClause $where, array $params = [], string $orderByLimit = 'LIMIT 1', bool $forUpdate = false): ?static`
 - `where(string $column, mixed $value, string $op = '='): RecordSet<static>` — column auto-quoted.
 - `whereIn(string|list<string> $column, array $values): RecordSet<static>` — single or composite.
-- `whereInTuples(array $columns, array $rows): RecordSet<static>` — row-value-constructor IN, rendered as `((c1, c2) IN ((?, ?), …))`. Dialect-independent; supported on all three backends (SQLite has row-value IN since 3.15, well under the 3.33 floor).
+- `whereInTuples(array $columns, array $rows): RecordSet<static>` — row-value-constructor IN, rendered as `((c1, c2) IN ((?, ?), …))`. Dialect-independent; supported on all three backends (SQLite has row-value IN since 3.15, well under the 3.35 floor).
 - `countWhere(string|WhereClause $where, array $params = []): int`
 - `sumWhere(string $column, string|WhereClause $where = '', array $params = []): int|float` (0 when none match) · `avgWhere(...): ?float` · `minWhere(...) / maxWhere(...): string|int|float|null` · `existsWhere(string|WhereClause $where = '', array $params = []): bool`. Empty `$where` aggregates the whole table; unknown column → `SchemaException`.
 - `updateWhere(array $set, string|WhereClause $where = '', array $params = []): int` — bulk UPDATE.
@@ -858,8 +858,8 @@ constructor args), `SqliteDialect` (see below). All three `use UpsertJoinBuilder
 mask/derived-table trait).
 
 ### `SqliteDialect` (v0.2.0)
-Third backend; requires **SQLite >= 3.33** (`UPDATE … FROM`) and 3.35+ for `RETURNING` id
-back-fill. Constructor:
+Third backend; requires **SQLite >= 3.35** — the later of `UPDATE … FROM` (3.33) and `RETURNING`
+id back-fill (3.35). `supportsReturning()` does not sniff the library, so 3.35 is a hard minimum. Constructor:
 ```php
 new SqliteDialect(
     ?string $journalMode = 'WAL',    // PRAGMA journal_mode; null leaves the default
@@ -1091,7 +1091,7 @@ All under `Nandan108\Attrecord\Exception`, extending `AttrecordException` (which
 
 ## 13. Dialect portability
 
-| Concern | MySQL / MariaDB | PostgreSQL | SQLite (>= 3.33) |
+| Concern | MySQL / MariaDB | PostgreSQL | SQLite (>= 3.35) |
 |---|---|---|---|
 | Identifier quoting | `` `backtick` `` | `"double-quote"` | `"double-quote"` |
 | Auto-increment PK | `BIGINT UNSIGNED AUTO_INCREMENT` + `lastInsertId()` | `BIGSERIAL` + `RETURNING` | `INTEGER PRIMARY KEY AUTOINCREMENT` (inline, no separate PK clause) + `RETURNING` |

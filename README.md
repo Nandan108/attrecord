@@ -1824,10 +1824,15 @@ $conn = new Connection(new PdoDbSession($pdo), new SqliteDialect());
 
 #### SQLite backend & connection hardening
 
-The SQLite dialect requires **SQLite >= 3.33** (2020-08), because its bulk upsert uses the
-`UPDATE … FROM` join form introduced in that release. Reading generated PKs back uses
-`RETURNING` (SQLite 3.35+), so a multi-row `upsertAll()` returns every inserted id rather than only
-the last rowid.
+The SQLite dialect requires **SQLite >= 3.35** (2021-03). Two features set that, and the floor is
+the later of them: the bulk upsert uses the `UPDATE … FROM` join form from **3.33**, and reading
+generated PKs back uses **`RETURNING`** from **3.35**, so a multi-row `upsertAll()` returns every
+inserted id rather than only the last rowid.
+
+`SqliteDialect::supportsReturning()` answers `true` unconditionally rather than sniffing the
+library, so 3.35 is a real minimum and not a soft one: on 3.33 or 3.34 the package installs, the
+bulk upsert works, and every read-back path fails as a syntax error. If you are pinned below 3.35,
+subclass the dialect and override that predicate — it is one of its four extension points.
 
 `Connection`'s constructor runs each of the dialect's `connectionInitStatements()` on the fresh
 session immediately, so a raw SQLite handle is brought to a sane baseline the moment you wrap it.

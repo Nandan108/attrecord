@@ -5,9 +5,10 @@ this file** — shipped behaviour is recorded in the code and the CHANGELOG, whi
 looks for what attrecord *does*. A backlog that also archives conclusions stops being a list of
 work and starts being a second, staler set of docs.
 
-Work deferred by *us* lives here. Work deferred by the **PHP version floor** — workarounds written
-only so 8.1 keeps parsing — lives in [php-floor-debt.md](php-floor-debt.md), because it is cleared
-by a different event.
+Work deferred by *us* lives here. Work held by a **version floor** — a workaround that exists only
+so some minimum PHP or database version keeps working — lives in
+[version-floor-debt.md](version-floor-debt.md), because it is cleared by a different event: a floor
+raise rather than a decision.
 
 ## DDL features not yet modelled by the producer
 
