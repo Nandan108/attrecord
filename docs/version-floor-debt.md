@@ -20,6 +20,14 @@ require a database one, so every engine floor is a claim in prose that nothing e
 how the SQLite one managed to be stated as two different numbers in six places at once (see its
 section). The table above is the single place to correct.
 
+**These floors drift *upward*, as support windows close** — so an entry here is a cost that expires
+on its own, and "raise the floor and delete this" is eventually free. Worth stating because it is
+not universal: a floor that was *deliberately lowered* to reach more installs buys reach with every
+entry below it, and there "raise it and delete this" is a product decision rather than a maintenance
+chore. The InvFlux adapter's PHP floor is that kind (lowered 8.3 → 8.1 for wp.org hosts); attrecord
+has none today. If one is ever lowered here, say so in this table, because the reader's default
+assumption is drift.
+
 ## What belongs here, and what does not
 
 The axis is **"a version raise deletes this code"**, not "this is about PHP" or "this is about a
@@ -135,10 +143,26 @@ PostgreSQL and SQLite always do. Our floor is MySQL 8.0, which includes the igno
 `#[Check]` on such a server is decoration — the DDL applies, nothing is validated, and no error says
 so.
 
-*On an 8.0.16 floor:* the caveat in `README.md` and the gotchas list becomes unnecessary, and
-`#[Check]` means the same thing on every supported engine. Nothing in `src/` changes — this is a
-documentation and expectations entry, which is why it is worth writing down: there is no code to
-grep for it.
+**This has a consumer with live exposure, found by the core-engine lane 2026-09-25 and verified
+here.** InvFlux declares five `#[Check]` constraints, all of them structural domain invariants:
+
+- `invflux-core` `Order/OrderLine.php` — `ref_or_parent`
+- `invflux-core` `Subject/Subject.php` — `tracking_unit_only`, `batch_has_parent`,
+  `aggregate_is_root`, `cost_grain_needs_tracking`
+
+and the adapter's declared floor is `DbVersionCheck::MIN_MYSQL_VERSION = '8.0.0'` — *inside* the
+ignoring range. So on MySQL 8.0.0–8.0.15 those five invariants are absent while the schema reports
+itself satisfied. **MariaDB is unaffected**: that floor is `MIN_MARIADB_VERSION = '10.6.0'`, above
+the 10.2.1 enforcement point. The gap is MySQL-only and 15 patch releases wide.
+
+*Correcting what this entry said before:* there **is** a grep for it — `git grep '#\[Check('` — it
+simply has to be run in the *consumer*, because attrecord provides the attribute and never uses it.
+An entry about a library feature should name where the feature is *used*, not only where it is
+defined.
+
+*The lever is not here either.* Raising `MIN_MYSQL_VERSION` to `8.0.16` is the adapter's decision to
+make and costs it whatever hosts sit in those 15 releases. attrecord's part is to state the
+mechanism precisely; the consumer's copy of this doc names the owner and the trade.
 
 ---
 
@@ -169,9 +193,18 @@ shaped around them: row-value `IN` (3.15), `ON CONFLICT DO NOTHING` (3.24), `REN
 
 ---
 
-## Watch, not debt
+## Settled — do not re-litigate
 
-**PHP 9 turns dynamic property creation into an `Error`** (deprecated in 8.2). attrecord no longer
-creates one — `RecordSet` assigning an attribute key that names no column was fixed precisely
-because it was both a silent-typo bug and an upgrade blocker. Recorded here only so a future reader
-does not go looking: there is nothing left to pay.
+Entries whose answer is "this costs nothing, stop checking". They are here because each one *looks*
+like debt and gets re-opened every few months by whoever notices it next; a line here is cheaper
+than re-deriving the answer. Distinct from **out of scope** above: these are in scope and already
+paid.
+
+**The floor is already above what the feature needs.** Row-value `IN` (SQLite 3.15),
+`ON CONFLICT DO NOTHING` (3.24), `RENAME COLUMN` (3.25) all sit well under the 3.35 floor. Nothing
+is shaped around them and no guard is needed.
+
+**The code was changed, so the constraint no longer bites.** PHP 9 turns dynamic property creation
+into an `Error` (deprecated in 8.2), and attrecord no longer creates one — `RecordSet` assigning an
+attribute key that names no column was fixed precisely because it was both a silent-typo bug and an
+upgrade blocker. Nothing left to pay.
