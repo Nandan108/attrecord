@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Nandan108\Attrecord;
 
+use Nandan108\Attrecord\Schema\TableSchema;
+
 // ---- Internal node types ---------------------------------------------------
 // Implementation details of WhereClause — not part of the public API.
 
@@ -346,14 +348,51 @@ final class WhereClause
      * footgun. Normalizing here (the single param boundary) keeps that value symmetric with what a
      * bool column serializes to on write, without any column-cast introspection.
      *
-     * @return list<int|float|string|null>
+     * ## Binary columns (v0.24+)
+     *
+     * Given a schema and a dialect that {@see SqlDialect::bindsBinaryAsLob()}, a value compared
+     * against a **binary column** is wrapped in a {@see BinaryParam} — the same type-driven marking
+     * the write path already does, extended to predicates. Without it, `where('order_id', $bytes)`
+     * binds raw bytes as a text parameter: PostgreSQL rejects that outright ("Character not in
+     * repertoire") and a translator layer may quietly match nothing.
+     *
+     * **This wraps; it deliberately does not serialize.** Routing predicate values through
+     * `ColumnSerializer::toParam()` would re-apply the column's *caster*, and casters are written
+     * for the PHP-typed values of the write path, not for the already-scalar value a predicate
+     * carries — a `JsonCaster` would re-encode `'active'` to `'"active"'` and match nothing, and an
+     * `EnumCaster` expects a backed enum this signature cannot even accept. So the wrap is narrow
+     * on purpose: a binary column, **no caster**, and a string value. Everything else passes
+     * through byte-identical, which is what keeps the bool normalization above the only
+     * column-independent transformation here.
+     *
+     * A column the schema does not declare — a joined table's, or an alias — passes through
+     * untouched rather than throwing. And a {@see RawSql} predicate carries no column association
+     * at all, so its parameters are never wrapped; bind a `BinaryParam` explicitly there.
+     *
+     * @param TableSchema|null $schema          the schema the predicate's columns belong to; without it nothing is wrapped
+     * @param bool             $bindBinaryAsLob from {@see SqlDialect::bindsBinaryAsLob()}
+     *
+     * @return list<int|float|string|BinaryParam|null>
      */
-    public function params(): array
+    public function params(?TableSchema $schema = null, bool $bindBinaryAsLob = false): array
     {
-        return array_map(
-            static fn (int | float | string | bool | null $v): int | float | string | null => \is_bool($v) ? (int) $v : $v,
-            self::collectParams($this->node),
-        );
+        $out = [];
+        foreach (self::collectPairs($this->node) as [$value, $col]) {
+            if (\is_bool($value)) {
+                $value = (int) $value;
+            }
+
+            if ($bindBinaryAsLob && null !== $schema && null !== $col && \is_string($value)) {
+                $def = $schema->columns[$col] ?? null;
+                if (null !== $def && $def->isBinary && null === $def->caster) {
+                    $value = new BinaryParam($value);
+                }
+            }
+
+            $out[] = $value;
+        }
+
+        return $out;
     }
 
     // -----------------------------------------------------------------
@@ -461,25 +500,54 @@ final class WhereClause
     /**
      * @return list<scalar|null>
      */
-    private static function collectParams(WhereNode $node): array
+    /**
+     * Every bound value in positional order, each paired with the column it is compared against —
+     * or `null` where there is none to know.
+     *
+     * The pairing is what lets {@see params()} mark a binary value from the schema instead of
+     * guessing from the bytes. Order is the contract: it must stay identical to the `?` placeholders
+     * {@see renderNode()} emits, so each arm mirrors its renderer.
+     *
+     * Four node kinds carry a column association and all four are handled — a value compared
+     * (`Leaf`), a range (`Between`, whose two bounds share one column), a list (`In`), and a tuple
+     * list (`InTuples`, where each row's values pair **positionally** with `$cols`; that is the
+     * composite-key `(a, b) IN ((…), …)` form). `Raw` deliberately yields `null` columns: its SQL is
+     * opaque here, so nothing can be inferred about what its parameters are compared to.
+     *
+     * @return list<array{0: scalar|null, 1: string|null}>
+     */
+    private static function collectPairs(WhereNode $node): array
     {
         return match (true) {
-            $node instanceof WhereNode_Leaf     => null !== $node->value ? [$node->value] : [],
-            $node instanceof WhereNode_In       => $node->values,
+            $node instanceof WhereNode_Leaf     => null !== $node->value ? [[$node->value, $node->col]] : [],
+            $node instanceof WhereNode_In       => array_map(
+                static fn (int | float | string | bool | null $v): array => [$v, $node->col],
+                $node->values,
+            ),
             $node instanceof WhereNode_InTuples => empty($node->rows)
                 ? []
-                : array_merge(...$node->rows),
-            $node instanceof WhereNode_Raw      => $node->raw->params,
+                : array_merge(...array_map(
+                    static fn (array $row): array => array_map(
+                        static fn (int | float | string | bool | null $v, int $i): array => [$v, $node->cols[$i] ?? null],
+                        $row,
+                        array_keys($row),
+                    ),
+                    $node->rows,
+                )),
+            $node instanceof WhereNode_Raw      => array_map(
+                static fn (mixed $v): array => [$v, null],
+                $node->raw->params,
+            ),
             $node instanceof WhereNode_Compound => empty($node->parts)
                 ? []
                 : array_merge(
                     ...array_map(
-                        fn (WhereClause $c): array => self::collectParams($c->node),
+                        fn (WhereClause $c): array => self::collectPairs($c->node),
                         $node->parts,
                     ),
                 ),
-            $node instanceof WhereNode_Between  => [$node->low, $node->high],
-            $node instanceof WhereNode_Not      => self::collectParams($node->child->node),
+            $node instanceof WhereNode_Between  => [[$node->low, $node->col], [$node->high, $node->col]],
+            $node instanceof WhereNode_Not      => self::collectPairs($node->child->node),
             default                             => throw new \LogicException('Unknown WhereNode type: '.get_debug_type($node)),
         };
     }

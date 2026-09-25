@@ -421,12 +421,12 @@ abstract class Record
      *
      * @api
      *
-     * @param string|WhereClause            $where        Optional WHERE clause (no "WHERE" keyword).
-     *                                                    Accepts a raw SQL string (with ? or :named
-     *                                                    placeholders) or a WhereClause builder instance.
-     * @param array<array-key, scalar|null> $params       ignored when $where is a WhereClause
-     * @param string                        $orderByLimit optional ORDER BY / LIMIT / OFFSET clause
-     * @param bool                          $forUpdate    issue SELECT … FOR UPDATE
+     * @param string|WhereClause                        $where        Optional WHERE clause (no "WHERE" keyword).
+     *                                                                Accepts a raw SQL string (with ? or :named
+     *                                                                placeholders) or a WhereClause builder instance.
+     * @param array<array-key, scalar|BinaryParam|null> $params       ignored when $where is a WhereClause
+     * @param string                                    $orderByLimit optional ORDER BY / LIMIT / OFFSET clause
+     * @param bool                                      $forUpdate    issue SELECT … FOR UPDATE
      *
      * @return RecordSet<static> a RecordSet of instances of the called class (never empty, even if no matches)
      */
@@ -438,7 +438,7 @@ abstract class Record
         ?Transaction $tx = null,
     ): RecordSet {
         if ($where instanceof WhereClause) {
-            $params = $where->params();
+            $params = static::predicateParams($where);
             $where = $where->render(static::connection()->dialect);
         }
 
@@ -482,7 +482,7 @@ abstract class Record
      *
      * @api
      *
-     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     * @param array<array-key, scalar|BinaryParam|null> $params ignored when $where is a WhereClause
      *
      * @psalm-suppress MoreSpecificReturnType, LessSpecificReturnStatement
      */
@@ -615,12 +615,12 @@ abstract class Record
     /**
      * @api
      *
-     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     * @param array<array-key, scalar|BinaryParam|null> $params ignored when $where is a WhereClause
      */
     public static function countWhere(string | WhereClause $where, array $params = []): int
     {
         if ($where instanceof WhereClause) {
-            $params = $where->params();
+            $params = static::predicateParams($where);
             $where = $where->render(static::connection()->dialect);
         }
         ['sql' => $normSql, 'params' => $normParams] = NamedPlaceholderSql::positional($where, $params);
@@ -635,7 +635,7 @@ abstract class Record
      *
      * @api
      *
-     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     * @param array<array-key, scalar|BinaryParam|null> $params ignored when $where is a WhereClause
      */
     public static function sumWhere(string $column, string | WhereClause $where = '', array $params = []): int | float
     {
@@ -656,7 +656,7 @@ abstract class Record
      *
      * @api
      *
-     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     * @param array<array-key, scalar|BinaryParam|null> $params ignored when $where is a WhereClause
      */
     public static function avgWhere(string $column, string | WhereClause $where = '', array $params = []): ?float
     {
@@ -670,7 +670,7 @@ abstract class Record
      *
      * @api
      *
-     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     * @param array<array-key, scalar|BinaryParam|null> $params ignored when $where is a WhereClause
      */
     public static function minWhere(string $column, string | WhereClause $where = '', array $params = []): string | int | float | null
     {
@@ -682,7 +682,7 @@ abstract class Record
      *
      * @api
      *
-     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     * @param array<array-key, scalar|BinaryParam|null> $params ignored when $where is a WhereClause
      */
     public static function maxWhere(string $column, string | WhereClause $where = '', array $params = []): string | int | float | null
     {
@@ -694,13 +694,13 @@ abstract class Record
      *
      * @api
      *
-     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     * @param array<array-key, scalar|BinaryParam|null> $params ignored when $where is a WhereClause
      */
     public static function existsWhere(string | WhereClause $where = '', array $params = []): bool
     {
         $schema = static::schema();
         if ($where instanceof WhereClause) {
-            $params = $where->params();
+            $params = static::predicateParams($where);
             $where = $where->render(static::connection()->dialect);
         }
         ['sql' => $normSql, 'params' => $normParams] = NamedPlaceholderSql::positional($where, $params);
@@ -716,7 +716,7 @@ abstract class Record
      * Run a single-column SQL aggregate (`SUM`/`AVG`/`MIN`/`MAX`) over matching rows and return the
      * raw scalar. Empty `$where` aggregates the whole table.
      *
-     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     * @param array<array-key, scalar|BinaryParam|null> $params ignored when $where is a WhereClause
      */
     private static function aggregateWhere(string $func, string $column, string | WhereClause $where, array $params): string | int | float | null
     {
@@ -725,7 +725,7 @@ abstract class Record
             throw new SchemaException(sprintf('%sWhere: unknown column "%s" on %s.', strtolower($func), $column, static::class));
         }
         if ($where instanceof WhereClause) {
-            $params = $where->params();
+            $params = static::predicateParams($where);
             $where = $where->render(static::connection()->dialect);
         }
         ['sql' => $normSql, 'params' => $normParams] = NamedPlaceholderSql::positional($where, $params);
@@ -776,10 +776,10 @@ abstract class Record
      *
      * @api
      *
-     * @param array<string, mixed>          $set    Column name → value pairs to write
-     * @param string|WhereClause            $where  WHERE clause (? or :named placeholders), or a WhereClause instance;
-     *                                              empty = update all rows
-     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     * @param array<string, mixed>                      $set    Column name → value pairs to write
+     * @param string|WhereClause                        $where  WHERE clause (? or :named placeholders), or a WhereClause instance;
+     *                                                          empty = update all rows
+     * @param array<array-key, scalar|BinaryParam|null> $params ignored when $where is a WhereClause
      *
      * @return int Affected row count
      *
@@ -795,7 +795,7 @@ abstract class Record
         $session = $conn->session;
 
         if ($where instanceof WhereClause) {
-            $params = $where->params();
+            $params = static::predicateParams($where);
             $where = $where->render($dialect);
         }
         ['sql' => $normWhere, 'params' => $normParams] = NamedPlaceholderSql::positional($where, $params);
@@ -1003,7 +1003,7 @@ abstract class Record
     /**
      * @api
      *
-     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
+     * @param array<array-key, scalar|BinaryParam|null> $params ignored when $where is a WhereClause
      *
      * @return int Number of deleted rows
      */
@@ -1011,7 +1011,7 @@ abstract class Record
     {
         self::assertNotAppendOnly('deleteWhere()');
         if ($where instanceof WhereClause) {
-            $params = $where->params();
+            $params = static::predicateParams($where);
             $where = $where->render(static::connection()->dialect);
         }
         ['sql' => $normSql, 'params' => $normParams] = NamedPlaceholderSql::positional($where, $params);
@@ -2067,12 +2067,12 @@ abstract class Record
      *
      * @api
      *
-     * @param string|WhereClause            $where  WHERE clause (? or :named placeholders), or a WhereClause instance;
-     *                                              empty = update all rows
-     * @param array<array-key, scalar|null> $params ignored when $where is a WhereClause
-     * @param list<string>                  $fields Columns to include in SET. If empty, all non-null
-     *                                              non-PK non-autoIncrement columns are updated.
-     *                                              Pass an explicit list to update columns to null.
+     * @param string|WhereClause                        $where  WHERE clause (? or :named placeholders), or a WhereClause instance;
+     *                                                          empty = update all rows
+     * @param array<array-key, scalar|BinaryParam|null> $params ignored when $where is a WhereClause
+     * @param list<string>                              $fields Columns to include in SET. If empty, all non-null
+     *                                                          non-PK non-autoIncrement columns are updated.
+     *                                                          Pass an explicit list to update columns to null.
      *
      * @return int Affected row count
      *
@@ -2087,7 +2087,7 @@ abstract class Record
         $session = $conn->session;
 
         if ($where instanceof WhereClause) {
-            $params = $where->params();
+            $params = static::predicateParams($where);
             $where = $where->render($dialect);
         }
 
@@ -2476,6 +2476,25 @@ abstract class Record
         }
 
         return $values;
+    }
+
+    /**
+     * Bind a structured predicate's values, marking binary columns the way the key path does.
+     *
+     * The counterpart of {@see pkParams()} for everything addressed by a `WhereClause` rather than
+     * by key. Without it a predicate on a binary column — `where('order_id', $bytes)` — binds raw
+     * bytes as text, which PostgreSQL rejects outright and a translator layer may quietly match
+     * nothing against; whereas the same bytes in a *key* have always been wrapped. The asymmetry was
+     * the bug.
+     *
+     * Every `WhereClause` path routes through here rather than calling `params()` directly, so the
+     * seven read and write methods that accept one cannot drift apart on this.
+     *
+     * @return list<int|float|string|BinaryParam|null>
+     */
+    private static function predicateParams(WhereClause $where): array
+    {
+        return $where->params(static::schema(), static::connection()->dialect->bindsBinaryAsLob());
     }
 
     /**

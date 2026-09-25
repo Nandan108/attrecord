@@ -6,6 +6,64 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-09-25
+
+**A binary value in a predicate is now marked the way a binary value in a key always was.**
+
+`Record::getOne($bytes)` has always bound a binary key through `pkParams()`, which wraps it in a
+`BinaryParam`. `Record::find(WhereClause::where('order_id', $bytes))` did not — the same bytes, in
+the same table, in the same request, marked as a key and unmarked as a condition. On PostgreSQL the
+unmarked form draws `SQLSTATE[22021] Character not in repertoire` from PDO_pgsql; through a
+MySQL-shaped translator over another engine it quietly matches nothing.
+
+**This was a live PostgreSQL bug, not an accommodation for anything exotic.** It survived because
+every binary integration case addressed rows *by primary key* — the one path that already worked.
+Nothing asked the other question, so nothing answered it wrong.
+
+### Fixed
+
+- **`WhereClause::params()` marks binary values from the schema.** It takes two new optional
+  arguments — the `TableSchema` the predicate's columns belong to, and
+  `SqlDialect::bindsBinaryAsLob()`. Called bare, as before, nothing is wrapped and behaviour is
+  unchanged.
+
+  **It wraps; it deliberately does not serialize.** Routing predicate values through
+  `ColumnSerializer::toParam()` would re-apply the column's *caster*, and casters are written for
+  the PHP-typed values of the write path, not the already-scalar value a predicate carries —
+  measured against this package's own fixtures, a `JsonCaster` turns `'active'` into `'"active"'`
+  (silently matching nothing) and `EnumCaster`/`EpochCaster` assert on types the signature cannot
+  even accept. So the wrap is narrow: a binary column, **no caster**, a string value. Everything
+  else passes through byte-identical.
+
+  A column the schema does not declare — a joined table's, an alias — passes through rather than
+  throwing. A `RawSql` predicate carries no column association, so its parameters are never
+  wrapped; bind a `BinaryParam` explicitly there, as `BinaryParam`'s docblock has always said.
+
+- **All four structured node kinds are covered**, not just the simple comparison: a value (`Leaf`),
+  a range (`Between`, whose bounds share a column), a list (`In`), and a tuple list (`InTuples`,
+  where each row pairs positionally with the column list). That last is the composite-key
+  `(a, b) IN ((…), …)` form, so a table keyed on a pair is handled rather than left as the one
+  broken case among fixed ones.
+
+- **All seven `WhereClause` entry points**, via one `Record::predicateParams()` helper: `find()`,
+  `findOne()`, `countWhere()`, `existsWhere()`, `sumWhere()`, `updateWhere()` and `deleteWhere()`.
+  Two were reported; the other five had the identical bug and would have surfaced one at a time.
+
+### Changed
+
+- **The predicate `$params` type admits a `BinaryParam`** — `array<array-key, scalar|BinaryParam|null>`
+  across the twelve methods that take raw-string predicate parameters. `DbSession` has accepted one
+  since the wrapper existed, so the narrower signature forbade exactly what `BinaryParam`'s own
+  docblock instructs callers to do for a raw predicate, and static analysis rejected every such call
+  with `ImplicitToStringCast`. Additive and runtime-neutral.
+
+### Testing
+
+- **A binary column that is not a key** now has integration coverage on all three engines —
+  `find`, `countWhere`, `whereIn`, `updateWhere`, `deleteWhere` and a round-trip. Verified to be
+  discriminating rather than decorative: with the wrap disabled, all six cases fail on PostgreSQL
+  with the `Character not in repertoire` error above.
+
 ## [0.23.1] - 2026-09-24
 
 **The dialects are subclassable, and only their capability answers are.**
@@ -1501,7 +1559,8 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.23.1...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/Nandan108/attrecord/compare/v0.23.1...v0.24.0
 [0.23.1]: https://github.com/Nandan108/attrecord/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/Nandan108/attrecord/compare/v0.22.1...v0.23.0
 [0.22.1]: https://github.com/Nandan108/attrecord/compare/v0.22.0...v0.22.1
