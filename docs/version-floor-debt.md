@@ -160,9 +160,19 @@ simply has to be run in the *consumer*, because attrecord provides the attribute
 An entry about a library feature should name where the feature is *used*, not only where it is
 defined.
 
-*The lever is not here either.* Raising `MIN_MYSQL_VERSION` to `8.0.16` is the adapter's decision to
-make and costs it whatever hosts sit in those 15 releases. attrecord's part is to state the
-mechanism precisely; the consumer's copy of this doc names the owner and the trade.
+**MySQL is not SemVer, which is why this gap can exist at all.** The obvious reading — "8.0.16 is a
+patch, so any `^8.0` host is at or past it" — would be sound under SemVer and is not sound here.
+Oracle ran the 8.0 series on a continuous-delivery model in which the third position shipped **new
+features**: `CHECK` enforcement arrived in 8.0.16, the `VALUES(col)` deprecation and its replacement
+row alias in 8.0.20. So a version in the supported range can genuinely lack a capability a later one
+in the *same* range has, and no constraint syntax expresses that.
+
+*The lever is not here.* Raising `MIN_MYSQL_VERSION` to `8.0.16` is the adapter's decision — but it
+is a cheap one, and this entry previously implied otherwise. The exposed band is 8.0.0–8.0.15, one
+year wide (2018-04 to 2019-04) and closed seven years ago; and `DbVersionCheck` **does not
+hard-block**, by design — an unsupported engine gets an `Unresolvable` diagnostic with an upgrade
+path rather than a refused activation. So the raise locks nobody out. It changes which installs see
+a notice, and it makes `#[Check]` mean the same thing on every engine the project claims to support.
 
 ---
 
