@@ -50,7 +50,7 @@ attrecord's *typed, schema-authoring, contention-hardened* design diverges from 
 | Pattern | Active Record | Active Record | Data Mapper | Active Record |
 | Framework coupling | Standalone, framework-agnostic | Standalone, framework-agnostic | Standalone (Symfony-friendly) | Laravel-native (standalone via `illuminate/database`) |
 | Runtime dependencies | **None** | **None** (PDO ext) | Several (DBAL, …) | `illuminate/*` |
-| Install footprint (`vendor/`) | **1 package · ~458 KB** | 1 package · ~280 KB | ~22 packages · ~1.6 MB | ~26 packages · ~2.3 MB |
+| Install footprint (`vendor/`) | **1 package · ~587 KB** | 1 package · ~280 KB | ~22 packages · ~1.6 MB | ~26 packages · ~2.3 MB |
 | Schema mapping | PHP 8 attributes only | **Introspected from the live DB** (no code mapping) | Attributes / XML / YAML | Conventions (schema lives in migrations, not the model) |
 | Column access / typing | **Typed properties** (psalm-checked) | Dynamic `__get`/`__set` (magic) | Typed properties | Dynamic `$attributes` (magic) |
 | Schema changes | Emits `CREATE TABLE` from attributes; **declarative convergence** (diff the live DB against the attributes, apply a classified plan — no migration files) via the optional `attrecord-migrations` companion, kept out of core on purpose | None — the DB *is* the source; no DDL/migrations | `doctrine/migrations` | Laravel migrations |
@@ -67,14 +67,14 @@ attrecord's *typed, schema-authoring, contention-hardened* design diverges from 
 
 <sub>attrecord and php-activerecord ship as a **single package with zero runtime dependencies**
 (php-activerecord needs a PDO driver extension); their figures are shipped source — attrecord `src/`
-≈ 458 KB at v0.16.0 across 68 files, php-activerecord `lib/` ≈ 280 KB. A large share of attrecord's
-raw figure is prose: 45% of those bytes are comments, leaving ~252 KB of code — so it compresses to
-**143 KB zipped**, and the whole `composer require` download (adding README + LICENSE +
-composer.json) is **~176 KB zipped**. All four columns are uncompressed on-disk sizes, which is the
+≈ 587 KB at v0.24.0 across 85 files, php-activerecord `lib/` ≈ 280 KB. A large share of attrecord's
+raw figure is prose: 48% of those bytes are comments, leaving ~303 KB of code — so it compresses to
+**~193 KB zipped**, and the whole `composer require` download (adding README + LICENSE +
+composer.json) is **~232 KB zipped**. All four columns are uncompressed on-disk sizes, which is the
 number that matters for a `vendor/` directory; the zipped figures are attrecord's alone and are not
 a comparison. The optional
-[attrecord-migrations](https://github.com/Nandan108/attrecord-migrations) companion adds ~143 KB of
-source (~64 KB as a `composer require` download) for consumers who want schema convergence. The dependency points one way — it
+[attrecord-migrations](https://github.com/Nandan108/attrecord-migrations) companion adds ~202 KB of
+source at v0.11.1 (~88 KB as a `composer require` download) for consumers who want schema convergence. The dependency points one way — it
 requires attrecord, not the reverse — so `composer require nandan108/attrecord` never brings it
 along; you get it only by asking for it.
 Doctrine and Eloquent figures are a full `composer require --prefer-dist` install **including their
