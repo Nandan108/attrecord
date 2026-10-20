@@ -27,6 +27,14 @@ namespace Nandan108\Attrecord\Enum;
  * protection has no grip. Reachability is correspondingly narrow — two writers, the same key,
  * overlapping in time — which is why it stays latent under single-writer flows.
  *
+ * **Measured, not inferred** (2026-10-20): `tests/Manual/upsert-same-key-deadlock.php` reproduces it
+ * on demand and shows `Lockless` surviving the identical interleaving. Error 1213 on the `FOR UPDATE`
+ * under `Locked`, both sessions committing under `Lockless`, on **MariaDB 10.11.14, MySQL 8.4.10 and
+ * MariaDB 11.8.6**. Which session is chosen as the victim varies by engine and is no part of the
+ * claim. The reproduction needs two processes: both sessions must hold S *before* either asks for X,
+ * and a single-threaded script blocks on the first `FOR UPDATE`, yielding a lock-wait timeout (1205)
+ * rather than a deadlock — a near miss that looks like the same thing and is not.
+ *
  * Callers who expect same-key concurrency should either wrap the call in a transaction-retry
  * decorator ({@see \Nandan108\Attrecord\Session\RetryingDbSession}, whose retry is what makes a
  * transient 1213 a non-event) or, for a homogeneous PK-keyed single-row write where the caveats
