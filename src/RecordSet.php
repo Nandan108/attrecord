@@ -268,6 +268,15 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
      * table use {@see insertAll()} instead — this method's keyed path upserts (INSERT IGNORE +
      * update), which silently absorbs a duplicate-PK collision.
      *
+     * **"Deadlock-safe" above means lock-order-safe, and there is one shape it does not cover:
+     * two writers upserting the SAME EXISTING key at the same time.** Step 1 leaves a *shared* lock
+     * on a row that already exists and step 2 asks for *exclusive* on it, so both sessions hold S
+     * and both wait for X — a lock-*conversion* deadlock, which ordering cannot prevent because a
+     * single key has no order to impose. Reachable only with overlapping same-key writers, which is
+     * why it stays latent under single-writer flows. For that shape, and when the trade-offs there
+     * are harmless, {@see UpsertStrategy::Lockless} has no S→X step to convert — read the enum
+     * before switching; it has the full analysis and the caveats.
+     *
      * @param bool                                          $force                      upsert even records that dirty-tracking reports as clean
      * @param int|null                                      $chunkSize                  when non-null, split the write into $chunkSize-row transactions that
      *                                                                                  **commit independently** — bounds the lock/undo footprint for very

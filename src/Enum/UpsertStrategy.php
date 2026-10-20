@@ -32,6 +32,20 @@ namespace Nandan108\Attrecord\Enum;
  * transient 1213 a non-event) or, for a homogeneous PK-keyed single-row write where the caveats
  * below are all harmless, consider `Lockless` — whose single statement has no S→X step to convert.
  *
+ * **Retry is not a substitute when the contending requests overlap for longer than they retry.**
+ * Observed 2026-10-19 in a consumer: two ~10-second requests upserting one subscription row
+ * deadlocked, and all three `RetryingDbSession` attempts lost as well, because each retry re-entered
+ * the same window the other request was still holding. Retry converts a *transient* conflict into a
+ * non-event; it cannot drain a conflict that outlives it. Where the overlap is structural — a slow
+ * read path that re-upserts the same key on every request — take the exclusive lock in one statement
+ * instead of retrying a conversion.
+ *
+ * **A single-row `Lockless` upsert can also serialize the rest of its transaction**, which is
+ * occasionally the point rather than a side effect: the `ON DUPLICATE KEY UPDATE` takes X on the
+ * contended row immediately and holds it to commit, so a second session blocks there rather than
+ * interleaving with the writes that follow. A parent-then-children write ordered that way protects
+ * the children too, without their own ordered locking having to.
+ *
  * `Lockless` — one single-statement `INSERT … VALUES (…),(…) ON DUPLICATE KEY UPDATE …`
  * (MySQL/MariaDB) / `… ON CONFLICT (pk) DO UPDATE SET …` (PostgreSQL/SQLite) — the engine's own
  * upsert, with **no** `SELECT … FOR UPDATE`. Taking no row locks is the point (hence the name), and
