@@ -239,8 +239,7 @@ the schema cache so subsequent operations see the new prefix.
 `blog_`, or a platform cutover running two hosts against one database during the transition. This
 works because foreign-key constraint names carry a fixed-width digest of the prefix
 (`fk_ec2dc5_orders_customer_id` under `wp_`): InnoDB scopes constraint names per *database*, not per
-table, so without it the second install's `CREATE TABLE` fails with errno 121. **Before 0.16.0 that
-configuration silently did not work**, despite the multi-tenant use advertised above.
+table, so without it the second install's `CREATE TABLE` fails with errno 121.
 
 **On PostgreSQL, use a schema per install instead.** The prefix is not enough there: index and
 unique-key names are ones you choose and live in the schema-wide relation namespace, so a second

@@ -97,6 +97,33 @@ difference, not a style one.
    because theirs did (`SqlDialect::buildUpsertSql()`, then `ForeignKeyDefinition`); a release that
    only adds optional parameters to a `final` class forces nothing and takes a patch.
 
+8. **Shipped prose is present-tense — no change-log in the docs or the docblocks.** `README.md`,
+   `docs/`, and every comment that ships describe what the library **does now**. Our release history
+   lives in `CHANGELOG.md` and in git, and a reader meeting a sentence about a version they do not run
+   cannot do anything with it — they were reading to learn the mechanism and got handed our past
+   instead.
+
+   **The test is not the vocabulary, it is whether a reader can still encounter the thing.** Words
+   like "no longer", "formerly" and "before 0.x" are *mostly* legitimate here, which is why this is an
+   authoring rule and not a grep:
+
+   | Keep | Because |
+   | --- | --- |
+   | "hold a reader for the length of a request and no longer" | ordinary English; a present constraint |
+   | "not a valid constant expression before 8.2" | a present fact about **PHP**, live while our floor is 8.1 |
+   | "Formerly named `saveAll()`, kept as a `@deprecated` alias" | `saveAll()` **still exists**; a reader who finds it in their code needs this |
+
+   | Cut | Because |
+   | --- | --- |
+   | "Before 0.16.0 that configuration silently did not work" | nobody runs 0.16.0 and the bug is gone |
+
+   Rationale that guards a regression is welcome — phrase it as a **present constraint** ("InnoDB
+   scopes constraint names per database, so the digest is required"), never as what we changed.
+
+   > **Why this rule is here (2026-10-20):** the owner removed that last sentence by hand, from the
+   > middle of the paragraph explaining prefix-scoped constraint naming. The rule existed in the
+   > consumer's `CLAUDE.md` and not in ours, so it was being applied to attrecord prose from outside.
+
 ## Cross-dialect gotchas (the running list — add to it every time one bites)
 
 Generated SQL must be valid on **all three** engines. Known traps:
