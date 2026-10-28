@@ -25,9 +25,9 @@ The same three checks run in CI; please make sure all pass before opening a PR.
 # Unit tests (no database needed)
 composer test -- --testsuite unit
 
-# Integration tests against MySQL/MariaDB + PostgreSQL
+# Integration tests against MySQL/MariaDB + PostgreSQL + SQLite
 docker compose up -d
-composer test                       # unit + integration, both backends
+composer test                       # unit + integration, all three backends
 
 # Static analysis (must be zero errors)
 composer psalm
@@ -47,9 +47,15 @@ PostgreSQL tests skip (rather than fail) when no PostgreSQL server is reachable.
   (`.php-cs-fixer.php`). Run `composer cs-fix` before committing.
 - **Static analysis:** Psalm at level 1 — keep it clean. Prefer precise type annotations over
   `@psalm-suppress`; reserve suppressions for cases the type system genuinely can't express.
-- **Tests:** new behaviour needs coverage. Behaviour that must hold on both engines belongs in a
-  shared `…Cases` trait under `tests/Integration/Cases/` (it then runs on MySQL and PostgreSQL);
-  backend-specific SQL-shape assertions live in the per-backend concrete class.
+- **Tests:** new behaviour needs coverage. Behaviour that must hold on every engine belongs in a
+  shared `…Cases` trait under `tests/Integration/Cases/`, used by one thin concrete class per
+  backend, so it runs on MySQL, PostgreSQL **and** SQLite; backend-specific SQL-shape assertions
+  live in the per-backend concrete class. Give the trait both
+  `@phpstan-require-extends \PHPUnit\Framework\TestCase` and
+  `@phpstan-require-implements \Nandan108\Attrecord\Tests\Support\BackendIntegrationTest` — the
+  three backend bases share no parent below `TestCase`, so the marker interface is what lets psalm
+  check that only a backend test uses the trait. (A union in `require-extends` does not work: it
+  names one class.)
 - **Commits:** conventional-commit style (`feat:`, `fix:`, `docs:`, `test:`, …) with a clear body.
 
 ## Scope

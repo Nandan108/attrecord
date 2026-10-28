@@ -20,6 +20,17 @@ difference, not a style one.
    > CI (which runs PG) caught them after tag+push. A red release is far more expensive than
    > `docker compose up -d`. **Never tag/push/GH-release until the full matrix is green locally.**
 2. **Static analysis** — `composer psalm` must produce **zero** errors (psalm level 1).
+   **Before a release, refresh the tools first:**
+   `composer update vimeo/psalm friendsofphp/php-cs-fixer --with-dependencies`. `composer.lock` is
+   gitignored, so CI installs the newest psalm and php-cs-fixer the constraints allow on every run,
+   while a local `vendor/` stays wherever it was last updated — a clean local run on an older psalm
+   says nothing about the run that decides the tag.
+   > **Why this rule exists (2026-10-28):** the 0.24.1 Release workflow failed at the gate on 46
+   > psalm errors that local psalm (6.16.1) did not report and CI's (6.20.3, released the day
+   > before) did: every shared `*Cases` trait declared a *union* in `@phpstan-require-extends`, which
+   > names one class and had never been checked. The gate held — no tag — but the release waited on
+   > a toolchain mismatch a one-line update would have shown. The dev floors now track the verified
+   > versions, so a stale install also reports an out-of-date lock.
 3. **Code style** — `composer cs-fix` run and changes re-staged before commit.
 4. **Coverage** — new code paths covered; the deliberate exception is a defensive error-rethrow
    `catch` (consistent with the existing ones — document if you add another).
