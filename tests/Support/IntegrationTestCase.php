@@ -21,7 +21,7 @@ use PHPUnit\Framework\TestCase;
  * ({@see PgsqlIntegrationTestCase}) reuses the same {@see recordClasses()} against the PG
  * dialect, so one body of test cases runs identically on both engines.
  */
-abstract class IntegrationTestCase extends TestCase
+abstract class IntegrationTestCase extends TestCase implements BackendIntegrationTest
 {
     protected static \PDO $pdo;
 

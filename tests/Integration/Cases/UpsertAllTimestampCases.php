@@ -23,7 +23,9 @@ use Nandan108\Attrecord\Tests\Fixtures\MintedPkUpsertTimestampRecord;
  * re-asserts a row on every request behaves. Created_at must be written on the INSERT branch and
  * left alone on the conflict branch; updated_at moves on both.
  *
- * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase|\Nandan108\Attrecord\Tests\Support\SqliteIntegrationTestCase
+ * @phpstan-require-extends \PHPUnit\Framework\TestCase
+ *
+ * @phpstan-require-implements \Nandan108\Attrecord\Tests\Support\BackendIntegrationTest
  */
 trait UpsertAllTimestampCases
 {

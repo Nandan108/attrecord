@@ -17,7 +17,9 @@ use Nandan108\Attrecord\Tests\Fixtures\MintedPkTimestampRecord;
  * lastInsertId(). On PostgreSQL this exercises the BinaryParam binding path (raw bytes bound
  * as a bytea LOB) and the bytea read path (stream → raw bytes).
  *
- * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
+ * @phpstan-require-extends \PHPUnit\Framework\TestCase
+ *
+ * @phpstan-require-implements \Nandan108\Attrecord\Tests\Support\BackendIntegrationTest
  */
 trait BinaryPkCases
 {

@@ -21,7 +21,9 @@ use Nandan108\Attrecord\WhereClause;
  * works. {@see AppendOnlyCases} proves the stricter promise on the same guards, so between them the
  * two markers are pinned apart; a regression that collapsed one into the other would fail here.
  *
- * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase|\Nandan108\Attrecord\Tests\Support\SqliteIntegrationTestCase
+ * @phpstan-require-extends \PHPUnit\Framework\TestCase
+ *
+ * @phpstan-require-implements \Nandan108\Attrecord\Tests\Support\BackendIntegrationTest
  */
 trait ImmutableCases
 {

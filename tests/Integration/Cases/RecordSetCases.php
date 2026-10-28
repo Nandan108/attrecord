@@ -22,7 +22,9 @@ use Nandan108\Attrecord\WhereClause;
  * Shared RecordSet cases (upsertAll batch insert/upsert, deleteAll, with() eager loading,
  * ArrayAccess/Iterator/Countable), run against both MySQL and PostgreSQL.
  *
- * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
+ * @phpstan-require-extends \PHPUnit\Framework\TestCase
+ *
+ * @phpstan-require-implements \Nandan108\Attrecord\Tests\Support\BackendIntegrationTest
  */
 trait RecordSetCases
 {

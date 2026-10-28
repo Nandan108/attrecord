@@ -25,7 +25,9 @@ use Nandan108\Attrecord\Tests\Fixtures\UpsertByUniqueKeyRecord;
  * each conflicting write, leaving a gap — the burn-free paths must not. Runs on all three
  * backends.
  *
- * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase|\Nandan108\Attrecord\Tests\Support\SqliteIntegrationTestCase
+ * @phpstan-require-extends \PHPUnit\Framework\TestCase
+ *
+ * @phpstan-require-implements \Nandan108\Attrecord\Tests\Support\BackendIntegrationTest
  */
 trait UpsertByUniqueKeyCases
 {

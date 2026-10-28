@@ -15,7 +15,9 @@ use Nandan108\Attrecord\Tests\Fixtures\DdlCheckRecord;
  * *ignores* it, so a DDL-string assertion cannot tell an enforced constraint from a decorative
  * one — only a rejected write can.
  *
- * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase|\Nandan108\Attrecord\Tests\Support\SqliteIntegrationTestCase
+ * @phpstan-require-extends \PHPUnit\Framework\TestCase
+ *
+ * @phpstan-require-implements \Nandan108\Attrecord\Tests\Support\BackendIntegrationTest
  */
 trait CheckConstraintCases
 {

@@ -23,7 +23,9 @@ use Nandan108\Attrecord\Tests\Fixtures\CompositeKeyCostRefRecord;
  * two areas throughout, so any path that drops a key member reads, writes or locks a row it was
  * not asked for.
  *
- * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
+ * @phpstan-require-extends \PHPUnit\Framework\TestCase
+ *
+ * @phpstan-require-implements \Nandan108\Attrecord\Tests\Support\BackendIntegrationTest
  */
 trait CompositeKeyCases
 {

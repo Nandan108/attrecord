@@ -20,7 +20,7 @@ use PHPUnit\Framework\TestCase;
  * case traits run here as on MySQL/PostgreSQL, with schema generated from the fixtures via
  * {@see SqliteDialect::buildCreateTable()}.
  */
-abstract class SqliteIntegrationTestCase extends TestCase
+abstract class SqliteIntegrationTestCase extends TestCase implements BackendIntegrationTest
 {
     protected static \PDO $pdo;
 

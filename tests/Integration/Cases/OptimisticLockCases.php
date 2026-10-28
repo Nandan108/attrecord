@@ -15,7 +15,9 @@ use Nandan108\Attrecord\Tests\Fixtures\VersionedRecord;
  * record was loaded with. A write whose guard no longer matches — because another writer moved the
  * row on — throws {@see OptimisticLockException} instead of silently clobbering that change.
  *
- * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
+ * @phpstan-require-extends \PHPUnit\Framework\TestCase
+ *
+ * @phpstan-require-implements \Nandan108\Attrecord\Tests\Support\BackendIntegrationTest
  */
 trait OptimisticLockCases
 {

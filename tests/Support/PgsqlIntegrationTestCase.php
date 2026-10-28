@@ -19,7 +19,7 @@ use PHPUnit\Framework\TestCase;
  * classes' attributes through {@see PgsqlDialect::buildCreateTable()}. The shared per-suite
  * case traits run unchanged against this base, so the same assertions execute on PostgreSQL.
  */
-abstract class PgsqlIntegrationTestCase extends TestCase
+abstract class PgsqlIntegrationTestCase extends TestCase implements BackendIntegrationTest
 {
     protected static \PDO $pdo;
 

@@ -15,7 +15,9 @@ use Nandan108\Attrecord\WhereClause;
  * parse identically on MySQL (backtick) and PostgreSQL (double-quote) without per-backend
  * quoting. WhereClause-based finders are quoted by the dialect and need no special care.
  *
- * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
+ * @phpstan-require-extends \PHPUnit\Framework\TestCase
+ *
+ * @phpstan-require-implements \Nandan108\Attrecord\Tests\Support\BackendIntegrationTest
  */
 trait RecordCrudCases
 {

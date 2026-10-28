@@ -12,7 +12,9 @@ use Nandan108\Attrecord\Tests\Fixtures\StockConcern;
  * members persisted as an integer bitmask. Runs identically on MySQL/MariaDB, PostgreSQL and SQLite —
  * the storage is a plain integer, so the flag-set is portable.
  *
- * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase|\Nandan108\Attrecord\Tests\Support\SqliteIntegrationTestCase
+ * @phpstan-require-extends \PHPUnit\Framework\TestCase
+ *
+ * @phpstan-require-implements \Nandan108\Attrecord\Tests\Support\BackendIntegrationTest
  */
 trait BitmaskCases
 {

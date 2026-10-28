@@ -15,7 +15,9 @@ use Nandan108\Attrecord\WhereClause;
  * Inserts (insertAll / new-record save) and reads (finders) must work; every update or delete
  * path must throw {@see AppendOnlyViolationException} and leave stored rows untouched.
  *
- * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
+ * @phpstan-require-extends \PHPUnit\Framework\TestCase
+ *
+ * @phpstan-require-implements \Nandan108\Attrecord\Tests\Support\BackendIntegrationTest
  */
 trait AppendOnlyCases
 {

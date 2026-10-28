@@ -25,7 +25,9 @@ use Nandan108\Attrecord\WhereClause;
  * rows throughout, so a predicate that matched nothing and one that matched everything are both
  * visible as a wrong count rather than as an empty result that reads like "no such rows".
  *
- * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
+ * @phpstan-require-extends \PHPUnit\Framework\TestCase
+ *
+ * @phpstan-require-implements \Nandan108\Attrecord\Tests\Support\BackendIntegrationTest
  */
 trait BinaryPredicateCases
 {

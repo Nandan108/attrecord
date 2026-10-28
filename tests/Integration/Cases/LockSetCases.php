@@ -15,7 +15,9 @@ use Nandan108\Attrecord\Transaction;
  * Real `SELECT … FOR UPDATE` locking via LockSet inside a transaction, run against both MySQL
  * and PostgreSQL (LockSet quotes identifiers through each target class's dialect).
  *
- * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
+ * @phpstan-require-extends \PHPUnit\Framework\TestCase
+ *
+ * @phpstan-require-implements \Nandan108\Attrecord\Tests\Support\BackendIntegrationTest
  */
 trait LockSetCases
 {

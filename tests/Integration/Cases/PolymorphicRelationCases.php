@@ -13,7 +13,9 @@ use Nandan108\Attrecord\Tests\Fixtures\UserRecord;
  * Shared polymorphic-relation cases (MorphMany / MorphOne / MorphTo + dot-notation chains),
  * run against both MySQL and PostgreSQL.
  *
- * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
+ * @phpstan-require-extends \PHPUnit\Framework\TestCase
+ *
+ * @phpstan-require-implements \Nandan108\Attrecord\Tests\Support\BackendIntegrationTest
  */
 trait PolymorphicRelationCases
 {

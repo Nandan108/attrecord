@@ -13,7 +13,9 @@ use Nandan108\Attrecord\Record;
  * These exercise the happy path and release semantics on a single connection; true
  * cross-connection mutual exclusion is out of scope for the in-process test harness.
  *
- * @phpstan-require-extends \Nandan108\Attrecord\Tests\Support\IntegrationTestCase|\Nandan108\Attrecord\Tests\Support\PgsqlIntegrationTestCase
+ * @phpstan-require-extends \PHPUnit\Framework\TestCase
+ *
+ * @phpstan-require-implements \Nandan108\Attrecord\Tests\Support\BackendIntegrationTest
  */
 trait AdvisoryLockCases
 {
