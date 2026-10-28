@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-10-28
+
 **`upsertAll()` now stamps `#[CreatedAt]` on a record whose key the caller minted.**
 
 `upsertAll()` decided between `#[CreatedAt]`-on-INSERT and `#[UpdatedAt]`-on-UPDATE from the key
@@ -1593,7 +1595,8 @@ Initial public release.
 - **Application-minted binary primary keys** (`BINARY(16)` / `BYTEA` UUIDs), bound correctly on
   both engines.
 
-[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/Nandan108/attrecord/compare/v0.24.1...HEAD
+[0.24.1]: https://github.com/Nandan108/attrecord/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/Nandan108/attrecord/compare/v0.23.1...v0.24.0
 [0.23.1]: https://github.com/Nandan108/attrecord/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/Nandan108/attrecord/compare/v0.22.1...v0.23.0
