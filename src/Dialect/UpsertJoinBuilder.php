@@ -75,8 +75,9 @@ trait UpsertJoinBuilder
     /**
      * Render the inline derived table as `SELECT … UNION ALL SELECT …`. The first SELECT aliases the
      * columns (portable across MySQL/PG/SQLite); later SELECTs match by position. `UNION ALL` (no dedup)
-     * and per-branch type resolution mean this constructor is identical on all three dialects and needs
-     * no per-dialect `VALUES` typing.
+     * keeps this constructor identical on all three dialects. Column types come from the literals
+     * themselves: PostgreSQL resolves a bare quoted literal here to `text`, so its
+     * {@see \Nandan108\Attrecord\SqlDialect::toLiteral()} casts the non-character ones to the column's type.
      *
      * @param list<string>       $quotedColumns derived-table column names, already quoted
      * @param list<list<string>> $valueRows     per row, one SQL literal per column (aligned to $quotedColumns)

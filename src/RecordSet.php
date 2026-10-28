@@ -348,6 +348,19 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             return null;
         }
 
+        // A record whose branch the database decides is stamped blind (below), which makes
+        // #[CreatedAt] dirty — and a dirty column lands in the conflict SET, restamping created_at on
+        // every re-touch of a stored row. Keep it INSERT-only for the statement, as
+        // Record::upsertByUniqueKey() does; must precede the loop, which reads $ignoreOnUpdate.
+        if (null !== $schema->createdAtColumn) {
+            foreach ($dirtyRecords as $r) {
+                if (self::branchIsDatabaseDecided($r, $schema)) {
+                    $ignoreOnUpdate[$schema->createdAtColumn] = true;
+                    break;
+                }
+            }
+        }
+
         // Columns actually changed on the UPDATE (keyed) records — captured before markClean() wipes
         // dirty state — so auto read-back can tell which generated columns those updates recompute.
         /** @var array<string, true> $updateDirty */
@@ -356,7 +369,11 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
             $r->beforeSave();
             /** @psalm-suppress MixedPropertyFetch */
             $isInsert = !self::isExistingRow($r, $schema);
-            $r->applyAutoTimestamps($isInsert);
+            if (self::branchIsDatabaseDecided($r, $schema)) {
+                $r->applyBlindUpsertTimestamps($schema);
+            } else {
+                $r->applyAutoTimestamps($isInsert);
+            }
             if ($isInsert) {
                 $r->seedVersionForInsert();
             }
@@ -1460,11 +1477,35 @@ final class RecordSet implements \Iterator, \Countable, \ArrayAccess
     }
 
     /**
-     * Whether this row is **known** to already exist — the semantic question, which drives
-     * `#[CreatedAt]` vs `#[UpdatedAt]`, version seeding and `afterSave($wasInsert)`.
+     * Whether only the database can tell this record's INSERT branch from its conflict branch —
+     * which decides how {@see upsertAll()} stamps `#[CreatedAt]` / `#[UpdatedAt]`.
      *
-     * - **Surrogate key**: a non-null PK can only have come *from* the database, since the caller
-     *   cannot invent a meaningful auto-increment id. PK-presence is load-bearing here: a sparse
+     * True for a record that was built rather than loaded and whose key the caller **minted**:
+     * every member of a composite key, or a non-autoincrement PK the application generated. That
+     * key's presence proves nothing either way — {@see isExistingRow()}'s "a non-null PK came from
+     * the database" holds only for an autoincrement PK, and {@see canInsertDirectly()}'s proof of
+     * absence needs a null one. Such a record is stamped as a blind upsert
+     * ({@see Record::applyBlindUpsertTimestamps()}): created_at when still null and kept out of the
+     * conflict SET, updated_at always.
+     */
+    private static function branchIsDatabaseDecided(Record $record, TableSchema $schema): bool
+    {
+        if (!$record->isNew() || self::canInsertDirectly($record, $schema)) {
+            return false;
+        }
+
+        return $schema->isCompositePk() || !$schema->columns[$schema->pk]->autoIncrement;
+    }
+
+    /**
+     * Whether this row is **known** to already exist — the semantic question, which drives version
+     * seeding, `afterSave($wasInsert)`, and `#[CreatedAt]` vs `#[UpdatedAt]` for every record
+     * except one whose branch the database decides ({@see branchIsDatabaseDecided()}).
+     *
+     * - **Surrogate key**: a non-null autoincrement PK can only have come *from* the database, since
+     *   the caller cannot invent a meaningful auto-increment id. (A non-autoincrement PK the caller
+     *   generated still counts as existing here, which is why timestamps consult
+     *   {@see branchIsDatabaseDecided()} first.) PK-presence is load-bearing here: a sparse
      *   upsert is written by constructing a record, setting its PK and the few changed columns,
      *   and sending it. `UpsertStrategy::Lockless` refuses a null PK for the same reason — there
      *   is nothing to coalesce on.

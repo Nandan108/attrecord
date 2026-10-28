@@ -155,10 +155,15 @@ UPDATE "t" SET
 FROM ( VALUES (1, 3, 'a'::text, 10::int), (2, 1, 'b'::text, 20::int) ) AS u(id, _mask, name, stock)
 WHERE "t"."id" = u.id;
 ```
-PG infers a `VALUES` column's type from its **first** row, and rejects mixed/untyped columns — so the
-first row's literals must be typed (or all-typed). This is the **same typed-literal concern as the
-v0.1.2 `CAST(NULL AS …)` fix**; `PgsqlDialect::toLiteral()` already emits typed nulls, and we extend
-that discipline to the leading `VALUES` row (cast every first-row literal, cheap and unambiguous).
+PG infers a derived column's type from its literals, and with no target column in scope a bare
+quoted literal resolves to `text` — which it then refuses to assign to a timestamp, date or jsonb
+column (SQLSTATE 42804). This is the **same typed-literal concern as the v0.1.2 `CAST(NULL AS …)`
+fix**, so `PgsqlDialect::toLiteral()` carries it: nulls, and quoted timestamp / date / `Json`
+literals, render as `CAST('…' AS <column type>)` on every row; later `UNION ALL` branches coerce to
+the first. Character literals stay bare (an explicit cast to `varchar(n)` truncates silently where
+assignment rejects), and numbers, booleans and `decode(…)` bytea are already typed. (The shipped
+derived table is `SELECT … UNION ALL SELECT …` rather than the `VALUES` sketched above; the typing
+rule is the same for both.)
 
 **SQLite** (`UPDATE … FROM`; `iif()`; `&` native):
 ```sql

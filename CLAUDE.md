@@ -145,8 +145,9 @@ Generated SQL must be valid on **all three** engines. Known traps:
 - **PostgreSQL types a bare `NULL` / bare string literal as `text`/`unknown`** inside `VALUES` and
   `CASE` branches, then rejects it against a non-text column (SQLSTATE 42804). Emit **typed** nulls
   (`CAST(NULL AS <type>)`) and typed literals where the surrounding context can't infer the type
-  (multi-row derived tables, `CASE … END`). `PgsqlDialect::toLiteral()` casts nulls for exactly this
-  reason. *(This is the root of the still-open `created_at` derived-table failure — see below.)*
+  (multi-row derived tables, `CASE … END`). `PgsqlDialect::toLiteral()` casts nulls, and quoted
+  timestamp / date / `Json` literals, for exactly this reason — **never character types**: an
+  explicit cast to `varchar(n)` silently truncates an overlong value where assignment rejects it.
 - **SQLite**: no per-row `FOR UPDATE` (writers serialize at the DB level → `forUpdateClause()` is
   empty); `RETURNING` needs 3.35+; `INSERT OR IGNORE` swallows NOT-NULL/CHECK violations, not just key
   conflicts (prefer `ON CONFLICT DO NOTHING` when you mean *only* key conflicts).
@@ -173,9 +174,13 @@ symptoms, one cause. Fix: **snapshot the canonical form everywhere** (all three 
 `toSnapshotString`). Invariant to preserve: *the snapshot a row is loaded/read-back with must be
 byte-identical to what `dirtyFields()` computes for the same value* — never snapshot a raw DB string.
 
-Latent-but-untriggered: the 3-step derived-table still emits bare literals that PG types as `text`;
-it only bit via the falsely-dirty timestamp. If a timestamp/`Json`/binary column is *legitimately*
-updated through the Locked keyed-upsert path on PG, add typed literals to the derived table.
+**The derived-table typing itself was left latent here, on a wrong premise** — "it only bit via the
+falsely-dirty timestamp". Any `#[UpdatedAt]` bump on a loaded record puts a timestamp in that UPDATE,
+so every Locked `upsertAll()` of a timestamped table was broken on PG from v0.2.0 until 0.24.1. It
+survived because no PG case updated a timestamp through that path; the minted-PK `#[CreatedAt]` cases
+(`UpsertAllTimestampCases`) were the first. Fixed by casting in `toLiteral()` (above). Lesson: **a
+latent bug's "only reachable via X" is a claim about the suite, not the code** — check it against a
+case that takes the ordinary path before deferring.
 
 ## Commit & release
 

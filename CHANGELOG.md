@@ -6,6 +6,40 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+**`upsertAll()` now stamps `#[CreatedAt]` on a record whose key the caller minted.**
+
+`upsertAll()` decided between `#[CreatedAt]`-on-INSERT and `#[UpdatedAt]`-on-UPDATE from the key
+alone: a non-null single-column PK counted as an existing row. That holds for an auto-increment PK,
+which only the database can have assigned, and not for one the application generated (a UUID, a
+ULID) — so a fresh record carrying a minted PK was stamped as an UPDATE, and `created_at` was never
+set. What happened next depended on the engine and the strategy:
+
+| | Locked (default) | Lockless |
+|---|---|---|
+| MySQL / MariaDB | `INSERT IGNORE` demotes the NOT NULL error to a warning: a **zero date** is stored, even in strict mode | `1364 Field 'created_at' doesn't have a default value` (a zero date where strict mode is off, e.g. under WordPress) |
+| PostgreSQL | not-null violation | not-null violation |
+| SQLite | `INSERT OR IGNORE` **drops the row** without an error | NOT NULL constraint failed |
+
+A composite PK had the mirror-image defect. A freshly built composite-keyed record was stamped as a
+known INSERT, so `created_at` entered the conflict `SET` and **every re-assertion of a stored row
+reset it** — silently, on every engine.
+
+### Fixed
+
+- **A record whose branch only the database knows is stamped blind.** That is a record built rather
+  than loaded whose key the caller minted: a non-auto-increment PK, or any composite PK. It is stamped
+  as `upsertByUniqueKey()` stamps: `#[CreatedAt]` when the property is null, kept out of the conflict
+  `SET`; `#[UpdatedAt]` always. A loaded record, or a new one with a null auto-increment PK, has a
+  known branch and is stamped as before. Both strategies, all three engines.
+- **PostgreSQL: the Locked `upsertAll()` can update timestamp, date and `Json` columns.** Its UPDATE
+  joins a derived table, where a bare quoted literal has no target column to take a type from and
+  resolves to `text`; assigning that to a `timestamp`, `date` or `jsonb` column raised
+  `SQLSTATE 42804`. Any `#[UpdatedAt]` table hit it on every keyed upsert that changed a row.
+  `PgsqlDialect::toLiteral()` now casts those literals to the column's type, as it already did
+  nulls. Character literals stay bare: an explicit cast to `varchar(n)` truncates an overlong
+  value silently, where assignment rejects it. The same rendering reaches `DEFAULT` clauses in
+  generated DDL, where it is equivalent — attrecord-migrations converges unchanged.
+
 ## [0.24.0] - 2026-09-25
 
 **A binary value in a predicate is now marked the way a binary value in a key always was.**

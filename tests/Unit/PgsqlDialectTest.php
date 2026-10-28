@@ -115,18 +115,37 @@ final class PgsqlDialectTest extends TestCase
         $this->assertSame("decode('0102ff', 'hex')", $this->dialect->toLiteral("\x01\x02\xff", $col));
     }
 
+    // A quoted literal of a non-character type is CAST to the column's type: in the bulk upsert's
+    // derived-table UPDATE there is no target column to infer from, and PG resolves a bare '…' to
+    // `text`, which it then refuses to assign to timestamp / date / jsonb (SQLSTATE 42804).
+
     public function testToLiteralDatetime(): void
     {
         $col = $this->col(ColumnType::DateTime);
         $dt = new \DateTimeImmutable('2024-03-15 10:30:00');
-        $this->assertSame("'2024-03-15 10:30:00'", $this->dialect->toLiteral($dt, $col));
+        $this->assertSame("CAST('2024-03-15 10:30:00' AS TIMESTAMP)", $this->dialect->toLiteral($dt, $col));
     }
 
     public function testToLiteralDate(): void
     {
         $col = $this->col(ColumnType::Date);
         $dt = new \DateTimeImmutable('2024-03-15');
-        $this->assertSame("'2024-03-15'", $this->dialect->toLiteral($dt, $col));
+        $this->assertSame("CAST('2024-03-15' AS DATE)", $this->dialect->toLiteral($dt, $col));
+    }
+
+    public function testToLiteralJson(): void
+    {
+        $col = $this->col(ColumnType::Json);
+        $this->assertSame("CAST('{\"a\":1}' AS JSONB)", $this->dialect->toLiteral('{"a":1}', $col));
+    }
+
+    public function testToLiteralCharacterTypeIsNeverCast(): void
+    {
+        // An explicit CAST to varchar(n) silently truncates an overlong value, where assignment
+        // rejects it — so character literals stay bare and the length check stays the database's.
+        $this->assertSame("'hello'", $this->dialect->toLiteral('hello', $this->col(ColumnType::VarChar)));
+        $this->assertSame("'hello'", $this->dialect->toLiteral('hello', $this->col(ColumnType::Text)));
+        $this->assertSame("'a'", $this->dialect->toLiteral('a', $this->col(ColumnType::Enum)));
     }
 
     // -----------------------------------------------------------------

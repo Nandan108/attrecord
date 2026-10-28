@@ -84,7 +84,7 @@ class PgsqlDialect implements SqlDialect
                 ? $value->format('Y-m-d H:i:s'.(($col->precision ?? 0) ? '.u' : ''))
                 : (string) $value;
 
-            return "'".$this->escapeString($formatted)."'";
+            return $this->typedStringLiteral($formatted, $col);
         }
 
         if ($col->isDate) {
@@ -92,11 +92,32 @@ class PgsqlDialect implements SqlDialect
                 ? $value->format('Y-m-d')
                 : (string) $value;
 
-            return "'".$this->escapeString($formatted)."'";
+            return $this->typedStringLiteral($formatted, $col);
         }
 
-        // VarChar, Text, Json, Enum, etc.
+        if (ColumnType::Json === $col->type) {
+            return $this->typedStringLiteral((string) $value, $col);
+        }
+
+        // VarChar, Text, Enum, etc.
         return "'".$this->escapeString((string) $value)."'";
+    }
+
+    /**
+     * A quoted literal cast to the column's own type.
+     *
+     * A bare `'…'` is of unknown type, which PostgreSQL resolves from the target column in
+     * `INSERT … VALUES` — but the bulk upsert's UPDATE joins a derived table
+     * (`SELECT '…' AS col UNION ALL …`), where there is no target in scope and the literal resolves
+     * to `text`; assigning that to a timestamp, date or jsonb column is SQLSTATE 42804. The cast
+     * gives the derived column the right type, and later `UNION ALL` branches coerce to it.
+     *
+     * Never applied to a character type: an explicit cast to `varchar(n)` silently truncates an
+     * overlong value where assignment rejects it. For the types cast here the two behave alike.
+     */
+    private function typedStringLiteral(string $value, ColumnDefinition $col): string
+    {
+        return 'CAST('."'".$this->escapeString($value)."'".' AS '.$this->renderColumnType($col).')';
     }
 
     #[\Override]

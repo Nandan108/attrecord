@@ -228,7 +228,8 @@ declaring `php ^8.1` can ship it broken indefinitely while every dev machine run
 
 Auto-managed timestamps, typed `?\DateTimeImmutable`. `#[CreatedAt]` is set on INSERT only;
 `#[UpdatedAt]` is set on INSERT and bumped on UPDATE. At most one of each per Record. Applied in
-`save()`/`upsertAll()` (bumped only when another column actually changed) **and** the bulk-UPDATE paths
+`save()`/`upsertAll()` (bumped only when another column actually changed, except on the blind
+records described below) **and** the bulk-UPDATE paths
 `updateWhere()` / `updateByWhere()` / `updateByUniqueKey()` — in all cases unless the caller sets the
 column explicitly.
 
@@ -237,8 +238,11 @@ INSERT, so an unstamped property binds an explicit `NULL` — and an explicit `N
 `DEFAULT CURRENT_TIMESTAMP`, failing a `NOT NULL` column outright. A DDL default is a backstop for
 raw-SQL writes, never a substitute for the attribute.
 
-On the **blind** upsert paths (`upsertByUniqueKey()`, where the row is keyed by a unique key rather
-than a PK the caller holds) the branch the database will take isn't knowable, so: `#[UpdatedAt]` is
+On the **blind** upsert paths the branch the database will take isn't knowable:
+`upsertByUniqueKey()`, where the row is keyed by a unique key rather than a PK the caller holds; and
+`upsertAll()` for a record that was **built rather than loaded and whose key the caller minted** — a
+non-auto-increment PK, or any composite PK (`RecordSet::branchIsDatabaseDecided()`). A minted key's
+presence proves neither that the row exists nor that it does not, so: `#[UpdatedAt]` is
 always bumped and mirrored into the conflict `SET`, while `#[CreatedAt]` is stamped **only when the
 property is null** and never enters the `SET` — a caller-supplied value survives, and a conflicting
 write leaves the stored one alone. With `preserveAutoIncrement: true` the row is resolved first, so
@@ -632,7 +636,8 @@ Batch persistence (a bounded number of statements per operation — never a per-
   its keyed-upsert path (which *masks* the collision and takes locks the append never needed). Inserts
   **all** records (no dirty filter — an appended row is written whole); runs `beforeSave()` +
   `#[CreatedAt]`/`#[UpdatedAt]` (as new — **every** record is a fresh insert, so `created_at` is stamped
-  even for a minted / non-null PK; do **not** gate this on `PK === null` as `upsertAll()` does) +
+  even for a minted / non-null PK; never gate this on `PK === null`, which would read a minted PK
+  as an existing row) +
   `validate()` per record, then `markClean()` + `afterSave(isNew: true)`. Writes the PK column for minted PKs; auto-increment/generated columns are
   excluded and, on an auto-increment table, generated ids are back-filled in INSERT order (so the batch
   must be **homogeneous** — all PK-null on an AI table, or all PK-carrying on a minted-PK table; a mixed
@@ -1012,7 +1017,9 @@ ELSE branch is qualified with the real table, not an alias. A uniform column col
 
 The derived table is rendered as `SELECT <lit> AS <col>, … UNION ALL SELECT <lit>, …` (first
 branch aliases the columns, later branches match by position) — identical across all three
-dialects, no per-dialect `VALUES` typing. Steps 1 (`create`) and 2 (`lock`) are unchanged; step 3
+dialects. Types come from the literals: PostgreSQL resolves a bare quoted literal there to `text`,
+so `PgsqlDialect::toLiteral()` renders timestamp / date / `Json` values (and nulls) as
+`CAST(… AS <column type>)`; character literals stay bare. Steps 1 (`create`) and 2 (`lock`) are unchanged; step 3
 is `null` when `$updateColumns` is empty.
 
 ### `DbSession` interface (one connection abstraction)

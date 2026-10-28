@@ -1096,8 +1096,9 @@ abstract class Record
 
     /**
      * Set auto-managed timestamps for a **blind** upsert — one whose branch (INSERT vs conflicting
-     * UPDATE) is not known from loaded state, because the row is keyed by a unique key rather than
-     * by a PK the caller holds.
+     * UPDATE) is not known from loaded state: the row is keyed by a unique key rather than by a PK
+     * the caller holds, or (through {@see RecordSet::upsertAll()}) by a key the caller minted
+     * itself, whose presence proves neither that the row exists nor that it does not.
      *
      * {@see Attribute\UpdatedAt} is always bumped: with no loaded row to compare against there is no
      * way to tell a no-op update from a real one, so this matches the set-based UPDATE paths
@@ -1105,12 +1106,16 @@ abstract class Record
      *
      * {@see Attribute\CreatedAt} is stamped only when the property is still null. It is an
      * INSERT-only value, so a record that already carries one — hydrated, or set explicitly when
-     * importing historical rows — keeps it.
+     * importing historical rows — keeps it. **The caller must keep it out of the conflict-branch
+     * SET**: stamping makes the property dirty, and a dirty column in that SET would restamp the
+     * stored row on every re-touch.
      *
      * @return string|null the #[UpdatedAt] column name when one was stamped, so the caller can add
      *                     it to the conflict-branch SET; null when the schema declares none
+     *
+     * @internal called by upsertByUniqueKey() and RecordSet::upsertAll()
      */
-    private function applyBlindUpsertTimestamps(TableSchema $schema): ?string
+    public function applyBlindUpsertTimestamps(TableSchema $schema): ?string
     {
         $now = new \DateTimeImmutable();
 

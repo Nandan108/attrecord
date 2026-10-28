@@ -1234,6 +1234,12 @@ $deleted = $set->deleteAll();  // DELETE FROM … WHERE id IN (…)
   with non-sequential auto-increment, use individual `Record::save()` calls instead.
 - For tables with natural (non-auto-increment) PKs, `upsertAll()` performs a true upsert (PKs are
   already set on the PHP objects).
+- **Timestamps on a key you minted.** A record you built (rather than loaded) whose key you set
+  yourself — a non-auto-increment PK, or a composite one — may or may not already be stored, and
+  only the database knows which. So it is stamped like `upsertByUniqueKey()`: `#[CreatedAt]` when
+  the property is null, kept out of the conflict `SET` so re-asserting a stored row never moves
+  it; `#[UpdatedAt]` always. A loaded record, or a new one with a null auto-increment PK, has a
+  known branch and is stamped exactly.
 - The keyed (known-PK) upsert is a single set-based statement — `INSERT IGNORE` → an ordered
   `SELECT … FOR UPDATE` (ascending PK, for a consistent lock order) → one derived-table join that
   carries a per-row bitmask so each row updates only the columns it actually changed. The join is
